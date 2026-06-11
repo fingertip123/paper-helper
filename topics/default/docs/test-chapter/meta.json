@@ -1,0 +1,22 @@
+{
+  "id": "test-chapter",
+  "title": "测试章节",
+  "filename": "test-chapter.docx",
+  "category": "导师反馈",
+  "tags": [
+    "初稿"
+  ],
+  "created": "2026-06-11 16:35",
+  "updated": "2026-06-11 20:05",
+  "revisions": [
+    {
+      "id": "20260611-163524",
+      "time": "2026-06-11 16:35",
+      "message": "测试存档",
+      "todos_done": 0,
+      "todos_total": 0,
+      "progress_percent": 100
+    }
+  ],
+  "comment_count": 0
+}

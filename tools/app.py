@@ -11,9 +11,11 @@
 
 import os
 import re
+import sys
 import json
 import base64
 import threading
+import subprocess
 import webbrowser
 import urllib.request
 import urllib.error
@@ -22,10 +24,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import wiki_core as core
 import topic_manager as topics
 import wiki_ops as wops
+import doc_editor as doced
 
 host = "127.0.0.1"
 port = 8765
 desktopmode = False  # desktop.py 启动时设为 True，界面走桌面模式（服务开关控制功能而非关进程）
+desktop_pick_folder = None  # desktop.py 注入：主线程弹出文件夹选择框（备用）
 configdir = os.path.join(core.rootdir, ".paper-helper")
 configpath = os.path.join(configdir, "config.json")
 
@@ -33,6 +37,81 @@ configpath = os.path.join(configdir, "config.json")
 ingestlock = threading.Lock()
 ingestjob = {"running": False, "total": 0, "done": 0, "current": "",
              "ingested": [], "failed": [], "finished": False, "cancelled": False}
+
+
+def PickFolderNative():
+    """系统原生文件夹选择（可从 HTTP 工作线程安全调用）。"""
+    if sys.platform == "darwin":
+        try:
+            r = subprocess.run(
+                ["osascript", "-e", 'POSIX path of (choose folder with prompt "选择导出文件夹")'],
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                return r.stdout.strip().rstrip("/")
+        except Exception:
+            pass
+    if sys.platform.startswith("win"):
+        try:
+            scmd = (
+                "Add-Type -AssemblyName System.windows.forms; "
+                "$d=New-Object System.Windows.Forms.FolderBrowserDialog; "
+                "$d.Description='选择导出文件夹'; "
+                "if($d.ShowDialog() -eq 'OK'){Write-Output $d.SelectedPath}"
+            )
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-Sta", "-Command", scmd],
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                return r.stdout.strip().rstrip("\\/")
+        except Exception:
+            pass
+    try:
+        r = subprocess.run(
+            ["zenity", "--file-selection", "--directory", "--title=选择导出文件夹"],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip().rstrip("/")
+    except Exception:
+        pass
+    sscript = (
+        "import tkinter as tk\n"
+        "from tkinter import filedialog\n"
+        "r=tk.Tk()\n"
+        "r.withdraw()\n"
+        "try:\n"
+        "    r.attributes('-topmost', True)\n"
+        "except Exception:\n"
+        "    pass\n"
+        "p=filedialog.askdirectory(title='选择导出文件夹')\n"
+        "r.destroy()\n"
+        "print(p or '', end='')\n"
+    )
+    try:
+        r = subprocess.run(
+            [sys.executable, "-c", sscript],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip().rstrip("/\\")
+    except Exception:
+        pass
+    if desktop_pick_folder:
+        try:
+            return desktop_pick_folder() or ""
+        except Exception:
+            pass
+    return ""
 
 
 def LoadConfig():
@@ -259,7 +338,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"bibtex": wops.ExportBibtex()})
         if path == "/api/topics":
             return self._send(200, {
-                "topics": topics.ListTopics(),
+                "topics": core.TopicsWithCounts(),
                 "current": topics.GetCurrentTopicId(),
                 "purpose_fields": topics.GetPurposeFieldDefs(),
             })
@@ -272,7 +351,95 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, topics.GetTopicConfig(nid))
         if path.startswith("/raw/sources/"):
             return self._serve_file(path)
+        if path == "/api/docs":
+            doced.Init(topics.GetTopicDir())
+            import urllib.parse
+            oq = urllib.parse.parse_qs(self.path.split("?", 1)[-1] if "?" in self.path else "")
+            return self._send(200, doced.ListDocs((oq.get("tag") or [None])[0]))
+        if path == "/api/docs/detail":
+            import urllib.parse
+            oq = urllib.parse.parse_qs(self.path.split("?", 1)[-1] if "?" in self.path else "")
+            sid = (oq.get("id") or [""])[0]
+            blight = (oq.get("light") or ["0"])[0] in ("1", "true", "yes")
+            doced.Init(topics.GetTopicDir())
+            return self._send(200, doced.GetDocDetail(sid, blight))
+        if path == "/api/docs/preview":
+            import urllib.parse
+            oq = urllib.parse.parse_qs(self.path.split("?", 1)[-1] if "?" in self.path else "")
+            sid = (oq.get("id") or [""])[0]
+            doced.Init(topics.GetTopicDir())
+            return self._send(200, doced.GetPreviewHtml(sid), "text/html; charset=utf-8")
+        if path == "/api/docs/editor":
+            return self._servedoceditor()
+        if path == "/api/docs/media":
+            return self._servedocmedia()
+        if path == "/api/docs/revisions":
+            import urllib.parse
+            oq = urllib.parse.parse_qs(self.path.split("?", 1)[-1] if "?" in self.path else "")
+            sid = (oq.get("id") or [""])[0]
+            doced.Init(topics.GetTopicDir())
+            return self._send(200, doced.ListRevisions(sid))
+        if path == "/api/docs/revision":
+            import urllib.parse
+            oq = urllib.parse.parse_qs(self.path.split("?", 1)[-1] if "?" in self.path else "")
+            sid = (oq.get("id") or [""])[0]
+            srev = (oq.get("rev") or [""])[0]
+            doced.Init(topics.GetTopicDir())
+            return self._send(200, doced.GetRevisionDetail(sid, srev))
+        if path == "/api/docs/status":
+            import urllib.parse
+            oq = urllib.parse.parse_qs(self.path.split("?", 1)[-1] if "?" in self.path else "")
+            sid = (oq.get("id") or [""])[0]
+            doced.Init(topics.GetTopicDir())
+            return self._send(200, doced.GetWorkingStatus(sid))
+        if path == "/api/docs/compare":
+            import urllib.parse
+            oq = urllib.parse.parse_qs(self.path.split("?", 1)[-1] if "?" in self.path else "")
+            sid = (oq.get("id") or [""])[0]
+            srev_a = (oq.get("a") or ["WORKING"])[0]
+            srev_b = (oq.get("b") or [""])[0]
+            doced.Init(topics.GetTopicDir())
+            if not srev_b:
+                shead = doced._HeadRevisionId(sid)
+                srev_b = shead if shead else "original"
+            return self._send(200, doced.CompareRevisions(sid, srev_a, srev_b))
         return self._send(404, {"error": "not found"})
+
+    def _servedoceditor(self):
+        import urllib.parse
+        oq = urllib.parse.parse_qs(self.path.split("?", 1)[-1] if "?" in self.path else "")
+        sid = (oq.get("id") or [""])[0]
+        stheme = (oq.get("theme") or ["girly"])[0]
+        doced.Init(topics.GetTopicDir())
+        try:
+            return self._send(200, doced.GetEditorHtml(sid, stheme), "text/html; charset=utf-8")
+        except Exception as e:
+            smsg = str(e).replace("&", "&amp;").replace("<", "&lt;")
+            shtml = (
+                '<!DOCTYPE html><html><head><meta charset="utf-8">'
+                '<style>body{font-family:-apple-system,sans-serif;padding:40px;color:#4a3f47;background:#f8f6f4}'
+                'h2{font-size:16px;margin-bottom:12px}.meta{font-size:13px;color:#8a7a84;line-height:1.7}</style></head>'
+                '<body><h2>文档编辑器加载失败</h2>'
+                '<p class="meta">' + smsg + '</p>'
+                '<p class="meta">请尝试重新导入 docx，或重启应用后再打开。</p></body></html>'
+            )
+            return self._send(500, shtml, "text/html; charset=utf-8")
+
+    def _servedocmedia(self):
+        import urllib.parse
+        oq = urllib.parse.parse_qs(self.path.split("?", 1)[-1] if "?" in self.path else "")
+        sid = (oq.get("id") or [""])[0]
+        sfname = (oq.get("file") or oq.get("f") or [""])[0]
+        doced.Init(topics.GetTopicDir())
+        try:
+            bdata, omime = doced.GetMediaBytes(sid, sfname)
+        except Exception as e:
+            return self._send(404, {"error": str(e)})
+        self.send_response(200)
+        self.send_header("Content-Type", omime)
+        self.send_header("Content-Length", str(len(bdata)))
+        self.end_headers()
+        self.wfile.write(bdata)
 
     def _serve_file(self, path):
         import urllib.parse
@@ -328,6 +495,30 @@ class Handler(BaseHTTPRequestHandler):
                 return self._query()
             if self.path == "/api/topics/snapshot":
                 return self._topicsnapshot()
+            if self.path == "/api/docs/import":
+                return self._docsimport()
+            if self.path == "/api/docs/meta":
+                return self._docsmeta()
+            if self.path == "/api/docs/extract":
+                return self._docsextract()
+            if self.path == "/api/docs/todo":
+                return self._docstodo()
+            if self.path == "/api/docs/edit":
+                return self._docsedit()
+            if self.path == "/api/docs/save":
+                return self._docssave()
+            if self.path == "/api/docs/restore":
+                return self._docsrestore()
+            if self.path == "/api/docs/restore-working":
+                return self._docsrestoreworking()
+            if self.path == "/api/docs/discard":
+                return self._docsdiscard()
+            if self.path == "/api/docs/export":
+                return self._docsexport()
+            if self.path == "/api/docs/pick-folder":
+                return self._docspickfolder()
+            if self.path == "/api/docs/delete":
+                return self._docsdelete()
             return self._send(404, {"error": "not found"})
         except Exception as e:
             return self._send(500, {"error": str(e)})
@@ -469,6 +660,107 @@ class Handler(BaseHTTPRequestHandler):
         oresult = wops.SnapshotTopic()
         core.AppendLog("[snapshot] 选题备份 %s" % oresult.get("path"))
         return self._send(200, oresult)
+
+    def _docsimport(self):
+        body = self._body()
+        name = SafeName(body.get("name", ""))
+        if not name.lower().endswith(".docx"):
+            return self._send(400, {"error": "仅支持 docx"})
+        doced.Init(topics.GetTopicDir())
+        result = doced.ImportDocx(
+            base64.b64decode(body.get("data", "")),
+            name,
+            body.get("title"),
+            body.get("tags"),
+        )
+        core.AppendLog("[doc] 导入文档 %s（%s）" % (result.get("title"), result.get("id")))
+        return self._send(200, result)
+
+    def _docsmeta(self):
+        body = self._body()
+        doced.Init(topics.GetTopicDir())
+        return self._send(200, doced.UpdateDocMeta(
+            body.get("id", ""),
+            body.get("title"),
+            body.get("tags"),
+        ))
+
+    def _docsextract(self):
+        body = self._body()
+        doced.Init(topics.GetTopicDir())
+        return self._send(200, doced.ExtractComments(body.get("id", "")))
+
+    def _docstodo(self):
+        body = self._body()
+        doced.Init(topics.GetTopicDir())
+        return self._send(200, doced.MarkTodoDone(
+            body.get("id", ""),
+            body.get("todo_id", ""),
+            body.get("done", True),
+        ))
+
+    def _docsedit(self):
+        body = self._body()
+        doced.Init(topics.GetTopicDir())
+        return self._send(200, doced.ApplyEdit(
+            body.get("id", ""),
+            int(body.get("para_index", -1)),
+            body.get("text", ""),
+            body.get("comment_id"),
+            body.get("html"),
+            body.get("para_style"),
+        ))
+
+    def _docssave(self):
+        body = self._body()
+        doced.Init(topics.GetTopicDir())
+        result = doced.SaveRevision(body.get("id", ""), body.get("message", ""))
+        core.AppendLog("[doc] 提交 %s：%s" % (body.get("id"), result.get("message")))
+        return self._send(200, result)
+
+    def _docsrestore(self):
+        body = self._body()
+        doced.Init(topics.GetTopicDir())
+        result = doced.RestoreRevision(body.get("id", ""), body.get("rev", ""))
+        core.AppendLog("[doc] 恢复版本 %s → %s" % (body.get("id"), body.get("rev")))
+        return self._send(200, result)
+
+    def _docsrestoreworking(self):
+        body = self._body()
+        doced.Init(topics.GetTopicDir())
+        result = doced.RestoreWorkingCopy(body.get("id", ""))
+        core.AppendLog("[doc] 恢复工作区 %s" % body.get("id"))
+        return self._send(200, result)
+
+    def _docsdiscard(self):
+        body = self._body()
+        doced.Init(topics.GetTopicDir())
+        result = doced.DiscardWorkingChanges(body.get("id", ""))
+        core.AppendLog("[doc] 丢弃未提交修改 %s" % body.get("id"))
+        return self._send(200, result)
+
+    def _docspickfolder(self):
+        try:
+            spath = PickFolderNative()
+            return self._send(200, {"path": spath or ""})
+        except Exception as e:
+            return self._send(500, {"error": str(e)})
+
+    def _docsexport(self):
+        body = self._body()
+        doced.Init(topics.GetTopicDir())
+        result = doced.ExportDoc(
+            body.get("id", ""),
+            body.get("dir", ""),
+            body.get("filename", ""),
+        )
+        core.AppendLog("[doc] 导出 %s → %s" % (body.get("id"), result.get("path")))
+        return self._send(200, result)
+
+    def _docsdelete(self):
+        body = self._body()
+        doced.Init(topics.GetTopicDir())
+        return self._send(200, doced.DeleteDoc(body.get("id", "")))
 
     def _ingest(self):
         global ingestjob

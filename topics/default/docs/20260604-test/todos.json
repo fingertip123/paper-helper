@@ -1,0 +1,229 @@
+{
+  "updated": "2026-06-11 20:03",
+  "items": [
+    {
+      "id": "todo-0",
+      "comment_id": "0",
+      "text": "[Microsoft Office User] 除非你有要和我专门讨论的点，不然每次发给我的版本都应该是尽你能力达到提交给期刊的版本，你这边不用保存修改痕迹。",
+      "para_index": -1,
+      "status": "pending"
+    },
+    {
+      "id": "todo-6",
+      "comment_id": "6",
+      "text": "[Microsoft Office User] 别持续性之后马上又持续，这类用语问题自己多加注意。",
+      "para_index": -1,
+      "status": "pending"
+    },
+    {
+      "id": "todo-12",
+      "comment_id": "12",
+      "text": "[狄桉] 再次精简引言内容，祛除冗余以及与后文重叠的信息",
+      "para_index": -1,
+      "status": "done"
+    },
+    {
+      "id": "todo-17",
+      "comment_id": "17",
+      "text": "[Microsoft Office User] 这句话既然是定义，最好加几个policy myopia高被引文章支撑。",
+      "para_index": -1,
+      "status": "pending"
+    },
+    {
+      "id": "todo-21",
+      "comment_id": "21",
+      "text": "[Microsoft Office User] 脚注信息怎么不全？只有半个标题，没有时间信息？没必要加超链接。找一下引用领导讲话信息的文章是怎么引用的，我感觉至少得有日期，来源，标题，如有必要在括号里加上链接。",
+      "para_index": -1,
+      "status": "pending"
+    },
+    {
+      "id": "todo-22",
+      "comment_id": "22",
+      "text": "[狄桉] 已经对照期刊已发表论文，可以用脚注的形式注明报道",
+      "para_index": -1,
+      "status": "done"
+    },
+    {
+      "id": "todo-23",
+      "comment_id": "23",
+      "text": "[Microsoft Office User] 是只统计了“短视”“可持续发展”这两个词？那就清楚放在纵轴小标题里。另外只统计“短视”的图长什么样？会不会呈现效果更符合“近年连创新高”",
+      "para_index": 11,
+      "status": "pending"
+    },
+    {
+      "id": "todo-24",
+      "comment_id": "24",
+      "text": "[Microsoft Office User] 既然都最初了，这半句的引用是不是应该放上英文世界比较早的权威研究？",
+      "para_index": -1,
+      "status": "pending"
+    },
+    {
+      "id": "todo-25",
+      "comment_id": "25",
+      "text": "[Microsoft Office User] 怎么还有行为科学和其他学科并列？我上一轮白提了？",
+      "para_index": -1,
+      "status": "pending"
+    },
+    {
+      "id": "todo-26",
+      "comment_id": "26",
+      "text": "[Microsoft Office User] 拿google ngram viewer搜了一下policy myopia，可以考虑把那个图从1940-2020年代放这里https://books.google.com/ngrams/",
+      "para_index": 15,
+      "status": "pending"
+    },
+    {
+      "id": "todo-27",
+      "comment_id": "27",
+      "text": "[Microsoft Office User] 确定只跟宏观有关？",
+      "para_index": -1,
+      "status": "pending"
+    },
+    {
+      "id": "todo-28",
+      "comment_id": "28",
+      "text": "[Microsoft Office User] 和这个有什么关系",
+      "para_index": -1,
+      "status": "pending"
+    },
+    {
+      "id": "todo-29",
+      "comment_id": "29",
+      "text": "[Microsoft Office User] 看这句话以为这篇是个里程碑研究，结果只被引了2次？所以这部分的话都是凭感觉写的？我之前没有细看是默认你做的扎实，现在我只要细读就发现问题，以后发表出来更麻烦。",
+      "para_index": -1,
+      "status": "pending"
+    },
+    {
+      "id": "todo-30",
+      "comment_id": "30",
+      "text": "[Microsoft Office User] 到底要不要首字母大写？全文统一",
+      "para_index": -1,
+      "status": "pending"
+    },
+    {
+      "id": "todo-32",
+      "comment_id": "32",
+      "text": "[Microsoft Office User] 说的是短期主义政策还是短期政策？当说短期主义的时候就已经带有贬义，直接把短期主义政策说成是政策短视的后果不就行了。真正接近的概念是policy short-termism即政策短期主义或者短期主义政策倾向，我的PPMR文章用的就是这个表达，结果你没讨论。",
+      "para_index": 20,
+      "status": "pending"
+    },
+    {
+      "id": "todo-33",
+      "comment_id": "33",
+      "text": "[狄桉] 这里补充说明了短期主义政策与政策短视的关系",
+      "para_index": 20,
+      "status": "pending"
+    },
+    {
+      "id": "todo-31",
+      "comment_id": "31",
+      "text": "[Microsoft Office User] 先讲国际上类似的概念，再开一段讲中文世界类似的概念。别混",
+      "para_index": 20,
+      "status": "pending"
+    },
+    {
+      "id": "todo-34",
+      "comment_id": "34",
+      "text": "[Microsoft Office User] ",
+      "para_index": 21,
+      "status": "pending"
+    },
+    {
+      "id": "todo-38",
+      "comment_id": "38",
+      "text": "[Microsoft Office User] 表呈现的不清楚，删了。",
+      "para_index": 22,
+      "status": "pending"
+    },
+    {
+      "id": "todo-145",
+      "comment_id": "145",
+      "text": "[狄桉] 表格调整",
+      "para_index": 23,
+      "status": "pending"
+    },
+    {
+      "id": "todo-147",
+      "comment_id": "147",
+      "text": "[Microsoft Office User] Mani, Anandi, Sendhil Mullainathan, Eldar Shafir, and Jiaying Zhao. \"Poverty impedes cognitive function.\" science 341, no. 6149 (2013): 976-980.Mullainathan, Sendhil, and Eldar Shafir. Scarcity: Why having too little means so much. Macmillan, 2013.贫穷让人短视",
+      "para_index": 33,
+      "status": "pending"
+    },
+    {
+      "id": "todo-148",
+      "comment_id": "148",
+      "text": "[狄桉] 删掉了不准确的表述，简单表达",
+      "para_index": 34,
+      "status": "pending"
+    },
+    {
+      "id": "todo-154",
+      "comment_id": "154",
+      "text": "[狄桉] 将原有（四）反馈强化与短期化锁定的内容 融合在在部分的总结讨论当中，有助于呈现现有研究对于政策短视影响的思考，也不会与其他三个二级标题逻辑脱节",
+      "para_index": 44,
+      "status": "pending"
+    },
+    {
+      "id": "todo-159",
+      "comment_id": "159",
+      "text": "[狄桉] 根据“基于证据的政策短视治理”的新标题，修改了几个二级标题，强化与前文内容的逻辑关联，表意更简洁",
+      "para_index": 48,
+      "status": "pending"
+    },
+    {
+      "id": "todo-158",
+      "comment_id": "158",
+      "text": "[Microsoft Office User] 你下面说的都是延长考核周期，不是延长链条。不要那么说，也可以改成 淡化短期考核",
+      "para_index": 48,
+      "status": "pending"
+    },
+    {
+      "id": "todo-160",
+      "comment_id": "160",
+      "text": "[Microsoft Office User] 和上一条的区别？",
+      "para_index": 50,
+      "status": "pending"
+    },
+    {
+      "id": "todo-161",
+      "comment_id": "161",
+      "text": "[Microsoft Office User] 和前面顺序对应的话，这是不是应该第一条？",
+      "para_index": -1,
+      "status": "pending"
+    },
+    {
+      "id": "todo-162",
+      "comment_id": "162",
+      "text": "[狄桉] 总起段明确了这部分内容的逻辑，在每一点内展开论述的时候适当加入参考文献",
+      "para_index": 55,
+      "status": "pending"
+    },
+    {
+      "id": "todo-163",
+      "comment_id": "163",
+      "text": "[Microsoft Office User] 到底是时间视野的研究还是政策短视的研究？我觉得段首句还是得和标题一对待，具体内容可以再说政策视野这个中性词。但也别用得太显眼，你都没定义过这个概念。",
+      "para_index": 57,
+      "status": "pending"
+    },
+    {
+      "id": "todo-165",
+      "comment_id": "165",
+      "text": "[狄桉] 结论延续第六部分结尾的内容，稍作总结探讨，没有重复论述本文的内容    也在纠结是否需要删掉这里  暂时保留了这个简短版本",
+      "para_index": 61,
+      "status": "pending"
+    },
+    {
+      "id": "todo-164",
+      "comment_id": "164",
+      "text": "[Microsoft Office User] 当然要结论部分，拿不定怎么写、和前面有什么区别，可以参考别人怎么写。",
+      "para_index": 61,
+      "status": "pending"
+    },
+    {
+      "id": "todo-166",
+      "comment_id": "166",
+      "text": "[狄桉] 按照期刊要求重新排版校对了文末参考文献格式",
+      "para_index": 65,
+      "status": "pending"
+    }
+  ]
+}

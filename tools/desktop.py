@@ -18,9 +18,9 @@ sys.path.insert(0, HERE)
 import app as appmod
 import wiki_core as core
 
-from PySide6.QtCore import QUrl, Qt
+from PySide6.QtCore import QUrl, Qt, QObject, Slot, QMetaObject
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QApplication, QMainWindow
+from PySide6.QtWidgets import QApplication, QMainWindow, QFileDialog
 from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineSettings
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
@@ -84,6 +84,30 @@ def MakeWebPage(oview):
     return opage
 
 
+class FolderPickerBridge(QObject):
+    """主线程文件夹对话框（供 PickFolderNative 备用）。"""
+
+    def __init__(self, owin):
+        super().__init__()
+        self._owin = owin
+
+    @Slot(result=str)
+    def PickFolder(self):
+        return QFileDialog.getExistingDirectory(self._owin, "选择导出文件夹") or ""
+
+
+def PickFolderBlocking(opicker):
+    from PySide6.QtCore import Q_RETURN_ARG
+    spath = ""
+    QMetaObject.invokeMethod(
+        opicker,
+        "PickFolder",
+        Qt.BlockingQueuedConnection,
+        Q_RETURN_ARG(str, spath),
+    )
+    return spath or ""
+
+
 class MainWindow(QMainWindow):
     def __init__(self, nurl):
         super().__init__()
@@ -116,6 +140,8 @@ def Main():
             break
 
     owin = MainWindow(nurl)
+    opicker = FolderPickerBridge(owin)
+    appmod.desktop_pick_folder = lambda: PickFolderBlocking(opicker)
     owin.show()
     sys.exit(oapp.exec())
 
