@@ -1,0 +1,2 @@
+# 仅打包发布时需要（开发/运行用 requirements.txt 即可）
+pyinstaller>=6.6.0

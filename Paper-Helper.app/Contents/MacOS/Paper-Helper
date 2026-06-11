@@ -1,0 +1,47 @@
+#!/bin/bash
+# Finder 启动 .app 时 PATH 极窄，必须手动补全并优先选用已装 PySide6 的 Python
+ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+cd "$ROOT" || exit 1
+export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.pyenv/shims:$HOME/.local/bin:/usr/bin:/bin:$PATH"
+CONFIG_DIR="$ROOT/.paper-helper"
+CACHE="$CONFIG_DIR/python.path"
+mkdir -p "$CONFIG_DIR"
+
+TestPy() {
+  [ -n "$1" ] && [ -x "$1" ] && "$1" -c "import PySide6" 2>/dev/null
+}
+
+FindPy() {
+  local c
+  if [ -f "$CACHE" ]; then
+    c=$(tr -d '\r\n' < "$CACHE")
+    if TestPy "$c"; then echo "$c"; return 0; fi
+  fi
+  for c in \
+    "${PAPER_HELPER_PYTHON:-}" \
+    "/opt/homebrew/bin/python3" \
+    "/usr/local/bin/python3" \
+    "$HOME/.pyenv/shims/python3" \
+    "$(command -v python3 2>/dev/null)" \
+    "/Library/Frameworks/Python.framework/Versions/Current/bin/python3" \
+    "/usr/bin/python3" \
+    "$(command -v python 2>/dev/null)"; do
+    if TestPy "$c"; then echo "$c" > "$CACHE"; echo "$c"; return 0; fi
+  done
+  for c in \
+    "/opt/homebrew/bin/python3" \
+    "/usr/local/bin/python3" \
+    "$(command -v python3 2>/dev/null)" \
+    "/usr/bin/python3"; do
+    [ -n "$c" ] && [ -x "$c" ] && "$c" --version >/dev/null 2>&1 && echo "$c" && return 0
+  done
+  return 1
+}
+
+PY=$(FindPy)
+if [ -z "$PY" ]; then
+  osascript -e 'display alert "未找到 Python" message "请先安装 Python 3（https://www.python.org/downloads/）" as stop'
+  exit 1
+fi
+export PAPER_HELPER_GUI=1
+exec "$PY" tools/entry.py
