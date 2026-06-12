@@ -17,6 +17,7 @@ sys.path.insert(0, HERE)
 
 import app as appmod
 import wiki_core as core
+import single_instance as si
 
 from PySide6.QtCore import QUrl, Qt, QObject, Slot, QMetaObject
 from PySide6.QtGui import QIcon
@@ -120,6 +121,16 @@ class MainWindow(QMainWindow):
         oview.load(QUrl(nurl))
         self.setCentralWidget(oview)
 
+    @Slot()
+    def ActivateWindow(self):
+        """被第二次启动的实例唤醒：把窗口从最小化/后台提到前台。"""
+        if self.isMinimized():
+            self.showNormal()
+        else:
+            self.show()
+        self.raise_()
+        self.activateWindow()
+
 
 def Main():
     nport = FindFreePort(appmod.port)
@@ -131,10 +142,16 @@ def Main():
     oapp.setApplicationName("Paper-Helper")
     oapp.setQuitOnLastWindowClosed(True)
 
-    for sicon in (
+    viconpaths = []
+    if getattr(sys, "frozen", False):
+        nbase = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+        viconpaths.append(os.path.join(nbase, "assets", "icon.icns"))
+        viconpaths.append(os.path.join(nbase, "assets", "icon.png"))
+    viconpaths.extend([
         os.path.join(core.rootdir, "assets", "icon.icns"),
         os.path.join(core.rootdir, "assets", "icon.png"),
-    ):
+    ])
+    for sicon in viconpaths:
         if os.path.isfile(sicon):
             oapp.setWindowIcon(QIcon(sicon))
             break
@@ -142,6 +159,12 @@ def Main():
     owin = MainWindow(nurl)
     opicker = FolderPickerBridge(owin)
     appmod.desktop_pick_folder = lambda: PickFolderBlocking(opicker)
+
+    # 第二个实例请求唤醒时，跨线程安全地把窗口提到前台
+    def RequestActivate():
+        QMetaObject.invokeMethod(owin, "ActivateWindow", Qt.QueuedConnection)
+
+    si.SetActivateCallback(RequestActivate)
     owin.show()
     sys.exit(oapp.exec())
 

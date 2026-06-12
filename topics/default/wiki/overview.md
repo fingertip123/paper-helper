@@ -1,7 +1,7 @@
 ---
 type: overview
 title: 全局概要
-updated: 2026-06-11
+updated: 2026-06-12
 ---
 
 # Overview · 全局概要

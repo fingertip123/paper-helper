@@ -66,12 +66,23 @@ paper-helper/
 python3 tools/build_site.py   # 生成 wiki-viewer.html
 ```
 
-## 打包
+## 打包分发（微信传给别人）
 
 ```bash
-pip install -r requirements-build.txt
-python build.py
+python3 build.py           # 独立版 + 源码版（推荐）
+python3 build.py --source  # 仅源码版（体积小，适合微信）
 ```
+
+产物在 `release/`：
+
+| 文件 | 说明 |
+|------|------|
+| `Paper-Helper-mac-*.zip` / `.dmg` | macOS 独立版，**无需 Python** |
+| `Paper-Helper-mac-source.zip` | macOS 源码版，首次启动自动装依赖 |
+| `Paper-Helper-win-*.zip` | Windows 独立版（需在 Windows 上打包） |
+| `Paper-Helper-win-source.zip` | Windows 源码版 |
+
+对方解压后阅读 `安装说明.txt` 即可。独立版约 200–400 MB；源码版约 5–15 MB。
 
 ## 致谢
 

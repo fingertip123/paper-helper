@@ -13,6 +13,7 @@ import os
 import re
 import sys
 import json
+import time
 import base64
 import threading
 import subprocess
@@ -163,10 +164,49 @@ def ExtractPaperText(nfullpath):
     return extract_text(nfullpath) or ""
 
 
+_sslcontext = None
+
+
+def SslContext():
+    """构造 HTTPS 验证上下文：优先用 certifi 的 CA 包（打包环境必备）。"""
+    global _sslcontext
+    if _sslcontext is not None:
+        return _sslcontext
+    import ssl
+    try:
+        import certifi
+        _sslcontext = ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        _sslcontext = ssl.create_default_context()
+    return _sslcontext
+
+
+# 部分免费端点（Pollinations 等）由 Cloudflare 防护，会拦截 Python 默认 UA（403/1010），
+# 必须伪装成浏览器 UA 才能访问；这是免注册模型「分析失败」的根因。
+browserua = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+             "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+
+
+def _RetryAfterSeconds(oerr, ndefault):
+    """从 429 响应的 Retry-After 头解析等待秒数，缺失则用默认值。"""
+    try:
+        sval = oerr.headers.get("Retry-After")
+        if sval and sval.strip().isdigit():
+            return min(int(sval.strip()), 60)
+    except Exception:
+        pass
+    return ndefault
+
+
 def CallLlm(oconfig, vmessages, bjson=True):
-    """调用 OpenAI 兼容的 chat/completions 接口，返回助手文本。"""
+    """调用 OpenAI 兼容的 chat/completions 接口，返回助手文本。
+
+    免注册端点（无 Key）受 Cloudflare 防护且限流严格，这里统一带浏览器 UA，
+    并对 429（限流）/5xx 做退避重试，让只填选题名也能用免费模型稳定分析。
+    """
     url = oconfig["base_url"].rstrip("/") + "/chat/completions"
     nbaseurl = oconfig.get("base_url") or ""
+    bnoauth = not oconfig.get("api_key")  # 无 Key 即免注册端点，限流更重
     payload = {
         "model": oconfig.get("model") or "gpt-4o-mini",
         "messages": vmessages,
@@ -175,19 +215,43 @@ def CallLlm(oconfig, vmessages, bjson=True):
     if bjson and "pollinations.ai" not in nbaseurl:
         payload["response_format"] = {"type": "json_object"}
     data = json.dumps(payload).encode("utf-8")
-    oheaders = {"Content-Type": "application/json"}
+    oheaders = {"Content-Type": "application/json", "User-Agent": browserua}
     if oconfig.get("api_key"):  # 免注册端点可无 Key，无 Key 时不发 Authorization
         oheaders["Authorization"] = "Bearer " + oconfig["api_key"]
     req = urllib.request.Request(url, data=data, method="POST", headers=oheaders)
-    try:
-        with urllib.request.urlopen(req, timeout=300) as resp:
-            obj = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        ndetail = e.read().decode("utf-8", "ignore")[:300]
-        raise RuntimeError("接口返回 %s：%s" % (e.code, ndetail))
-    if not obj.get("choices"):  # 免注册端点限流/异常时常返回无 choices 的对象
-        raise RuntimeError("接口未返回有效结果：" + json.dumps(obj, ensure_ascii=False)[:300])
-    return obj["choices"][0]["message"]["content"]
+
+    nmaxtry = 6 if bnoauth else 2
+    slasterr = ""
+    for ntry in range(nmaxtry):
+        try:
+            with urllib.request.urlopen(req, timeout=300, context=SslContext()) as resp:
+                obj = json.loads(resp.read().decode("utf-8"))
+            if not obj.get("choices"):  # 限流/异常时常返回无 choices 的对象
+                raise RuntimeError("接口未返回有效结果：" + json.dumps(obj, ensure_ascii=False)[:200])
+            return obj["choices"][0]["message"]["content"]
+        except urllib.error.HTTPError as e:
+            sdetail = e.read().decode("utf-8", "ignore")[:300]
+            if e.code in (429, 503) and ntry < nmaxtry - 1:
+                # 免注册匿名约 15 秒一次，等待后重试
+                time.sleep(_RetryAfterSeconds(e, 16 if bnoauth else 4))
+                continue
+            if e.code in (500, 502, 504) and ntry < nmaxtry - 1:
+                time.sleep(3)
+                continue
+            if e.code == 429:
+                raise RuntimeError("免费接口繁忙(限流)。请等待约 15 秒后重试，"
+                                   "或在「设置」中改用带 Key 的免费模型（更稳定）。")
+            if e.code in (401, 403):
+                raise RuntimeError("接口拒绝访问(%s)。该免费端点可能已变更或需要 Key，"
+                                   "建议在「设置」中改用带 Key 的免费模型。" % e.code)
+            raise RuntimeError("接口返回 %s：%s" % (e.code, sdetail))
+        except urllib.error.URLError as e:
+            slasterr = str(getattr(e, "reason", e))
+            if ntry < nmaxtry - 1:
+                time.sleep(3)
+                continue
+            raise RuntimeError("网络连接失败：%s" % slasterr)
+    raise RuntimeError(slasterr or "调用失败")
 
 
 def ParseLlmJson(ntext):
@@ -271,29 +335,42 @@ def IngestOne(oconfig, nfilename):
 
 
 def RunIngestJob(oconfig, vtargets):
-    """后台线程：逐篇摄入并实时更新 ingestjob 进度。"""
+    """后台线程：逐篇摄入并实时更新 ingestjob 进度。
+
+    收尾逻辑放在 finally，保证无论中途发生何种异常，running 都会被置为 False，
+    避免打包（无终端/证书等差异）环境下线程半途崩溃导致前端「一直转圈」。
+    """
     global ingestjob
-    for fn in vtargets:
-        with ingestlock:
-            if ingestjob.get("cancelled"):
-                break
-            ingestjob["current"] = fn
-        try:
-            IngestOne(oconfig, fn)
+    try:
+        for fn in vtargets:
             with ingestlock:
-                ingestjob["ingested"].append(fn)
+                if ingestjob.get("cancelled"):
+                    break
+                ingestjob["current"] = fn
+            try:
+                IngestOne(oconfig, fn)
+                with ingestlock:
+                    ingestjob["ingested"].append(fn)
+            except Exception as e:
+                with ingestlock:
+                    ingestjob["failed"].append({"file": fn, "error": str(e)})
+            with ingestlock:
+                ingestjob["done"] += 1
+        try:
+            core.GenerateIndex()
         except Exception as e:
             with ingestlock:
-                ingestjob["failed"].append({"file": fn, "error": str(e)})
+                ingestjob["failed"].append({"file": "(刷新索引)", "error": str(e)})
+    except Exception as e:
         with ingestlock:
-            ingestjob["done"] += 1
-    core.GenerateIndex()
-    with ingestlock:
-        ingestjob["running"] = False
-        ingestjob["finished"] = True
-        ingestjob["current"] = ""
-        if ingestjob.get("cancelled"):
-            ingestjob["failed"].append({"file": "(已取消)", "error": "用户取消剩余任务"})
+            ingestjob["failed"].append({"file": "(任务异常)", "error": str(e)})
+    finally:
+        with ingestlock:
+            ingestjob["running"] = False
+            ingestjob["finished"] = True
+            ingestjob["current"] = ""
+            if ingestjob.get("cancelled"):
+                ingestjob["failed"].append({"file": "(已取消)", "error": "用户取消剩余任务"})
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -715,7 +792,7 @@ class Handler(BaseHTTPRequestHandler):
         body = self._body()
         doced.Init(topics.GetTopicDir())
         result = doced.SaveRevision(body.get("id", ""), body.get("message", ""))
-        core.AppendLog("[doc] 提交 %s：%s" % (body.get("id"), result.get("message")))
+        core.AppendLog("[doc] 保存版本 %s：%s" % (body.get("id"), result.get("message")))
         return self._send(200, result)
 
     def _docsrestore(self):
@@ -729,14 +806,14 @@ class Handler(BaseHTTPRequestHandler):
         body = self._body()
         doced.Init(topics.GetTopicDir())
         result = doced.RestoreWorkingCopy(body.get("id", ""))
-        core.AppendLog("[doc] 恢复工作区 %s" % body.get("id"))
+        core.AppendLog("[doc] 恢复文稿 %s" % body.get("id"))
         return self._send(200, result)
 
     def _docsdiscard(self):
         body = self._body()
         doced.Init(topics.GetTopicDir())
         result = doced.DiscardWorkingChanges(body.get("id", ""))
-        core.AppendLog("[doc] 丢弃未提交修改 %s" % body.get("id"))
+        core.AppendLog("[doc] 丢弃未保存的修改 %s" % body.get("id"))
         return self._send(200, result)
 
     def _docspickfolder(self):

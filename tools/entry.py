@@ -7,13 +7,14 @@
 """
 import os
 import sys
-import socket
 import subprocess
 import importlib.util
 
 rootdir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 toolsdir = os.path.join(rootdir, "tools")
-_locksock = None
+sys.path.insert(0, toolsdir)
+
+import single_instance as si  # noqa: E402
 
 vrequired = [
     ("PySide6", "PySide6"),
@@ -45,21 +46,21 @@ def IsGuiMode():
 
 
 def AcquireSingleInstance():
-    """防止重复启动导致程序坞空转；已有实例时提示并退出。"""
-    global _locksock
-    olock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        olock.bind(("127.0.0.1", 18765))
-        olock.listen(1)
-        _locksock = olock
+    """单实例锁：健康实例会被唤醒到前台；崩溃残留的僵尸进程会被自动清理后接管。"""
+    nresult = si.Acquire()
+    if nresult is True:
         return True
-    except OSError:
-        olock.close()
-        NativeAlert(
-            "Paper-Helper",
-            "应用已在运行中。\n\n如看不到窗口，请先在程序坞右键退出，再重新打开。",
-        )
+    if nresult is False:
+        # 已有健康实例并已被唤醒到前台，本进程安静退出
         return False
+    NativeAlert(
+        "Paper-Helper",
+        "应用可能已在运行，但无法唤醒窗口。\n\n"
+        "请在任务管理器（Windows）或活动监视器（macOS）中\n"
+        "结束所有 python / pythonw 进程后，重新启动。",
+        "caution",
+    )
+    return False
 
 
 def SavePythonPath():
@@ -213,12 +214,37 @@ def RunDesktop():
     desktop.Main()
 
 
+def IsFrozen():
+    return getattr(sys, "frozen", False)
+
+
+def SetupFrozenRuntime():
+    """打包环境运行前的修复：确保 HTTPS 证书可用。
+
+    打包后 stdlib ssl 默认 CA 路径指向构建机，目标机往往不存在，
+    会导致调用大模型 API 时 urlopen 抛证书错误。这里优先用 certifi 的
+    CA 包，让分析功能在任意机器上都能正常联网。
+    """
+    try:
+        import certifi
+        scacert = certifi.where()
+        os.environ.setdefault("SSL_CERT_FILE", scacert)
+        os.environ.setdefault("REQUESTS_CA_BUNDLE", scacert)
+    except Exception:
+        pass
+
+
 def Main():
     if not AcquireSingleInstance():
         sys.exit(0)
 
-    if IsGuiMode():
+    if IsGuiMode() or IsFrozen():
         SetupGuiLogging()
+
+    if IsFrozen():
+        SetupFrozenRuntime()
+        RunDesktop()
+        return
 
     vmissing = MissingPackages()
     if not vmissing:

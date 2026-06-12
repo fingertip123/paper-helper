@@ -735,9 +735,9 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   <section id="listview" class="view"></section>
   <section id="docview" class="view">
     <div class="docbar">
-      <button class="btn" onclick="ImportDocx()">🌸 导入 docx</button>
+      <button class="btn" onclick="ImportDocx()">🌸 导入 Word</button>
       <button class="btn sec" onclick="ExtractDocComments()">💌 抓取批注</button>
-      <button class="btn sec" onclick="OpenDocCommit()">🎀 提交版本</button>
+      <button class="btn sec" onclick="OpenDocCommit()">🎀 保存版本</button>
       <button class="btn sec" onclick="OpenDocHistory()">🕯 版本历史</button>
       <button class="btn sec" onclick="OpenDocExport()">🎁 导出文档</button>
       <span id="doc_git_status" class="docgitstatus"></span>
@@ -748,7 +748,7 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
     <div class="doclayout">
       <aside class="doclist" id="doclist"></aside>
       <div class="docpreview-wrap" id="docpreview_wrap">
-        <div class="docempty" id="doc_empty_overlay">暂无文档<br>点击「导入 docx」开始编辑</div>
+        <div class="docempty" id="doc_empty_overlay">暂无文档<br>点击「导入 Word」开始编辑</div>
         <iframe id="doc_frame" class="docframe" title="文档编辑"></iframe>
       </div>
       <aside class="docpanel">
@@ -757,7 +757,7 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
             <div>批注列表</div>
             <span id="doc_progress" class="docprogress"></span>
           </div>
-          <div class="docpanel-tip">① 选中文字后用顶栏设置字体/字号/颜色/加粗等 ② 失焦自动保存 ③「提交」= git commit ④「历史」查看差异/回退</div>
+          <div class="docpanel-tip">① 选中文字后用顶栏设置字体/字号/颜色/加粗等 ② 离开输入框自动保存 ③「保存版本」把当前修改存为一个可回看的版本 ④「历史」查看每次改动、可回退到旧版本</div>
         </div>
         <div class="docpanel-body" id="docpanel_list"></div>
       </aside>
@@ -767,44 +767,44 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   <div id="pdfmodal"><div class="bar"><span class="name" id="pdfname"></span><a class="btn ghost" id="pdfnewtab" target="_blank">在新标签打开 ↗</a><span class="x" onclick="ClosePdf()">×</span></div><iframe id="pdfframe"></iframe></div>
   <div id="doccommitmodal" class="ph-modal"><div class="setbox setbox-flex" style="width:min(640px,94vw)">
     <div class="setbox-head">
-      <h2>🎀 提交修改</h2>
-      <p class="note">将当前修改固化为一个版本快照（含批注勾选状态），如同 git commit。快捷键 ⌘/Ctrl+S</p>
+      <h2>🎀 保存版本</h2>
+      <p class="note">把当前修改保存为一个版本（含批注勾选状态），方便日后查看与回退。快捷键 ⌘/Ctrl+S</p>
     </div>
     <div class="setbox-body">
-      <label>Commit 说明 <span class="meta">（必填）</span></label>
+      <label>本次修改说明 <span class="meta">（必填）</span></label>
       <textarea id="doc_commit_msg" rows="3" placeholder="例如：根据外审意见修改引言与结论" style="width:100%;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--panel2);color:var(--text);font-family:inherit;box-sizing:border-box"></textarea>
-      <label style="margin-top:12px">待提交变更预览</label>
+      <label style="margin-top:12px">本次改动预览</label>
       <div id="doc_commit_diff" class="revdiff" style="max-height:220px;border:1px solid var(--border);border-radius:8px"></div>
     </div>
     <div class="setbox-foot">
-      <button class="btn ghost" onclick="DiscardWorkingChanges()">丢弃未提交修改</button>
+      <button class="btn ghost" onclick="DiscardWorkingChanges()">丢弃未保存的修改</button>
       <button class="btn ghost" onclick="CloseDocCommit()">取消</button>
-      <button class="btn" id="doc_commit_btn" onclick="ConfirmDocCommit()">提交</button>
+      <button class="btn" id="doc_commit_btn" onclick="ConfirmDocCommit()">保存版本</button>
     </div>
   </div></div>
   <div id="dochistorymodal" class="ph-modal"><div class="setbox setbox-flex">
     <div class="setbox-head">
       <h2>🕯 版本历史</h2>
-      <p class="note">左侧浏览每次提交记录，右侧查看变更细节，支持与 HEAD、工作区或原始版对比。</p>
+      <p class="note">左侧浏览每次保存的版本，右侧查看改动细节，可与最新版本、当前文稿或最初导入版本对比。</p>
     </div>
     <div class="setbox-body" style="padding:0">
       <div class="revlayout">
         <div class="revlist" id="doc_rev_list"></div>
         <div class="revdiffwrap">
           <div class="revdiff-loading" id="doc_rev_loading">加载中…</div>
-          <div class="revdiff" id="doc_rev_diff"><div class="meta">请选择一条提交记录</div></div>
+          <div class="revdiff" id="doc_rev_diff"><div class="meta">请选择一个版本</div></div>
         </div>
       </div>
     </div>
     <div class="setbox-foot" style="flex-wrap:wrap;gap:8px">
       <select id="doc_compare_base" onchange="ReloadRevisionDiff()" style="padding:6px 10px;border-radius:8px;background:var(--panel2);border:1px solid var(--border);color:var(--text);font-size:12px">
         <option value="parent">相对上一版</option>
-        <option value="WORKING">相对当前工作区</option>
-        <option value="HEAD">相对 HEAD</option>
-        <option value="original">相对原始导入</option>
+        <option value="WORKING">相对当前文稿</option>
+        <option value="HEAD">相对最新版本</option>
+        <option value="original">相对最初导入</option>
       </select>
       <button class="btn ghost" onclick="ReloadRevisionDiff()">刷新对比</button>
-      <button class="btn ghost" onclick="DiscardWorkingChanges(true)">丢弃未提交修改</button>
+      <button class="btn ghost" onclick="DiscardWorkingChanges(true)">丢弃未保存的修改</button>
       <button class="btn ghost" id="doc_restore_working_btn" style="visibility:hidden;pointer-events:none" onclick="RestoreWorkingCopy()">↩ 返回当前修改</button>
       <button class="btn ghost" id="doc_restore_rev_btn" style="visibility:hidden;pointer-events:none" onclick="RestoreSelectedRevision()">恢复此版本</button>
       <button class="btn ghost" onclick="CloseDocHistory()">关闭</button>
@@ -1425,7 +1425,7 @@ async function Api(path,body){
   return r.json();
 }
 async function Refresh(silent){
-  if(!SERVERMODE){if(!silent)Toast("静态页面：请重跑 build_site.py 刷新");return}
+  if(!SERVERMODE){if(!silent)Toast("当前为离线只读页面，请在应用中操作以刷新");return}
   try{DATA=await Api("/api/data");RenderAll();if(!silent)Toast("已刷新")}catch(e){Toast("刷新失败："+e.message)}
 }
 function AddPaper(){if(NeedServer())return;document.getElementById("fileinput").click()}
@@ -1470,18 +1470,18 @@ async function SubmitQuery(){
     if(r.status==="need_key"){Toast("请先配置 API Key");OpenSettings();return}
     const box=document.getElementById("query_result");
     box.style.display="block";box.textContent=r.answer||"";
-    if(r.saved)Toast("已保存至 wiki/queries/"+r.saved.id);
+    if(r.saved)Toast("已保存到「问答」记录");
     await Refresh(true);
   }catch(e){HideOverlay();Toast("查询失败："+e.message)}
 }
 function CloseLint(){document.getElementById("lintmodal").classList.remove("open")}
 function RenderLintReport(r){
   let h="<ul>";
-  h+="<li>孤立页面："+(r.orphans?r.orphans.length:0);
+  h+="<li>无链接的孤立页面："+(r.orphans?r.orphans.length:0);
   if(r.orphans&&r.orphans.length)h+=" — "+r.orphans.slice(0,8).map(x=>Esc(x.id)).join(", ");
-  h+="</li><li>死链："+(r.dead_links?r.dead_links.length:0);
+  h+="</li><li>失效链接："+(r.dead_links?r.dead_links.length:0);
   if(r.dead_links&&r.dead_links.length)h+="<br>"+r.dead_links.slice(0,6).map(x=>Esc(x.page)+"→"+Esc(x.link)).join("<br>");
-  h+="</li><li>frontmatter 问题："+(r.frontmatter_issues?r.frontmatter_issues.length:0)+"</li>";
+  h+="</li><li>页面信息（标题/标签等）缺失："+(r.frontmatter_issues?r.frontmatter_issues.length:0)+"</li>";
   h+="<li>知识空白："+(r.knowledge_gaps?r.knowledge_gaps.length:0)+"</li></ul>";
   document.getElementById("lint_body").innerHTML=h;
 }
@@ -1508,7 +1508,7 @@ async function SnapshotTopic(){
 async function DeletePaper(rawfile){
   if(NeedServer())return;
   if(!confirm("确定删除该文献？\n"+rawfile))return;
-  const bcascade=confirm("是否同时删除关联知识页？\n\n确定 = 删除 sources 含该文献的页面\n取消 = 仅删 PDF 与 source 摘要页");
+  const bcascade=confirm("是否同时删除关联的知识页？\n\n确定 = 一并删除引用了该文献的知识页\n取消 = 只删原文件与这篇文献的摘要页");
   ShowOverlay("正在删除…");
   try{const r=await Api("/api/delete",{rawfile,cascade:bcascade});await Refresh(true);HideOverlay();Toast("已删除 "+(r.removed?r.removed.length:0)+" 项")}
   catch(e){HideOverlay();Toast("删除失败："+e.message)}
@@ -1564,7 +1564,7 @@ function FinishProgress(p){
 /* ---------- 设置 ---------- */
 /* 内置免费模型预设：均为 OpenAI 兼容接口，模型本身免费，Key 需自行免费申请 */
 const PRESETS=[
-  {name:"⚡ Pollinations（免注册·直接可用）",base_url:"https://text.pollinations.ai/openai",model:"openai",noauth:true,hint:"公共代理端点，无需注册/无需 Key。但有较强限流、且为开源推理模型，可能不稳定或分析失败；正式使用建议改用下方带 Key 的免费模型（注册约 1 分钟）。"},
+  {name:"⚡ Pollinations（免注册·直接可用）",base_url:"https://text.pollinations.ai/openai",model:"openai",noauth:true,hint:"公共端点，无需注册/无需 Key，只填选题名即可分析。匿名约每 15 秒 1 次请求，遇繁忙会自动等待重试；若多次提示「限流/繁忙」，请稍后再试，或改用下方带 Key 的免费模型（更稳定，注册约 1 分钟）。"},
   {name:"OpenRouter · DeepSeek V3（免费）",base_url:"https://openrouter.ai/api/v1",model:"deepseek/deepseek-chat-v3-0324:free",hint:"免费注册获取 Key（sk-or-...）",reg_url:"https://openrouter.ai/keys"},
   {name:"OpenRouter · Gemini 2.0 Flash（免费）",base_url:"https://openrouter.ai/api/v1",model:"google/gemini-2.0-flash-exp:free",hint:"免费注册获取 Key（sk-or-...）",reg_url:"https://openrouter.ai/keys"},
   {name:"OpenRouter · Llama 3.3 70B（免费）",base_url:"https://openrouter.ai/api/v1",model:"meta-llama/llama-3.3-70b-instruct:free",hint:"免费注册获取 Key（sk-or-...）",reg_url:"https://openrouter.ai/keys"},
@@ -1611,7 +1611,7 @@ async function SaveSettings(){
 
 /* ---------- 文档编辑 ---------- */
 let CURRENT_DOC="",DOC_DETAIL=null,SELECTED_COMMENT=null,SELECTED_PARA=-1,DOC_MSG_BOUND=false,DOC_SELECTED_REV=null,DOC_REV_CACHE=null,DOC_SWITCH_GEN=0;
-const DOC_NEED_MSGS={commit:"请先导入 docx 并选择文档，再提交版本",history:"请先导入 docx 并选择文档，再查看版本历史",export:"请先导入 docx 并选择文档，再导出",extract:"请先导入 docx 并选择文档，再抓取批注"};
+const DOC_NEED_MSGS={commit:"请先导入 Word 文档并选择，再保存版本",history:"请先导入 Word 文档并选择，再查看版本历史",export:"请先导入 Word 文档并选择，再导出",extract:"请先导入 Word 文档并选择，再抓取批注"};
 function ShowDocHint(smsg,nms){
   const el=document.getElementById("doc_hint_bar");
   if(!el)return;
@@ -1699,10 +1699,10 @@ function BindDocMessages(){
 function RenderDocListSidebar(vdocs){
   const list=document.getElementById("doclist");
   list.innerHTML=(vdocs||[]).map(d=>{
-    const sdirty=d.is_dirty?'<span class="docdirtydot" title="有未提交修改"></span>':'';
-    const scmt=d.commit_count?` · ${d.commit_count}提交`:"";
+    const sdirty=d.is_dirty?'<span class="docdirtydot" title="有未保存的修改"></span>':'';
+    const scmt=d.commit_count?` · ${d.commit_count}个版本`:"";
     return `<div class="docitem${d.id===CURRENT_DOC?" active":""}" data-id="${Attr(d.id)}" onclick="SelectDoc('${Attr(d.id)}')"><div class="dt">${sdirty}${Esc(d.title)}</div><div class="ds">Todo ${d.todo_done}/${d.todo_total}${scmt}</div><div class="progbar-mini"><i style="width:${d.progress||0}%"></i></div></div>`;
-  }).join("")||'<div class="meta">暂无文档，请导入 docx</div>';
+  }).join("")||'<div class="meta">暂无文档，请导入 Word</div>';
 }
 function RenderGitStatus(ws){
   const el=document.getElementById("doc_git_status");
@@ -1715,13 +1715,13 @@ function RenderGitStatus(ws){
   let shtml="";
   if(ws.is_dirty){
     el.className="docgitstatus dirty";
-    const sdirty=np<0?"● 未提交":`● ${np}段 / ${nt}批注 未提交`;
-    shtml=shash?`<span>HEAD <code>${Esc(shash.slice(0,8))}</code></span><span>${sdirty}</span>`:`<span>未提交</span><span>${sdirty}</span>`;
+    const sdirty=np<0?"● 未保存":`● ${np}段 / ${nt}批注 未保存`;
+    shtml=shash?`<span>最新版本 <code>${Esc(shash.slice(0,8))}</code></span><span>${sdirty}</span>`:`<span>未保存</span><span>${sdirty}</span>`;
   }else{
     el.className="docgitstatus clean";
-    shtml=shash?`<span>HEAD <code>${Esc(shash.slice(0,8))}</code></span><span>已与最新提交同步</span>`:(ws.commit_count?`<span>已同步</span>`:`<span>尚无提交</span><span>编辑后点「提交」</span>`);
+    shtml=shash?`<span>最新版本 <code>${Esc(shash.slice(0,8))}</code></span><span>已是最新版本</span>`:(ws.commit_count?`<span>已是最新版本</span>`:`<span>尚无版本</span><span>编辑后点「保存版本」</span>`);
   }
-  if(ws.has_working_stash)shtml+=`<span style="color:var(--accent)">· 已暂存工作区</span>`;
+  if(ws.has_working_stash)shtml+=`<span style="color:var(--accent)">· 有暂存的修改</span>`;
   el.innerHTML=shtml;
 }
 async function RefreshGitStatus(){
@@ -1755,11 +1755,11 @@ function RenderDiffBlocks(vpara,vtodos,otodomap,oheader){
 function RenderPendingDiff(ws){
   const box=document.getElementById("doc_commit_diff");
   if(!box)return;
-  if(!ws||!ws.is_dirty){box.innerHTML='<div class="meta">工作区相对 HEAD 无变更，无需提交</div>';return}
+  if(!ws||!ws.is_dirty){box.innerHTML='<div class="meta">当前文稿与最新版本一致，无需保存</div>';return}
   const otodomap={};
   (DOC_DETAIL&&DOC_DETAIL.todos||[]).forEach(t=>{if(t.comment_id)otodomap[t.comment_id]=t});
   const shash=ws.head&&ws.head.hash?ws.head.hash:"";
-  const sbase=ws.baseline==="original"?"原始导入":(shash?`HEAD ${shash.slice(0,8)}`:"HEAD");
+  const sbase=ws.baseline==="original"?"最初导入":(shash?`最新版本 ${shash.slice(0,8)}`:"最新版本");
   const oheader=`<div class="meta" style="margin-bottom:8px">相对 ${Esc(sbase)}：${ws.para_change_count||0} 段 / ${ws.todo_change_count||0} 批注</div>`;
   box.innerHTML=RenderDiffBlocks(ws.para_changes||[],ws.todo_changes||[],otodomap,oheader);
 }
@@ -1814,14 +1814,14 @@ function RenderDocPanel(d){
   box.innerHTML=vitems.map(t=>{
     const bc=t.status==="done";
     return `<div class="cmtitem${bc?" done":""}${SELECTED_COMMENT===t.comment_id?" active":""}" onclick="FocusComment('${Attr(t.comment_id)}',${t.para_index})"><div class="cmtrow"><input type="checkbox"${bc?" checked":""} title="勾选表示该批注已修改" onclick="event.stopPropagation();ToggleTodo('${Attr(t.id)}',this.checked)"><span class="cmttext">${Esc(t.text)}</span></div></div>`;
-  }).join("")||'<div class="meta">无批注。点「抓取批注」从 docx 提取。</div>';
+  }).join("")||'<div class="meta">无批注。点「抓取批注」从 Word 文档提取。</div>';
 }
 function UpdateDocStashHint(bhas){
   const el=document.getElementById("doc_stash_hint");
   if(!el)return;
   if(bhas){
     el.style.display="";
-    el.innerHTML='已切换历史版本 · <a onclick="RestoreWorkingCopy()">返回当前修改</a>';
+    el.innerHTML='正在查看历史版本 · <a onclick="RestoreWorkingCopy()">返回当前修改</a>';
   }else{el.style.display="none";el.innerHTML=""}
 }
 async function OpenDocCommit(){
@@ -1845,18 +1845,18 @@ function CloseDocCommit(){document.getElementById("doccommitmodal").classList.re
 async function ConfirmDocCommit(){
   if(NeedServer()||!CURRENT_DOC)return;
   const smsg=document.getElementById("doc_commit_msg").value.trim();
-  if(!smsg){Toast("请填写 commit 说明");return}
-  ShowOverlay("正在提交…");
+  if(!smsg){Toast("请填写本次修改说明");return}
+  ShowOverlay("正在保存…");
   try{
     const r=await Api("/api/docs/save",{id:CURRENT_DOC,message:smsg});
-    HideOverlay();CloseDocCommit();Toast("已提交 "+(r.hash||"").slice(0,8)+"："+r.time);await RefreshDocDetail();
-  }catch(e){HideOverlay();Toast("提交失败："+e.message)}
+    HideOverlay();CloseDocCommit();Toast("已保存版本 "+(r.hash||"").slice(0,8)+"："+r.time);await RefreshDocDetail();
+  }catch(e){HideOverlay();Toast("保存失败："+e.message)}
 }
 async function DiscardWorkingChanges(bfromHistory){
   if(NeedServer()||!CURRENT_DOC)return;
   const ws=(DOC_DETAIL&&DOC_DETAIL.working_status)||{};
-  if(!ws.is_dirty){Toast("当前无未提交修改");return}
-  if(!confirm("丢弃未提交修改？工作区将重置为 HEAD（无提交时恢复为原始导入）。此操作不可撤销。"))return;
+  if(!ws.is_dirty){Toast("当前没有未保存的修改");return}
+  if(!confirm("丢弃未保存的修改？文稿将回到最新版本（若还没有任何版本则恢复为最初导入）。此操作不可撤销。"))return;
   ShowOverlay("正在重置…");
   try{
     await Api("/api/docs/discard",{id:CURRENT_DOC});
@@ -1908,9 +1908,9 @@ function RenderRevList(vrevs){
   const box=document.getElementById("doc_rev_list");
   let shtml="";
   if(DOC_REV_CACHE&&DOC_REV_CACHE.is_dirty){
-    shtml+=`<div class="revpick${DOC_SELECTED_REV==="WORKING"?" active":""}" data-rev="WORKING" onclick="SelectWorkingDiff()"><div class="rm">● 未提交变更</div><div class="rs">工作区相对 HEAD</div></div>`;
+    shtml+=`<div class="revpick${DOC_SELECTED_REV==="WORKING"?" active":""}" data-rev="WORKING" onclick="SelectWorkingDiff()"><div class="rm">● 未保存的修改</div><div class="rs">当前文稿相对最新版本</div></div>`;
   }
-  if(!vrevs.length&&!shtml){box.innerHTML='<div class="meta" style="padding:12px">尚无提交记录</div>';return}
+  if(!vrevs.length&&!shtml){box.innerHTML='<div class="meta" style="padding:12px">尚无保存的版本</div>';return}
   shtml+=vrevs.map(r=>{
     const shash=(r.hash||r.id||"").slice(0,8);
     const sph=(r.parent_hash||(r.parent_id||"").slice(-8));
@@ -1993,7 +1993,7 @@ function RenderCompareDiff(d){
   (DOC_DETAIL&&DOC_DETAIL.todos||[]).forEach(t=>{if(t.comment_id)otodomap[t.comment_id]=t});
   const sha=String(d.hash_a||d.rev_a||"").slice(0,8);
   const shb=String(d.hash_b||d.rev_b||"").slice(0,8);
-  const slabel={WORKING:"工作区",HEAD:"HEAD",original:"原始导入"};
+  const slabel={WORKING:"当前文稿",HEAD:"最新版本",original:"最初导入"};
   const sb=slabel[d.rev_b]||shb;
   const sa=slabel[d.rev_a]||sha;
   const oheader=`<div style="margin-bottom:10px"><div class="meta"><code>${Esc(sa)}</code> 相对 <code>${Esc(sb)}</code>：${d.para_change_count||0} 段 / ${d.todo_change_count||0} 批注</div></div>`;
@@ -2001,7 +2001,7 @@ function RenderCompareDiff(d){
 }
 async function RestoreSelectedRevision(){
   if(!CURRENT_DOC||!DOC_SELECTED_REV)return;
-  if(!confirm("恢复此版本将替换当前文档与批注状态。恢复前的工作区修改可稍后用「返回当前修改」找回。继续？"))return;
+  if(!confirm("恢复此版本将替换当前文档与批注状态。恢复前当前文稿的修改可稍后用「返回当前修改」找回。继续？"))return;
   ShowOverlay("正在恢复版本…");
   try{
     await Api("/api/docs/restore",{id:CURRENT_DOC,rev:DOC_SELECTED_REV});
@@ -2010,10 +2010,10 @@ async function RestoreSelectedRevision(){
 }
 async function RestoreWorkingCopy(){
   if(!CURRENT_DOC)return;
-  ShowOverlay("正在恢复工作区…");
+  ShowOverlay("正在恢复文稿…");
   try{
     await Api("/api/docs/restore-working",{id:CURRENT_DOC});
-    HideOverlay();CloseDocHistory();Toast("已返回提交前的编辑状态");await RefreshDocDetail();
+    HideOverlay();CloseDocHistory();Toast("已返回保存前的编辑状态");await RefreshDocDetail();
   }catch(e){HideOverlay();Toast("恢复失败："+e.message)}
 }
 function FocusComment(scid,npara){

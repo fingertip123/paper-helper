@@ -1,5 +1,7 @@
 # 本地服务依赖（仅「分析」功能需要，用于提取 PDF 文本）
 pdfminer.six>=20221105
 python-docx>=1.1.0
+# HTTPS 证书包：打包后调用大模型 API 时确保证书校验可用
+certifi>=2024.2.2
 # 桌面独立窗口 UI（PySide6 + QWebEngine）
 PySide6>=6.6.0

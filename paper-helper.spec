@@ -2,8 +2,7 @@
 """PyInstaller 打包配置：把桌面窗口版打包为 .app（macOS）/ .exe（Windows）。
 
 用法：
-    pip install -r requirements.txt -r requirements-build.txt
-    pyinstaller --noconfirm paper-helper.spec
+    python build.py
 产物在 dist/ 下。
 """
 import os
@@ -13,18 +12,22 @@ from PyInstaller.utils.hooks import collect_all
 ROOT = os.path.abspath(os.getcwd())
 TOOLS = os.path.join(ROOT, "tools")
 ASSETS = os.path.join(ROOT, "assets")
+SEED = os.path.join(ROOT, "build", "seed")
 APPNAME = "Paper-Helper"
 
-# 内置初始内容：首次运行时由 wiki_core.ResolveRootDir 播种到 ~/PaperHelper。
-# 注意：这里会把仓库当前的 wiki/ 一并打包，正式出售前请替换/清空为示例内容。
-seed_datas = [
-    (os.path.join(ROOT, "wiki"), "seed/wiki"),
-    (os.path.join(ROOT, "purpose.md"), "seed"),
-    (os.path.join(ROOT, "schema.md"), "seed"),
-]
+seed_datas = [(SEED, "seed")] if os.path.isdir(SEED) else []
 
-# pdfminer.six 的 cmap 等数据文件需一并收集，否则 PDF 解析会缺资源。
+asset_datas = []
+for sname in ("icon.icns", "icon.png", "icon.ico"):
+    spath = os.path.join(ASSETS, sname)
+    if os.path.isfile(spath):
+        asset_datas.append((spath, "assets"))
+
 pdf_datas, pdf_binaries, pdf_hidden = collect_all("pdfminer")
+# certifi 的 CA 证书包：打包后 HTTPS（大模型 API）校验所必需
+certifi_datas, certifi_binaries, certifi_hidden = collect_all("certifi")
+# 仅收集 WebEngine 所需组件，避免 collect_all(PySide6) 打入 QML/3D 等冗余（约 1GB+）
+pyside_datas, pyside_binaries, pyside_hidden = collect_all("PySide6.QtWebEngineWidgets")
 
 icon_mac = os.path.join(ASSETS, "icon.icns")
 icon_win = os.path.join(ASSETS, "icon.ico")
@@ -33,12 +36,28 @@ icon = icon_mac if sys.platform == "darwin" else (icon_win if sys.platform.start
 a = Analysis(
     [os.path.join(TOOLS, "entry.py")],
     pathex=[TOOLS],
-    binaries=pdf_binaries,
-    datas=seed_datas + pdf_datas,
-    hiddenimports=["pdfminer", "pdfminer.high_level"] + pdf_hidden,
+    binaries=pdf_binaries + certifi_binaries + pyside_binaries,
+    datas=seed_datas + asset_datas + pdf_datas + certifi_datas + pyside_datas,
+    hiddenimports=[
+        "pdfminer", "pdfminer.high_level", "certifi",
+        "PySide6.QtWebEngineWidgets", "PySide6.QtWebEngineCore",
+    ] + pdf_hidden + certifi_hidden + pyside_hidden,
     hookspath=[],
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        "PySide6.Qt3DAnimation", "PySide6.Qt3DCore", "PySide6.Qt3DExtras",
+        "PySide6.Qt3DInput", "PySide6.Qt3DLogic", "PySide6.Qt3DRender",
+        "PySide6.QtCharts", "PySide6.QtDataVisualization", "PySide6.QtGraphs",
+        "PySide6.QtLocation", "PySide6.QtMultimedia", "PySide6.QtMultimediaWidgets",
+        "PySide6.QtNetworkAuth", "PySide6.QtNfc", "PySide6.QtPositioning",
+        "PySide6.QtQuick", "PySide6.QtQuick3D", "PySide6.QtQuickControls2",
+        "PySide6.QtQuickWidgets", "PySide6.QtRemoteObjects", "PySide6.QtSensors",
+        "PySide6.QtSerialPort", "PySide6.QtSpatialAudio", "PySide6.QtSvg",
+        "PySide6.QtTextToSpeech", "PySide6.QtWebSockets", "PySide6.QtBluetooth",
+        "PySide6.QtDesigner", "PySide6.QtHelp", "PySide6.QtOpenGLWidgets",
+        "PySide6.QtPdf", "PySide6.QtPdfWidgets", "PySide6.QtStateMachine",
+        "PySide6.QtScxml", "PySide6.QtUiTools", "PySide6.QtAxContainer",
+    ],
     noarchive=False,
 )
 pyz = PYZ(a.pure)

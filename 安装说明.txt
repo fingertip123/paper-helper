@@ -1,0 +1,79 @@
+Paper-Helper · 博士论文 Wiki — 安装说明
+========================================
+
+本应用有两种分发包，请根据你收到的文件名选择对应步骤。
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+方式 A：独立版（推荐，开箱即用）
+  文件名含 mac / win，不含 source
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+【macOS】
+  1. 解压 zip（或打开 .dmg）
+  2. 将 Paper-Helper.app 拖入「应用程序」文件夹
+  3. 首次打开若提示「无法验证开发者」：
+     系统设置 → 隐私与安全性 → 仍要打开
+     或右键 app → 打开 → 打开
+  4. 双击启动，无需安装 Python
+
+  数据保存在：~/PaperHelper/
+
+【Windows】
+  1. 解压 zip 到任意目录（路径勿含中文空格亦可）
+  2. 双击「安装.bat」创建桌面快捷方式（可选）
+  3. 运行 Paper-Helper\Paper-Helper.exe
+  4. 无需安装 Python
+
+  数据保存在：%USERPROFILE%\PaperHelper\
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+方式 B：源码版（体积小，适合微信传）
+  文件名含 source
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+前提：本机已安装 Python 3.10+（https://www.python.org/downloads/）
+      Windows 安装时务必勾选「Add Python to PATH」
+
+【macOS】
+  1. 解压 zip 到任意文件夹
+  2. 双击 Paper-Helper.app
+  3. 首次启动会弹窗询问是否自动安装依赖 → 点「安装」
+     （需联网，约 1–3 分钟，自动安装 PySide6 等）
+  4. 安装完成后自动打开主窗口
+
+【Windows】
+  1. 解压 zip
+  2. 双击 Paper-Helper.vbs（或 Paper-Helper.lnk）
+  3. 首次启动弹窗 → 点「是」自动安装依赖
+  4. 安装完成后自动打开主窗口
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+首次使用
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  · 打开后点击 ⚙ 设置，填写大模型 API Key（OpenAI 兼容接口）
+  · 「分析」功能需联网调用 API；其他功能可离线使用
+  · 也可在 Cursor 中按 AGENTS.md 让 AI 帮你摄入文献
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+常见问题
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Q: 源码版提示「未找到 Python」？
+A: 请先安装 Python 3 并重启电脑，Windows 需勾选 Add to PATH。
+
+Q: 依赖安装失败？
+A: 打开终端/命令提示符，进入解压目录，执行：
+   python3 -m pip install -r requirements.txt   （macOS）
+   py -3 -m pip install -r requirements.txt     （Windows）
+
+Q: macOS 独立版打不开？
+A: 右键 → 打开，或在系统设置里允许。
+
+Q: 日志在哪里？
+A: macOS: ~/Library/Logs/Paper-Helper/launch.log
+   Windows: %LOCALAPPDATA%\Paper-Helper\logs\launch.log
