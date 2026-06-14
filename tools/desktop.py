@@ -112,7 +112,7 @@ def PickFolderBlocking(opicker):
 class MainWindow(QMainWindow):
     def __init__(self, nurl):
         super().__init__()
-        self.setWindowTitle("博士论文 Wiki · Paper-Helper")
+        self.setWindowTitle("研栈")
         self.resize(1280, 860)
         oview = QWebEngineView(self)
         oview.setPage(MakeWebPage(oview))
@@ -139,7 +139,7 @@ def Main():
 
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
     oapp = QApplication(sys.argv)
-    oapp.setApplicationName("Paper-Helper")
+    oapp.setApplicationName("Yanzhan")
     oapp.setQuitOnLastWindowClosed(True)
 
     viconpaths = []

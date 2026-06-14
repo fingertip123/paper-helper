@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller 打包配置：把桌面窗口版打包为 .app（macOS）/ .exe（Windows）。
+"""PyInstaller 打包配置：研栈桌面版 .app（macOS）/ .exe（Windows）。
 
 用法：
     python build.py
@@ -13,9 +13,12 @@ ROOT = os.path.abspath(os.getcwd())
 TOOLS = os.path.join(ROOT, "tools")
 ASSETS = os.path.join(ROOT, "assets")
 SEED = os.path.join(ROOT, "build", "seed")
-APPNAME = "Paper-Helper"
+BUILTIN_KEY = os.path.join(TOOLS, "builtin_api_key.txt")
+APPNAME = "Yanzhan"
+DISPLAY_NAME = "研栈"
 
 seed_datas = [(SEED, "seed")] if os.path.isdir(SEED) else []
+builtin_datas = [(BUILTIN_KEY, "tools")] if os.path.isfile(BUILTIN_KEY) else []
 
 asset_datas = []
 for sname in ("icon.icns", "icon.png", "icon.ico"):
@@ -24,9 +27,7 @@ for sname in ("icon.icns", "icon.png", "icon.ico"):
         asset_datas.append((spath, "assets"))
 
 pdf_datas, pdf_binaries, pdf_hidden = collect_all("pdfminer")
-# certifi 的 CA 证书包：打包后 HTTPS（大模型 API）校验所必需
 certifi_datas, certifi_binaries, certifi_hidden = collect_all("certifi")
-# 仅收集 WebEngine 所需组件，避免 collect_all(PySide6) 打入 QML/3D 等冗余（约 1GB+）
 pyside_datas, pyside_binaries, pyside_hidden = collect_all("PySide6.QtWebEngineWidgets")
 
 icon_mac = os.path.join(ASSETS, "icon.icns")
@@ -37,7 +38,7 @@ a = Analysis(
     [os.path.join(TOOLS, "entry.py")],
     pathex=[TOOLS],
     binaries=pdf_binaries + certifi_binaries + pyside_binaries,
-    datas=seed_datas + asset_datas + pdf_datas + certifi_datas + pyside_datas,
+    datas=seed_datas + builtin_datas + asset_datas + pdf_datas + certifi_datas + pyside_datas,
     hiddenimports=[
         "pdfminer", "pdfminer.high_level", "certifi",
         "PySide6.QtWebEngineWidgets", "PySide6.QtWebEngineCore",
@@ -89,10 +90,10 @@ if sys.platform == "darwin":
         coll,
         name=APPNAME + ".app",
         icon=icon_mac,
-        bundle_identifier="com.paperhelper.app",
+        bundle_identifier="com.yanzhan.app",
         info_plist={
             "CFBundleName": APPNAME,
-            "CFBundleDisplayName": "博士论文 Wiki",
+            "CFBundleDisplayName": DISPLAY_NAME,
             "NSHighResolutionCapable": True,
         },
     )

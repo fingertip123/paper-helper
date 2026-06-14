@@ -18,7 +18,8 @@ from datetime import datetime
 HERE = os.path.dirname(os.path.abspath(__file__))
 VENV = os.path.join(HERE, ".venv-build")
 RELEASE = os.path.join(HERE, "release")
-APPNAME = "Paper-Helper"
+APPNAME = "Yanzhan"
+DISPLAY_NAME = "研栈"
 
 
 def Run(vargs, **kwargs):
@@ -46,9 +47,34 @@ def PrepareSeed(spython):
     Run([spython, os.path.join(HERE, "tools", "prepare_seed.py")])
 
 
+def PrepareBuiltinApiKey():
+    """打包前注入内置 GLM Key（来自本机 .yanzhan/config.json，不提交 git）。"""
+    import json
+    sdst = os.path.join(HERE, "tools", "builtin_api_key.txt")
+    ssrc = os.path.join(HERE, ".yanzhan", "config.json")
+    if not os.path.isfile(ssrc):
+        if os.path.isfile(sdst):
+            print("使用已有 tools/builtin_api_key.txt")
+        else:
+            print("警告：未找到内置 API Key，新用户需自行配置大模型")
+        return
+    try:
+        with open(ssrc, "r", encoding="utf-8") as f:
+            skey = (json.load(f).get("api_key") or "").strip()
+    except Exception:
+        skey = ""
+    if not skey:
+        print("警告：.yanzhan/config.json 无 api_key，跳过内置 Key 注入")
+        return
+    with open(sdst, "w", encoding="utf-8") as f:
+        f.write(skey)
+    print("已更新 tools/builtin_api_key.txt（打包用，已 gitignore）")
+
+
 def BuildStandalone(spython):
+    PrepareBuiltinApiKey()
     PrepareSeed(spython)
-    nspec = os.path.join(HERE, "paper-helper.spec")
+    nspec = os.path.join(HERE, "yanzhan.spec")
     Run([spython, "-m", "PyInstaller", "--noconfirm", "--clean", nspec], cwd=HERE)
 
 
@@ -60,8 +86,8 @@ def SourceIncludePaths():
         "assets",
         "requirements.txt",
         "README.md",
-        "Paper-Helper.app",
-        "Paper-Helper.vbs",
+        "Yanzhan.app",
+        "Yanzhan.vbs",
         "start.bat",
         "start.command",
         "安装说明.txt",
@@ -155,11 +181,11 @@ def Main():
     BuildSourceZip()
     print("\n打包完成，产物位于：%s" % RELEASE)
     if sys.platform == "darwin":
-        print("  独立版 → Paper-Helper.app / Paper-Helper-mac-*.zip / Paper-Helper.dmg")
-        print("  源码版 → Paper-Helper-mac-source.zip（需本机有 Python 3）")
+        print("  独立版 → Yanzhan.app / Yanzhan-mac-*.zip / Yanzhan.dmg")
+        print("  源码版 → Yanzhan-mac-source.zip（需本机有 Python 3）")
     elif sys.platform.startswith("win"):
-        print("  独立版 → Paper-Helper-win-*.zip（解压后运行 Paper-Helper.exe）")
-        print("  源码版 → Paper-Helper-win-source.zip（需本机有 Python 3）")
+        print("  独立版 → Yanzhan-win-*.zip（解压后运行 Yanzhan.exe）")
+        print("  源码版 → Yanzhan-win-source.zip（需本机有 Python 3）")
 
 
 if __name__ == "__main__":

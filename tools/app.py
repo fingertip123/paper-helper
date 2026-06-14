@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""博士论文 Wiki 本地服务：在网页里完成 添加 / 分析 / 删除 / 刷新。
+"""研栈本地服务：在网页里完成 添加 / 分析 / 删除 / 刷新。
 
 启动：
     python3 tools/app.py
 然后浏览器访问 http://127.0.0.1:8765 （启动器会自动打开）。
 
-「分析」需在网页「设置」里填写大模型 API（OpenAI 兼容）。未填写时返回 need_key，
-网页会提示并打开设置；此即"排队回退"——你也可改在 Cursor 里让 AI 摄入。
+新用户默认使用内置智谱 GLM-4-Flash；也可在「偏好设置」中替换为自己的 API。
+未配置且无内置 Key 时返回 need_key，网页会提示并打开设置。
 """
 
 import os
@@ -26,18 +26,148 @@ import wiki_core as core
 import topic_manager as topics
 import wiki_ops as wops
 import doc_editor as doced
+import onboarding as onboard
+import builtin_llm as bllm
+import auth
+from app_meta import APP_NAME, ResolveConfigDir
+from contextlib import contextmanager
 
 host = "127.0.0.1"
 port = 8765
 desktopmode = False  # desktop.py 启动时设为 True，界面走桌面模式（服务开关控制功能而非关进程）
 desktop_pick_folder = None  # desktop.py 注入：主线程弹出文件夹选择框（备用）
-configdir = os.path.join(core.rootdir, ".paper-helper")
+multiuser = False  # tools/server.py（云端部署）设为 True：登录 + 每用户数据隔离
+llmdailylimit = 0  # 多用户模式下每用户每日 LLM 调用上限（0 = 不限）
+baseroot = core.rootdir  # 主项目根（templates 来源）
+configdir = ResolveConfigDir(core.rootdir)
 configpath = os.path.join(configdir, "config.json")
+
+# 多用户数据根绑定：所有文件操作（请求处理 + 后台任务的读写阶段）都必须
+# 先 BindDataRoot 再操作；datalock 保证同一时刻只有一个绑定生效。
+# LLM 网络调用（耗时数分钟）在锁外进行，不阻塞其他用户的请求。
+datalock = threading.RLock()
+_boundroot = core.rootdir
+
+
+def BindDataRoot(nroot):
+    """切换全局数据根（须在 datalock 内调用）。单用户模式下恒为项目根。"""
+    global configdir, configpath, _boundroot
+    if not nroot or nroot == _boundroot:
+        return
+    topics.Init(nroot)
+    core.rootdir = nroot
+    core.ReloadTopicPaths()
+    configdir = ResolveConfigDir(nroot)
+    configpath = os.path.join(configdir, "config.json")
+    _boundroot = nroot
+
+
+@contextmanager
+def UserScope(nroot=None):
+    """请求 / 后台任务的文件操作临界区：持锁 + 绑定数据根。"""
+    datalock.acquire()
+    try:
+        if multiuser and nroot:
+            BindDataRoot(nroot)
+        yield
+    finally:
+        datalock.release()
 
 # 摄入任务进度（供前端轮询；同一时刻只跑一个任务）
 ingestlock = threading.Lock()
 ingestjob = {"running": False, "total": 0, "done": 0, "current": "",
-             "ingested": [], "failed": [], "finished": False, "cancelled": False}
+             "ingested": [], "failed": [], "briefs": [], "finished": False, "cancelled": False}
+querylock = threading.Lock()
+queryjob = {"running": False, "question": "", "answer": "", "error": "",
+            "finished": False, "saved": None, "status": "idle"}
+llmrunlock = threading.Lock()
+ollmstate = {"owner": "", "detail": ""}
+
+
+def TryAcquireLlm(sowner, sdetail=""):
+    """同一时刻只允许一个 LLM 任务（纳入研究 / 知识查询）。"""
+    with llmrunlock:
+        if ollmstate["owner"] and ollmstate["owner"] != sowner:
+            return False
+        ollmstate["owner"] = sowner
+        ollmstate["detail"] = sdetail
+        return True
+
+
+def ReleaseLlm(sowner):
+    with llmrunlock:
+        if ollmstate["owner"] == sowner:
+            ollmstate["owner"] = ""
+            ollmstate["detail"] = ""
+
+
+def LlmBusyPayload():
+    """返回当前占用大模型的任务说明，供前端提示。"""
+    with llmrunlock:
+        sowner = ollmstate.get("owner") or ""
+        sdetail = ollmstate.get("detail") or ""
+    if not sowner:
+        return None
+    if sowner == "ingest":
+        with ingestlock:
+            scur = ingestjob.get("current") or sdetail or "文献"
+        sshort = scur if len(scur) <= 34 else scur[:33] + "…"
+        return {
+            "status": "busy", "busy": "ingest",
+            "message": "正在纳入研究（%s），大模型暂无法同时处理其他任务，请稍后再试。" % sshort,
+        }
+    if sowner == "query":
+        with querylock:
+            sq = queryjob.get("question") or sdetail or "问题"
+        sshort = sq if len(sq) <= 28 else sq[:27] + "…"
+        return {
+            "status": "busy", "busy": "query",
+            "message": "知识查询进行中（「%s」），请稍后再纳入研究。" % sshort,
+        }
+    return {"status": "busy", "busy": sowner, "message": "大模型正在处理其他任务，请稍后再试。"}
+
+
+class IngestCancelled(Exception):
+    """用户取消纳入研究。"""
+
+
+def IsIngestCancelled():
+    with ingestlock:
+        return bool(ingestjob.get("cancelled"))
+
+
+def SleepWithCancel(nseconds, fcancel=None):
+    """可中断的 sleep，供 LLM 重试退避使用。"""
+    nend = time.time() + nseconds
+    while time.time() < nend:
+        if fcancel and fcancel():
+            raise IngestCancelled("用户已取消")
+        time.sleep(min(0.35, max(0.05, nend - time.time())))
+
+
+def UrlopenJsonWithCancel(oreq, fcancel=None, ntimeout=300):
+    """在独立线程中发起 HTTP 请求，主线程轮询取消标志。"""
+    if not fcancel:
+        with urllib.request.urlopen(oreq, timeout=ntimeout, context=SslContext()) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    oholder = {"obj": None, "err": None}
+
+    def work():
+        try:
+            with urllib.request.urlopen(oreq, timeout=ntimeout, context=SslContext()) as resp:
+                oholder["obj"] = json.loads(resp.read().decode("utf-8"))
+        except Exception as e:
+            oholder["err"] = e
+
+    othread = threading.Thread(target=work, daemon=True)
+    othread.start()
+    while othread.is_alive():
+        if fcancel():
+            raise IngestCancelled("用户已取消")
+        othread.join(0.35)
+    if oholder["err"]:
+        raise oholder["err"]
+    return oholder["obj"]
 
 
 def PickFolderNative():
@@ -115,23 +245,106 @@ def PickFolderNative():
     return ""
 
 
-def LoadConfig():
+apikeymask = "***"
+
+
+def IsPlaceholderApiKey(skey):
+    """判断是否为掩码/占位符，避免把 *** 写回 config 覆盖真实 Key。"""
+    skey = (skey or "").strip()
+    return not skey or skey in (apikeymask, "****", "•••", "······")
+
+
+def HasUsableApiKey(oconfig):
+    """是否配置了可用于调用的 API Key（免注册端点除外）。"""
+    return not IsPlaceholderApiKey(oconfig.get("api_key"))
+
+
+VALID_THEMES = frozenset({"fresh", "girly", "boyish", "cool"})
+
+
+def NormalizeTheme(stheme):
+    sid = (stheme or "").strip()
+    return sid if sid in VALID_THEMES else "girly"
+
+
+def ConfigDefaults():
+    return {
+        "base_url": "https://api.openai.com/v1",
+        "api_key": "",
+        "model": "gpt-4o-mini",
+        "language": "中文",
+        "theme": "girly",
+    }
+
+
+def LoadConfigRaw():
     if os.path.isfile(configpath):
         try:
             with open(configpath, "r", encoding="utf-8") as f:
-                return json.load(f)
+                odata = json.load(f)
+                if isinstance(odata, dict):
+                    return odata
         except Exception:
             pass
-    return {"base_url": "https://api.openai.com/v1", "api_key": "", "model": "gpt-4o-mini", "language": "中文"}
+    return {}
+
+
+def ApplyConfigDefaults(oraw):
+    ocfg = ConfigDefaults()
+    if oraw:
+        ocfg.update(oraw)
+    if "theme" in ocfg:
+        ocfg["theme"] = NormalizeTheme(ocfg.get("theme"))
+    return ocfg
+
+
+def LoadConfig():
+    ocfg = ApplyConfigDefaults(LoadConfigRaw())
+    omerged, _ = bllm.ApplyBuiltinLlm(ocfg, HasUsableApiKey)
+    return omerged
+
+
+def GetConfigForApi():
+    ocfg = ApplyConfigDefaults(LoadConfigRaw())
+    omerged, busing = bllm.ApplyBuiltinLlm(ocfg, HasUsableApiKey)
+    return {
+        "base_url": omerged.get("base_url"),
+        "model": omerged.get("model"),
+        "language": omerged.get("language"),
+        "theme": omerged.get("theme"),
+        "has_api_key": HasUsableApiKey(omerged),
+        "using_builtin_llm": busing,
+        "api_key": "",
+    }
+
+
+def GetUserTheme():
+    return NormalizeTheme(LoadConfig().get("theme"))
 
 
 def SaveConfig(oconfig):
     os.makedirs(configdir, exist_ok=True)
-    merged = LoadConfig()
-    merged.update({k: v for k, v in oconfig.items() if k in ("base_url", "api_key", "model", "language")})
+    merged = ApplyConfigDefaults(LoadConfigRaw())
+    for skey in ("base_url", "model", "language", "theme"):
+        if skey in oconfig:
+            merged[skey] = oconfig[skey]
+    if "theme" in merged:
+        merged["theme"] = NormalizeTheme(merged.get("theme"))
+    if oconfig.get("clear_api_key"):
+        merged["api_key"] = ""
+        if "pollinations.ai" in (merged.get("base_url") or ""):
+            merged["use_builtin_llm"] = False
+    elif "api_key" in oconfig:
+        snewkey = (oconfig.get("api_key") or "").strip()
+        if not IsPlaceholderApiKey(snewkey):
+            merged["api_key"] = snewkey
+            merged["use_builtin_llm"] = False
+    if oconfig.get("use_builtin_llm") is False:
+        merged["use_builtin_llm"] = False
+    opersist = {k: v for k, v in merged.items() if not str(k).startswith("_")}
     with open(configpath, "w", encoding="utf-8") as f:
-        json.dump(merged, f, ensure_ascii=False, indent=2)
-    return merged
+        json.dump(opersist, f, ensure_ascii=False, indent=2)
+    return LoadConfig()
 
 
 def SafeName(nfilename):
@@ -140,12 +353,16 @@ def SafeName(nfilename):
 
 
 def SafeWikiPath(nrelpath):
-    """校验 LLM 返回的写入路径必须落在 wiki/ 目录内且为 .md 文件。"""
+    """校验 LLM 返回的写入路径必须落在当前选题 wiki/ 目录内且为 .md 文件。"""
     nrelpath = nrelpath.replace("\\", "/").lstrip("/")
-    if not nrelpath.startswith("wiki/") or not nrelpath.endswith(".md") or ".." in nrelpath:
+    if not nrelpath.endswith(".md") or ".." in nrelpath:
         return None
-    fullpath = os.path.normpath(os.path.join(core.rootdir, nrelpath))
-    if not fullpath.startswith(core.wikidir):
+    nsub = nrelpath[5:] if nrelpath.startswith("wiki/") else nrelpath
+    if not nsub:
+        return None
+    nwbase = os.path.normpath(core.wikidir)
+    fullpath = os.path.normpath(os.path.join(nwbase, nsub))
+    if not (fullpath == nwbase or fullpath.startswith(nwbase + os.sep)):
         return None
     return fullpath
 
@@ -198,15 +415,16 @@ def _RetryAfterSeconds(oerr, ndefault):
     return ndefault
 
 
-def CallLlm(oconfig, vmessages, bjson=True):
+def CallLlm(oconfig, vmessages, bjson=True, fcancel=None):
     """调用 OpenAI 兼容的 chat/completions 接口，返回助手文本。
 
     免注册端点（无 Key）受 Cloudflare 防护且限流严格，这里统一带浏览器 UA，
     并对 429（限流）/5xx 做退避重试，让只填选题名也能用免费模型稳定分析。
+    fcancel：可选取消检测（纳入研究时传入，轮询期间可中断）。
     """
     url = oconfig["base_url"].rstrip("/") + "/chat/completions"
     nbaseurl = oconfig.get("base_url") or ""
-    bnoauth = not oconfig.get("api_key")  # 无 Key 即免注册端点，限流更重
+    bnoauth = not HasUsableApiKey(oconfig)  # 无 Key 即免注册端点，限流更重
     payload = {
         "model": oconfig.get("model") or "gpt-4o-mini",
         "messages": vmessages,
@@ -216,27 +434,29 @@ def CallLlm(oconfig, vmessages, bjson=True):
         payload["response_format"] = {"type": "json_object"}
     data = json.dumps(payload).encode("utf-8")
     oheaders = {"Content-Type": "application/json", "User-Agent": browserua}
-    if oconfig.get("api_key"):  # 免注册端点可无 Key，无 Key 时不发 Authorization
-        oheaders["Authorization"] = "Bearer " + oconfig["api_key"]
+    if HasUsableApiKey(oconfig):  # 免注册端点可无 Key，无 Key 时不发 Authorization
+        oheaders["Authorization"] = "Bearer " + oconfig["api_key"].strip()
     req = urllib.request.Request(url, data=data, method="POST", headers=oheaders)
 
     nmaxtry = 6 if bnoauth else 2
     slasterr = ""
     for ntry in range(nmaxtry):
+        if fcancel and fcancel():
+            raise IngestCancelled("用户已取消")
         try:
-            with urllib.request.urlopen(req, timeout=300, context=SslContext()) as resp:
-                obj = json.loads(resp.read().decode("utf-8"))
+            obj = UrlopenJsonWithCancel(req, fcancel=fcancel)
             if not obj.get("choices"):  # 限流/异常时常返回无 choices 的对象
                 raise RuntimeError("接口未返回有效结果：" + json.dumps(obj, ensure_ascii=False)[:200])
             return obj["choices"][0]["message"]["content"]
+        except IngestCancelled:
+            raise
         except urllib.error.HTTPError as e:
             sdetail = e.read().decode("utf-8", "ignore")[:300]
             if e.code in (429, 503) and ntry < nmaxtry - 1:
-                # 免注册匿名约 15 秒一次，等待后重试
-                time.sleep(_RetryAfterSeconds(e, 16 if bnoauth else 4))
+                SleepWithCancel(_RetryAfterSeconds(e, 16 if bnoauth else 4), fcancel)
                 continue
             if e.code in (500, 502, 504) and ntry < nmaxtry - 1:
-                time.sleep(3)
+                SleepWithCancel(3, fcancel)
                 continue
             if e.code == 429:
                 raise RuntimeError("免费接口繁忙(限流)。请等待约 15 秒后重试，"
@@ -248,7 +468,7 @@ def CallLlm(oconfig, vmessages, bjson=True):
         except urllib.error.URLError as e:
             slasterr = str(getattr(e, "reason", e))
             if ntry < nmaxtry - 1:
-                time.sleep(3)
+                SleepWithCancel(3, fcancel)
                 continue
             raise RuntimeError("网络连接失败：%s" % slasterr)
     raise RuntimeError(slasterr or "调用失败")
@@ -265,56 +485,99 @@ def ParseLlmJson(ntext):
 
 
 def BuildIngestMessages(oconfig, nfilename, npapertext):
-    """构造两步摄入的提示词：分析 + 生成 wiki 页面（JSON 输出）。"""
+    """构造研究化摄入提示词：对齐 RQ/论点，生成可研究的 wiki 页面（JSON 输出）。"""
     with open(topics.RulePath("purpose.md"), "r", encoding="utf-8") as f:
-        purpose = f.read()[:2500]
+        spurposefull = f.read()
+    purpose = spurposefull[:2800]
+    ofields = topics.ParsePurposeFields(spurposefull)
+    vrqlines = []
+    for skey in ("rq1", "rq2", "rq3", "rq4"):
+        sval = (ofields.get(skey) or "").strip()
+        if sval and sval not in ("（待填写）", "（未填写）"):
+            vrqlines.append(sval)
+    srqctx = "\n".join(vrqlines) if vrqlines else "（尚未填写具体研究问题，请从 purpose 方向推断可能关联）"
+    sthesis = (ofields.get("thesis") or "").strip()[:1200]
     vnodes, _ = core.ScanWiki()
-    existing = "\n".join("- %s (%s): %s" % (n["id"], n["type"], n.get("title", "")) for n in vnodes)[:3000]
+    existing = "\n".join(
+        "- %s (%s): %s" % (n["id"], n["type"], n.get("title", "")) for n in vnodes
+    )[:3200]
+    vsources = [n for n in vnodes if n.get("type") == "source" and n.get("ingested")]
+    sprior = "\n".join("- [[%s]]: %s" % (n["id"], n.get("summary", "")[:80]) for n in vsources[:12])
+    vrqpages = [n for n in vnodes if n.get("type") == "rq"]
+    srqpages = "\n".join("- [[%s]]: %s" % (n["id"], n.get("title", "")) for n in vrqpages) or "（尚无研究问题页，可新建）"
     meta = core.ParseSourceFilename(nfilename)
     lang = oconfig.get("language", "中文")
     system = (
-        "你是个人学术知识库（LLM Wiki 范式）的摄入引擎。把一篇文献编译成相互链接的 Markdown wiki 页面。"
+        "你是博士论文知识库的研究编译引擎。目标不是摘抄，而是把文献「研究化」："
+        "对齐 purpose 中的研究问题与论点，标注与已有文献的关联/张力，产出可写入综述的研究笔记。"
         "严格遵守：(1) 每个页面以 YAML frontmatter 开头，含 type/title/aliases/sources/tags/created/updated；"
-        "source 页另含 url（论文在线阅读链接，优先 DOI https://doi.org/... 或期刊/出版社官网，无法确定则省略）；"
-        "(2) 用 [[wikilink]] 做交叉引用，尽量复用已存在的页面 id；"
+        "source 页另含 url（优先 DOI https://doi.org/...，无法确定则省略）；"
+        "(2) 用 [[wikilink]] 交叉引用，尽量复用已存在页面 id；"
         "(3) 文件命名 kebab-case；(4) 只输出 JSON，不要多余文字。"
         "页面类型与目录：source→wiki/sources、concept→wiki/concepts、entity→wiki/entities、"
-        "rq→wiki/research-questions、experiment→wiki/experiments、synthesis→wiki/synthesis、"
-        "comparison→wiki/comparisons、query→wiki/queries。"
+        "rq→wiki/research-questions、synthesis→wiki/synthesis、comparison→wiki/comparisons。"
         "用%s撰写正文。" % lang
     )
     user = (
-        "## 论文目标(purpose.md 摘录)\n%s\n\n"
-        "## 已存在的 wiki 页面(可复用其 id 做链接)\n%s\n\n"
-        "## 待摄入文献\n文件名：%s\n建议引用key：%s\n正文(截断)：\n%s\n\n"
+        "## 论文目标 (purpose.md)\n%s\n\n"
+        "## 当前研究问题（请逐条对齐）\n%s\n\n"
+        "## 当前论点/假设\n%s\n\n"
+        "## 已摄入文献（对照张力/共识）\n%s\n\n"
+        "## 已有研究问题页\n%s\n\n"
+        "## 已存在的 wiki 页面（复用 id 做链接）\n%s\n\n"
+        "## 待研究化文献\n文件名：%s\n建议引用 key：%s\n正文(截断)：\n%s\n\n"
+        "## 必须输出的页面\n"
+        "1. wiki/sources/<key>.md — 含固定章节：一句话概括、解决的问题、方法/核心思路、主要结论/贡献、"
+        "数据集/实验设置、与本论文的关系（链接到具体 [[rq-...]]）、与已有文献的张力、可借鉴的研究设计、"
+        "局限与存疑、下一步阅读建议\n"
+        "2. wiki/synthesis/<key>-memo.md — 单篇研究备忘（type: synthesis），含：支撑/挑战哪些 RQ、"
+        "对当前论点的含义、写综述时可引用的 2-3 句话\n"
+        "3. 关键概念/实体页 3-6 个，相互 [[链接]]\n"
+        "4. 若与某 RQ 明显相关：更新或新建 wiki/research-questions/<rq-id>.md（补充本篇进展）\n"
+        "5. 若与已摄入文献存在方法论/结论张力：新建 wiki/comparisons/<key>-vs-<other>.md\n\n"
         "## 输出 JSON 格式\n"
         '{\n'
         '  "key": "作者姓-年份",\n'
-        '  "files": [\n'
-        '    {"path": "wiki/sources/<key>.md", "content": "---\\ntype: source\\n...---\\n正文..."},\n'
-        '    {"path": "wiki/concepts/<id>.md", "content": "..."}\n'
-        '  ],\n'
+        '  "files": [{"path": "wiki/sources/<key>.md", "content": "..."}],\n'
         '  "log": "一句话操作摘要",\n'
-        '  "review": ["需要人工核实的点"]\n'
+        '  "review": ["需要人工核实的点"],\n'
+        '  "research": {\n'
+        '    "rq_links": ["rq-..."],\n'
+        '    "supports_thesis": "对当前论点的一句话含义",\n'
+        '    "tensions": ["与某文献的张力描述"],\n'
+        '    "next_steps": ["建议下一步阅读或验证"],\n'
+        '    "synthesis_id": "<key>-memo"\n'
+        '  }\n'
         '}\n'
-        "要求：必须包含 1 个 source 摘要页；为关键概念/方法/实体/作者各建页面（3-8 个）并相互 [[链接]]；"
-        "source 页 frontmatter 的 sources 写 [%s]；尽量填写 url 字段。" % (purpose, existing, nfilename, meta["key"], npapertext[:14000], meta["key"])
+        "要求：source 页 sources 写 [%s]；不臆造内容，不确定写入 review；尽量填写 url。"
+        % (purpose, srqctx, sthesis or "（未填写）", sprior or "（尚无）", srqpages,
+           existing, nfilename, meta["key"], npapertext[:14000], meta["key"])
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
-def IngestOne(oconfig, nfilename):
-    """摄入单篇文献：提取文本→LLM→写入 wiki 页面。返回写入的相对路径列表。"""
+def IngestPrepare(oconfig, nfilename):
+    """摄入阶段一（文件读取，须在 UserScope 内）：提取文本并构造 LLM 消息。"""
     fullpath = os.path.join(core.rawsourcesdir, SafeName(nfilename))
     if not os.path.isfile(fullpath):
         raise FileNotFoundError(nfilename)
+    if IsIngestCancelled():
+        raise IngestCancelled("用户已取消")
     text = ExtractPaperText(fullpath)
     if not text.strip():
         raise ValueError("无法提取文本（可能是扫描版 PDF）")
-    content = CallLlm(oconfig, BuildIngestMessages(oconfig, nfilename, text))
+    return BuildIngestMessages(oconfig, nfilename, text)
+
+
+def IngestFinalize(nfilename, content):
+    """摄入阶段三（文件写入，须在 UserScope 内）：解析 LLM 输出并写入 wiki。"""
+    if IsIngestCancelled():
+        raise IngestCancelled("用户已取消")
     result = ParseLlmJson(content)
     vwritten = []
     for item in result.get("files", []):
+        if IsIngestCancelled():
+            raise IngestCancelled("用户已取消")
         fp = SafeWikiPath(item.get("path", ""))
         body = item.get("content", "")
         if not fp or not body.strip():
@@ -329,55 +592,139 @@ def IngestOne(oconfig, nfilename):
     core.MergePendingUrlToSource(nfilename, skey)
     logmsg = result.get("log") or ("摄入 %s" % nfilename)
     review = result.get("review") or []
+    oresearch = result.get("research") or {}
+    if isinstance(oresearch, dict) and review and not oresearch.get("next_steps"):
+        oresearch["next_steps"] = review[:3]
     core.AppendLog("[ingest] %s（新增 %d 页）%s" % (
         logmsg, len(vwritten), ("；待核实：" + "；".join(review)) if review else ""))
-    return vwritten
+    return {
+        "key": skey,
+        "file": nfilename,
+        "written": vwritten,
+        "research": oresearch,
+        "review": review,
+    }
 
 
-def RunIngestJob(oconfig, vtargets):
+def RunQueryJob(oconfig, squestion, bsave, sroot=None):
+    """后台线程：知识库问答，不阻塞网页其他操作。文件读写阶段绑定提交者的数据根。"""
+    global queryjob
+    if not TryAcquireLlm("query", squestion[:48]):
+        with querylock:
+            queryjob["running"] = False
+            queryjob["finished"] = True
+            queryjob["error"] = "大模型正忙，请稍后再试"
+            queryjob["status"] = "error"
+        return
+    try:
+        with UserScope(sroot):
+            wops.Init(core.wikidir, core.rawsourcesdir, core.rootdir)
+            scontext = wops.CollectQueryContext(squestion)
+        slang = oconfig.get("language", "中文")
+        vmessages = [
+            {"role": "system", "content": (
+                "你是研栈知识库助手。仅根据提供的 wiki 页面作答，引用页面 id 如 [[kaplaner-2025]]。"
+                "不确定处标明待核实。用%s回答。" % slang
+            )},
+            {"role": "user", "content": "知识库摘录：\n%s\n\n问题：%s" % (scontext, squestion)},
+        ]
+        sanswer = CallLlm(oconfig, vmessages, bjson=False)
+        osaved = None
+        if bsave:
+            with UserScope(sroot):
+                wops.Init(core.wikidir, core.rawsourcesdir, core.rootdir)
+                osaved = wops.SaveQueryPage(squestion, sanswer)
+                core.GenerateIndex()
+                core.AppendLog("[query] %s → %s" % (squestion[:60], osaved.get("id")))
+        with querylock:
+            queryjob["answer"] = sanswer
+            queryjob["saved"] = osaved
+            queryjob["error"] = ""
+            queryjob["status"] = "done"
+    except Exception as e:
+        with querylock:
+            queryjob["error"] = str(e)
+            queryjob["status"] = "error"
+    finally:
+        ReleaseLlm("query")
+        with querylock:
+            queryjob["running"] = False
+            queryjob["finished"] = True
+
+
+def RunIngestJob(oconfig, vtargets, sroot=None):
     """后台线程：逐篇摄入并实时更新 ingestjob 进度。
 
     收尾逻辑放在 finally，保证无论中途发生何种异常，running 都会被置为 False，
     避免打包（无终端/证书等差异）环境下线程半途崩溃导致前端「一直转圈」。
+    文件读写阶段绑定提交者的数据根（LLM 网络调用在锁外，不阻塞其他用户）。
     """
     global ingestjob
+    if not TryAcquireLlm("ingest", vtargets[0] if vtargets else ""):
+        with ingestlock:
+            ingestjob["running"] = False
+            ingestjob["finished"] = True
+            ingestjob["failed"].append({
+                "file": "(忙碌)",
+                "error": "知识查询进行中，请稍后再纳入研究",
+            })
+        return
     try:
         for fn in vtargets:
             with ingestlock:
                 if ingestjob.get("cancelled"):
                     break
                 ingestjob["current"] = fn
+            bbreak = False
             try:
-                IngestOne(oconfig, fn)
+                with UserScope(sroot):
+                    vmessages = IngestPrepare(oconfig, fn)
+                content = CallLlm(oconfig, vmessages, fcancel=IsIngestCancelled)
+                with UserScope(sroot):
+                    oresult = IngestFinalize(fn, content)
                 with ingestlock:
                     ingestjob["ingested"].append(fn)
+                    if isinstance(oresult, dict) and oresult.get("research"):
+                        ingestjob.setdefault("briefs", []).append({
+                            "file": fn,
+                            "key": oresult.get("key", ""),
+                            "research": oresult.get("research", {}),
+                            "review": oresult.get("review", []),
+                        })
+            except IngestCancelled:
+                bbreak = True
+                with ingestlock:
+                    ingestjob["failed"].append({"file": fn, "error": "已取消"})
             except Exception as e:
                 with ingestlock:
                     ingestjob["failed"].append({"file": fn, "error": str(e)})
             with ingestlock:
                 ingestjob["done"] += 1
-        try:
-            core.GenerateIndex()
-        except Exception as e:
-            with ingestlock:
-                ingestjob["failed"].append({"file": "(刷新索引)", "error": str(e)})
+            if bbreak:
+                break
+        if not IsIngestCancelled():
+            try:
+                with UserScope(sroot):
+                    core.GenerateIndex()
+            except Exception as e:
+                with ingestlock:
+                    ingestjob["failed"].append({"file": "(刷新索引)", "error": str(e)})
     except Exception as e:
         with ingestlock:
             ingestjob["failed"].append({"file": "(任务异常)", "error": str(e)})
     finally:
+        ReleaseLlm("ingest")
         with ingestlock:
             ingestjob["running"] = False
             ingestjob["finished"] = True
             ingestjob["current"] = ""
-            if ingestjob.get("cancelled"):
-                ingestjob["failed"].append({"file": "(已取消)", "error": "用户取消剩余任务"})
 
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
-    def _send(self, code, body, ctype="application/json; charset=utf-8"):
+    def _send(self, code, body, ctype="application/json; charset=utf-8", vheaders=None):
         if isinstance(body, (dict, list)):
             body = json.dumps(body, ensure_ascii=False).encode("utf-8")
         elif isinstance(body, str):
@@ -385,6 +732,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        for skey, sval in (vheaders or []):
+            self.send_header(skey, sval)
         self.end_headers()
         self.wfile.write(body)
 
@@ -392,21 +741,128 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         return json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
 
+    # ---------- 多用户：会话与认证 ----------
+
+    def _SessionUser(self):
+        return auth.ResolveSession(auth.CookieFromHeaders(self.headers.get("Cookie", "")))
+
+    def _AuthGet(self, path):
+        """多用户模式下的 GET 认证网关。返回 True 表示已应答。"""
+        if path == "/login":
+            self._send(200, auth.LOGIN_HTML, "text/html; charset=utf-8")
+            return True
+        if path == "/auth/me":
+            ouser = self._SessionUser()
+            self._send(200, {"username": ouser["username"] if ouser else ""})
+            return True
+        ouser = self._SessionUser()
+        if not ouser:
+            if path in ("/", "/index.html"):
+                self._send(200, auth.LOGIN_HTML, "text/html; charset=utf-8")
+            else:
+                self._send(401, {"error": "未登录，请刷新页面重新登录"})
+            return True
+        self._user = ouser
+        return False
+
+    def _AuthPost(self):
+        """多用户模式下的 POST 认证网关。返回 True 表示已应答。"""
+        if self.path == "/auth/register":
+            body = self._body()
+            try:
+                auth.Register(body.get("username", ""), body.get("password", ""))
+                stoken = auth.Login(body.get("username", ""), body.get("password", ""),
+                                    self.client_address[0])
+            except ValueError as e:
+                self._send(200, {"error": str(e)})
+                return True
+            self._send(200, {"status": "ok"}, vheaders=[("Set-Cookie", auth.MakeSetCookie(stoken))])
+            return True
+        if self.path == "/auth/login":
+            body = self._body()
+            try:
+                stoken = auth.Login(body.get("username", ""), body.get("password", ""),
+                                    self.client_address[0])
+            except ValueError as e:
+                self._send(200, {"error": str(e)})
+                return True
+            self._send(200, {"status": "ok"}, vheaders=[("Set-Cookie", auth.MakeSetCookie(stoken))])
+            return True
+        if self.path == "/auth/logout":
+            auth.Logout(auth.CookieFromHeaders(self.headers.get("Cookie", "")))
+            self._send(200, {"status": "ok"}, vheaders=[("Set-Cookie", auth.MakeSetCookie("", bclear=True))])
+            return True
+        ouser = self._SessionUser()
+        if not ouser:
+            self._send(401, {"error": "未登录，请刷新页面重新登录"})
+            return True
+        self._user = ouser
+        if self.path in ("/api/shutdown", "/api/open/pdf", "/api/open/url", "/api/docs/pick-folder"):
+            self._send(403, {"error": "云端多用户模式不支持此操作"})
+            return True
+        return False
+
+    def _Uid(self):
+        ouser = getattr(self, "_user", None)
+        return ouser["uid"] if ouser else 0
+
+    def _CheckLlmQuota(self, ncalls):
+        """多用户模式：使用共享内置 Key 时的每日限额。返回错误提示或空串。"""
+        if not multiuser or llmdailylimit <= 0:
+            return ""
+        oraw = ApplyConfigDefaults(LoadConfigRaw())
+        if HasUsableApiKey(oraw):
+            return ""  # 用户配置了自己的 Key，不限额
+        if not auth.CheckAndCountLlm(self._Uid(), ncalls, llmdailylimit):
+            return ("今日共享模型额度已用完（%d 次/天）。"
+                    "可在「偏好设置」填写自己的免费 API Key（如智谱），不受限额。" % llmdailylimit)
+        return ""
+
     def do_GET(self):
         path = self.path.split("?", 1)[0]
+        if multiuser and self._AuthGet(path):
+            return
+        ouser = getattr(self, "_user", None)
+        with UserScope(ouser["root"] if ouser else None):
+            return self._HandleGet(path)
+
+    def do_POST(self):
+        if multiuser and self._AuthPost():
+            return
+        ouser = getattr(self, "_user", None)
+        with UserScope(ouser["root"] if ouser else None):
+            return self._HandlePost()
+
+    def _HandleGet(self, path):
         if path in ("/", "/index.html"):
             core.GenerateIndex()
-            return self._send(200, core.Render(core.BuildData(), servermode=True, desktopmode=desktopmode), "text/html; charset=utf-8")
+            ouser = getattr(self, "_user", None)
+            return self._send(200, core.Render(
+                core.BuildData(), servermode=True, desktopmode=desktopmode,
+                stheme=GetUserTheme(), susername=ouser["username"] if ouser else "",
+            ), "text/html; charset=utf-8")
         if path == "/api/data":
             core.GenerateIndex()
             return self._send(200, core.BuildData())
         if path == "/api/config":
-            c = dict(LoadConfig())
-            c["api_key"] = "***" if c.get("api_key") else ""  # 不回传明文
-            return self._send(200, c)
+            return self._send(200, GetConfigForApi())
         if path == "/api/ingest/progress":
             with ingestlock:
-                return self._send(200, dict(ingestjob))
+                if multiuser and ingestjob.get("uid") not in (0, None, self._Uid()):
+                    return self._send(200, {"running": ingestjob.get("running", False),
+                                            "finished": True, "status": "other_user",
+                                            "ingested": [], "failed": [], "briefs": [],
+                                            "total": 0, "done": 0, "current": ""})
+                return self._send(200, {k: v for k, v in ingestjob.items() if k != "uid"})
+        if path == "/api/query/progress":
+            with querylock:
+                if multiuser and queryjob.get("uid") not in (0, None, self._Uid()):
+                    return self._send(200, {"running": queryjob.get("running", False),
+                                            "finished": True, "status": "other_user",
+                                            "question": "", "answer": "", "error": "", "saved": None})
+                return self._send(200, {k: v for k, v in queryjob.items() if k != "uid"})
+        if path == "/api/onboarding":
+            return self._send(200, onboard.GetState())
         if path == "/api/lint":
             wops.Init(core.wikidir, core.rawsourcesdir, core.rootdir)
             return self._send(200, wops.RunLint())
@@ -538,7 +994,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def do_POST(self):
+    def _HandlePost(self):
         try:
             if self.path == "/api/upload":
                 return self._upload()
@@ -572,6 +1028,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._query()
             if self.path == "/api/topics/snapshot":
                 return self._topicsnapshot()
+            if self.path == "/api/onboarding/setup":
+                return self._onboardingsetup()
+            if self.path == "/api/onboarding/dismiss":
+                return self._onboardingdismiss()
             if self.path == "/api/docs/import":
                 return self._docsimport()
             if self.path == "/api/docs/meta":
@@ -617,7 +1077,12 @@ class Handler(BaseHTTPRequestHandler):
         )
         core.ReloadTopicPaths()
         core.GenerateIndex()
-        core.AppendLog("新建选题：%s（%s）" % (result.get("name"), result.get("id")))
+        nqc = result.get("inherited_queries") or 0
+        if nqc:
+            core.AppendLog("新建选题：%s（%s），继承问答库 %d 页" % (
+                result.get("name"), result.get("id"), nqc))
+        else:
+            core.AppendLog("新建选题：%s（%s）" % (result.get("name"), result.get("id")))
         return self._send(200, result)
 
     def _topicreset(self):
@@ -625,6 +1090,21 @@ class Handler(BaseHTTPRequestHandler):
         core.ReloadTopicPaths()
         core.GenerateIndex()
         core.AppendLog("重置选题：%s" % result.get("name"))
+        return self._send(200, result)
+
+    def _onboardingsetup(self):
+        body = self._body()
+        result = onboard.SetupFromTitle(body.get("title", ""))
+        core.ReloadTopicPaths()
+        return self._send(200, result)
+
+    def _onboardingdismiss(self):
+        body = self._body()
+        stype = body.get("type", "checklist")
+        if stype == "welcome":
+            result = onboard.DismissWelcome()
+        else:
+            result = onboard.DismissChecklist()
         return self._send(200, result)
 
     def _rulessave(self):
@@ -669,13 +1149,31 @@ class Handler(BaseHTTPRequestHandler):
         name = SafeName(body.get("name", ""))
         if not name:
             return self._send(400, {"error": "缺少文件名"})
+        slow = name.lower()
+        if not slow.endswith((".pdf", ".docx", ".md", ".txt")):
+            return self._send(400, {"error": "仅支持 PDF、Word、Markdown、纯文本"})
+        core.ReloadTopicPaths()
         os.makedirs(core.rawsourcesdir, exist_ok=True)
-        with open(os.path.join(core.rawsourcesdir, name), "wb") as f:
+        spath = os.path.join(core.rawsourcesdir, name)
+        with open(spath, "wb") as f:
             f.write(base64.b64decode(body.get("data", "")))
+        if os.path.getsize(spath) <= 0:
+            os.remove(spath)
+            return self._send(400, {"error": "文件为空或上传数据损坏"})
         surl = wops.ResolveDoiUrl((body.get("url") or "").strip())
         if surl:
             core.SetPaperUrl(surl, srawfile=name)
-        return self._send(200, {"status": "ok", "name": name})
+        try:
+            core.GenerateIndex()
+        except Exception:
+            pass
+        ometa = core.ParseSourceFilename(name)
+        core.AppendLog("[upload] 添加文献 %s（key: %s）" % (name, ometa["key"]))
+        return self._send(200, {
+            "status": "ok", "name": name, "key": ometa["key"],
+            "topic": topics.GetCurrentTopicId(),
+            "total": len(core.ListSources()),
+        })
 
     def _sourceurl(self):
         body = self._body()
@@ -702,35 +1200,59 @@ class Handler(BaseHTTPRequestHandler):
     def _ingestcancel(self):
         global ingestjob
         with ingestlock:
+            if multiuser and ingestjob.get("uid") not in (0, None, self._Uid()):
+                return self._send(403, {"error": "只能取消自己的任务"})
+            if not ingestjob.get("running"):
+                return self._send(200, {"status": "idle", **ingestjob})
             ingestjob["cancelled"] = True
-        return self._send(200, {"status": "cancelling"})
+            return self._send(200, dict(ingestjob, status="cancelling"))
 
     def _query(self):
+        global queryjob
         body = self._body()
         squestion = (body.get("question") or "").strip()
         if not squestion:
             return self._send(400, {"error": "请输入问题"})
         oconfig = LoadConfig()
         noauth = "pollinations.ai" in (oconfig.get("base_url") or "")
-        if not oconfig.get("api_key") and not noauth:
+        if not HasUsableApiKey(oconfig) and not noauth:
             return self._send(200, {"status": "need_key"})
-        wops.Init(core.wikidir, core.rawsourcesdir, core.rootdir)
-        scontext = wops.CollectQueryContext(squestion)
-        slang = oconfig.get("language", "中文")
-        vmessages = [
-            {"role": "system", "content": (
-                "你是博士论文知识库助手。仅根据提供的 wiki 页面作答，引用页面 id 如 [[kaplaner-2025]]。"
-                "不确定处标明待核实。用%s回答。" % slang
-            )},
-            {"role": "user", "content": "知识库摘录：\n%s\n\n问题：%s" % (scontext, squestion)},
-        ]
-        sanswer = CallLlm(oconfig, vmessages, bjson=False)
-        osaved = None
-        if body.get("save", True):
-            osaved = wops.SaveQueryPage(squestion, sanswer)
-            core.GenerateIndex()
-            core.AppendLog("[query] %s → %s" % (squestion[:60], osaved.get("id")))
-        return self._send(200, {"answer": sanswer, "saved": osaved})
+        with querylock:
+            if queryjob.get("running"):
+                if multiuser and queryjob.get("uid") not in (0, None, self._Uid()):
+                    return self._send(200, {
+                        "status": "busy", "busy": "query",
+                        "message": "服务器正在处理其他用户的任务，请稍后再试。",
+                    })
+                if queryjob.get("question") == squestion:
+                    return self._send(200, dict(queryjob, status="running"))
+                return self._send(200, {
+                    "status": "busy", "busy": "query",
+                    "message": "上一条问答仍在进行，请稍后再提问。",
+                })
+        obusy = LlmBusyPayload()
+        if obusy and obusy.get("busy") == "ingest":
+            if multiuser and ingestjob.get("uid") not in (0, None, self._Uid()):
+                obusy = {"status": "busy", "busy": "ingest",
+                         "message": "服务器正在处理其他用户的任务，请稍后再试。"}
+            return self._send(200, obusy)
+        serr = self._CheckLlmQuota(1)
+        if serr:
+            return self._send(200, {"status": "error", "error": serr})
+        bsave = body.get("save", True)
+        ouser = getattr(self, "_user", None)
+        with querylock:
+            queryjob = {
+                "running": True, "question": squestion, "answer": "", "error": "",
+                "finished": False, "saved": None, "status": "running",
+                "uid": self._Uid(),
+            }
+        threading.Thread(
+            target=RunQueryJob,
+            args=(oconfig, squestion, bsave, ouser["root"] if ouser else None),
+            daemon=True,
+        ).start()
+        return self._send(200, {"status": "started", "question": squestion})
 
     def _topicsnapshot(self):
         wops.Init(core.wikidir, core.rawsourcesdir, core.rootdir)
@@ -826,9 +1348,12 @@ class Handler(BaseHTTPRequestHandler):
     def _docsexport(self):
         body = self._body()
         doced.Init(topics.GetTopicDir())
+        sdir = body.get("dir", "")
+        if multiuser:  # 云端模式：导出固定到用户自己的数据目录，防止写服务器任意路径
+            sdir = os.path.join(_boundroot, "exports")
         result = doced.ExportDoc(
             body.get("id", ""),
-            body.get("dir", ""),
+            sdir,
             body.get("filename", ""),
         )
         core.AppendLog("[doc] 导出 %s → %s" % (body.get("id"), result.get("path")))
@@ -845,18 +1370,38 @@ class Handler(BaseHTTPRequestHandler):
         oconfig = LoadConfig()
         with ingestlock:
             if ingestjob["running"]:  # 已有任务在跑：返回当前进度，前端继续轮询
+                if multiuser and ingestjob.get("uid") not in (0, None, self._Uid()):
+                    return self._send(200, {
+                        "status": "busy", "busy": "ingest",
+                        "message": "服务器正在处理其他用户的任务，请稍后再试。",
+                    })
                 return self._send(200, dict(ingestjob, status="running"))
+        obusy = LlmBusyPayload()
+        if obusy and obusy.get("busy") == "query":
+            if multiuser and queryjob.get("uid") not in (0, None, self._Uid()):
+                obusy = {"status": "busy", "busy": "query",
+                         "message": "服务器正在处理其他用户的任务，请稍后再试。"}
+            return self._send(200, obusy)
         rawfile = body.get("rawfile")
         targets = [SafeName(rawfile)] if rawfile else core.PendingSources()
         if not targets:
             return self._send(200, {"status": "no_pending"})
         noauth = "pollinations.ai" in (oconfig.get("base_url") or "")  # 免注册端点跳过 Key 检查
-        if not oconfig.get("api_key") and not noauth:
+        if not HasUsableApiKey(oconfig) and not noauth:
             return self._send(200, {"status": "need_key", "pending": len(targets)})
+        serr = self._CheckLlmQuota(len(targets))
+        if serr:
+            return self._send(200, {"status": "error", "error": serr})
+        ouser = getattr(self, "_user", None)
         with ingestlock:
             ingestjob = {"running": True, "total": len(targets), "done": 0, "current": "",
-                         "ingested": [], "failed": [], "finished": False, "cancelled": False}
-        threading.Thread(target=RunIngestJob, args=(oconfig, targets), daemon=True).start()
+                         "ingested": [], "failed": [], "briefs": [], "finished": False,
+                         "cancelled": False, "uid": self._Uid()}
+        threading.Thread(
+            target=RunIngestJob,
+            args=(oconfig, targets, ouser["root"] if ouser else None),
+            daemon=True,
+        ).start()
         return self._send(200, {"status": "started", "total": len(targets)})
 
 
@@ -870,7 +1415,7 @@ def Main():
         webbrowser.open(url)
         return
     core.GenerateIndex()
-    print("博士论文 Wiki 已启动：%s" % url)
+    print("%s 已启动：%s" % (APP_NAME, url))
     print("（按 Ctrl+C 或关闭此窗口即停止）")
     threading.Timer(1.0, lambda: webbrowser.open(url)).start()
     try:

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Paper-Helper 统一程序入口（macOS / Windows / Linux）。
+"""研栈统一程序入口（macOS / Windows / Linux）。
 
 检测依赖 → 系统原生弹窗确认 → 自动安装 → 启动桌面窗口。
-由 Paper-Helper.app（mac）或 Paper-Helper.vbs（win）调用，不经终端。
+由 Yanzhan.app（mac）或 Yanzhan.vbs（win）调用，不经终端。
 """
 import os
 import sys
@@ -15,6 +15,7 @@ toolsdir = os.path.join(rootdir, "tools")
 sys.path.insert(0, toolsdir)
 
 import single_instance as si  # noqa: E402
+from app_meta import APP_NAME, APP_SLUG, GUI_ENV, LogDir, ResolveConfigDir  # noqa: E402
 
 vrequired = [
     ("PySide6", "PySide6"),
@@ -42,7 +43,7 @@ def MissingPackages():
 
 
 def IsGuiMode():
-    return os.environ.get("PAPER_HELPER_GUI") == "1"
+    return os.environ.get(GUI_ENV) == "1" or os.environ.get("PAPER_HELPER_GUI") == "1"
 
 
 def AcquireSingleInstance():
@@ -53,9 +54,9 @@ def AcquireSingleInstance():
     if nresult is False:
         # 已有健康实例并已被唤醒到前台，本进程安静退出
         return False
-    NativeAlert(
-        "Paper-Helper",
-        "应用可能已在运行，但无法唤醒窗口。\n\n"
+        NativeAlert(
+            APP_NAME,
+            "应用可能已在运行，但无法唤醒窗口。\n\n"
         "请在任务管理器（Windows）或活动监视器（macOS）中\n"
         "结束所有 python / pythonw 进程后，重新启动。",
         "caution",
@@ -66,7 +67,7 @@ def AcquireSingleInstance():
 def SavePythonPath():
     """记住可用的 Python 路径，供 .app 下次启动时优先选用（避免 Finder PATH 过窄）。"""
     try:
-        confdir = os.path.join(rootdir, ".paper-helper")
+        confdir = ResolveConfigDir(rootdir)
         os.makedirs(confdir, exist_ok=True)
         with open(os.path.join(confdir, "python.path"), "w", encoding="utf-8") as f:
             f.write(sys.executable)
@@ -76,18 +77,13 @@ def SavePythonPath():
 
 def SetupGuiLogging():
     """GUI 模式将 stdout/stderr 写入日志文件，避免依赖终端。"""
-    if sys.platform == "darwin":
-        logdir = os.path.join(os.path.expanduser("~"), "Library", "Logs", "Paper-Helper")
-    elif sys.platform.startswith("win"):
-        logdir = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "Paper-Helper", "logs")
-    else:
-        logdir = os.path.join(os.path.expanduser("~"), ".paper-helper", "logs")
+    logdir = LogDir()
     os.makedirs(logdir, exist_ok=True)
     logpath = os.path.join(logdir, "launch.log")
     flog = open(logpath, "a", encoding="utf-8")
     sys.stdout = flog
     sys.stderr = flog
-    print("\n--- Paper-Helper 启动 %s ---" % __import__("datetime").datetime.now())
+    print("\n--- %s 启动 %s ---" % (APP_NAME, __import__("datetime").datetime.now()))
 
 
 def EscAppleScript(s):
@@ -159,7 +155,7 @@ def NativeNotify(stitle, smsg):
 def ShowInstallWait():
     """仅发系统通知，不用空白按钮对话框（避免用户误关导致后台 pip 与界面状态不一致）。"""
     NativeNotify(
-        "Paper-Helper",
+        APP_NAME,
         "正在安装依赖，请稍候约 1–3 分钟…\n安装完成后将自动打开窗口。",
     )
 
@@ -169,7 +165,7 @@ def PrintInstallBanner(vmissing):
         return
     print()
     print("=" * 52)
-    print("  Paper-Helper · 正在安装依赖")
+    print("  %s · 正在安装依赖" % APP_NAME)
     print("=" * 52)
     print("  缺少：%s" % "、".join(vmissing))
     print("  下方将显示 pip 下载/安装进度条，请稍候…")
@@ -257,8 +253,8 @@ def Main():
         + "\n".join("  · %s" % p for p in vmissing)
         + "\n\n是否自动安装？\n（需联网，首次约 1–3 分钟）"
     )
-    if not NativeConfirm("Paper-Helper · 缺少依赖", smsg):
-        NativeAlert("Paper-Helper", "已取消。安装依赖后可重新启动应用。")
+    if not NativeConfirm("%s · 缺少依赖" % APP_NAME, smsg):
+        NativeAlert(APP_NAME, "已取消。安装依赖后可重新启动应用。")
         sys.exit(0)
 
     ShowInstallWait()
@@ -267,7 +263,7 @@ def Main():
     bok, serr = PipInstall()
     if not bok:
         NativeAlert(
-            "Paper-Helper · 安装失败",
+            "%s · 安装失败" % APP_NAME,
             "自动安装未成功，请手动在终端执行：\n\n"
             "%s -m pip install -r requirements.txt\n\n"
             "错误：%s" % (sys.executable, serr),
@@ -278,7 +274,7 @@ def Main():
     vmissing = MissingPackages()
     if vmissing:
         NativeAlert(
-            "Paper-Helper · 安装未完成",
+            "%s · 安装未完成" % APP_NAME,
             "依赖仍未就绪：%s\n\n当前 Python：\n%s\n\n请在终端执行：\n%s -m pip install -r requirements.txt"
             % ("、".join(vmissing), sys.executable, sys.executable),
             "stop",
@@ -286,7 +282,7 @@ def Main():
         sys.exit(1)
 
     SavePythonPath()
-    NativeAlert("Paper-Helper", "依赖安装完成，正在启动应用…")
+    NativeAlert(APP_NAME, "依赖安装完成，正在启动应用…")
     RunDesktop()
 
 

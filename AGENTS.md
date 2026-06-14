@@ -1,4 +1,4 @@
-# AGENTS.md · 博士论文 Wiki 的 Agent 工作规范
+# AGENTS.md · 研栈 Agent 工作规范
 
 本仓库是一个**基于 Karpathy「LLM Wiki」范式**的个人知识库。
 分工原则：**人类负责策展（curate），Agent 负责簿记（maintain）**。

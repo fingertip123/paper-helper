@@ -3,7 +3,7 @@
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 cd "$ROOT" || exit 1
 export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.pyenv/shims:$HOME/.local/bin:/usr/bin:/bin:$PATH"
-CONFIG_DIR="$ROOT/.paper-helper"
+CONFIG_DIR="$ROOT/.yanzhan"
 CACHE="$CONFIG_DIR/python.path"
 mkdir -p "$CONFIG_DIR"
 
@@ -43,5 +43,5 @@ if [ -z "$PY" ]; then
   osascript -e 'display alert "未找到 Python" message "请先安装 Python 3（https://www.python.org/downloads/）" as stop'
   exit 1
 fi
-export PAPER_HELPER_GUI=1
+export YANZHAN_GUI=1
 exec "$PY" tools/entry.py

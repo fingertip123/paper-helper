@@ -135,9 +135,9 @@ def GenerateOverview():
         lines.append("已摄入 %d 篇文献：%s%s。" % (
             len(vsources), slist, "…" if len(vsources) > 12 else ""))
     else:
-        lines.append("尚无已摄入文献，请添加 PDF 后点「分析」。")
+        lines.append("尚无已纳入研究的文献，请添加 PDF 后点「纳入研究」。")
     if vpending:
-        lines.append("待分析 %d 篇。" % len(vpending))
+        lines.append("待纳入研究 %d 篇。" % len(vpending))
 
     lines += ["", "## 统计", ""]
     for stype, slabel in [

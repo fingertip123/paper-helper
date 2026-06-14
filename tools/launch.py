@@ -58,7 +58,7 @@ def EnsureDeps():
 
 def Main():
     print("=" * 42)
-    print("  博士论文 Wiki 启动中…  当前系统：%s" % OsName())
+    print("  研栈启动中…  当前系统：%s" % OsName())
     print("=" * 42)
     EnsureDeps()
     sys.path.insert(0, os.path.join(rootdir, "tools"))

@@ -19,7 +19,8 @@ def ResolveRootDir():
     """
     if not getattr(sys, "frozen", False):
         return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    ndatadir = os.path.join(os.path.expanduser("~"), "PaperHelper")
+    from app_meta import ResolveDataDir
+    ndatadir = ResolveDataDir()
     nseed = os.path.join(getattr(sys, "_MEIPASS", os.path.dirname(sys.executable)), "seed")
     if not os.path.exists(ndatadir) and os.path.isdir(nseed):
         shutil.copytree(nseed, ndatadir)
@@ -101,6 +102,12 @@ def ExtractLinks(nbody):
     return vtargets
 
 
+def FilenameToKey(sname):
+    """把文件名转为稳定 kebab key（用于无「作者,年份,标题」格式时）。"""
+    sslug = re.sub(r"[^\w\u4e00-\u9fff]+", "-", sname, flags=re.UNICODE).strip("-").lower()
+    return sslug[:56] if sslug else "source"
+
+
 def ParseSourceFilename(nfilename):
     """从原始 PDF 文件名解析出 作者 / 年份 / 标题 / 引用key。"""
     name = re.sub(r"\.(pdf|md|txt|docx)$", "", nfilename, flags=re.IGNORECASE)
@@ -112,9 +119,26 @@ def ParseSourceFilename(nfilename):
         m = re.match(r"^(.*?)\s*-\s*(\d{4})\s*-\s*(.*)$", name)
         if m:
             author, year, title = m.group(1).strip(), m.group(2), m.group(3).strip()
-    firstword = re.split(r"[\s,]+", author)[0].lower() if author else "src"
-    key = (firstword + "-" + year) if year else firstword
-    return {"key": key, "author": author, "year": year, "title": title, "filename": nfilename}
+    firstword = re.split(r"[\s,]+", author)[0].lower() if author else ""
+    if year and firstword:
+        skey = firstword + "-" + year
+    else:
+        skey = FilenameToKey(name)
+    return {"key": skey, "author": author, "year": year, "title": title, "filename": nfilename}
+
+
+def MergeWikiIntoNode(existing, onode, ofm):
+    """合并 wiki 页到已有节点，避免有 raw 文件的文献被降级为 unknown 而从论文库消失。"""
+    for skey, sval in onode.items():
+        if not sval:
+            continue
+        if skey == "type" and sval == "unknown" and existing.get("type") == "source":
+            continue
+        existing[skey] = sval
+    if existing.get("rawfile"):
+        existing["type"] = "source"
+    if ofm.get("type") == "source":
+        existing["ingested"] = True
 
 
 def BuildNodeIndex(vnodes):
@@ -127,20 +151,70 @@ def BuildNodeIndex(vnodes):
     return omap
 
 
+def ExtractMarkdownSections(nbody):
+    """按 ## 标题切分正文段落。"""
+    osections = {}
+    scurrent = ""
+    vbuf = []
+    for line in nbody.split("\n"):
+        if line.startswith("## "):
+            if scurrent:
+                osections[scurrent] = "\n".join(vbuf).strip()
+            scurrent = line[3:].strip()
+            vbuf = []
+        elif scurrent:
+            vbuf.append(line)
+    if scurrent:
+        osections[scurrent] = "\n".join(vbuf).strip()
+    return osections
+
+
+def StripWikiMarkup(stext):
+    """去掉 wikilink 与简单 Markdown 标记，便于摘要展示。"""
+    stext = re.sub(r"\[\[([^\]|]+)(?:\|([^\]]+))?\]\]", lambda m: m.group(2) or m.group(1), stext)
+    return re.sub(r"[*_`]", "", stext).strip()
+
+
+def ExtractSourceResearch(nbody):
+    """从 source 页固定章节提取研究化字段，供前端展示。"""
+    osec = ExtractMarkdownSections(nbody)
+    srelation = osec.get("与本论文的关系", "")
+    stension = osec.get("与已有文献的张力", "") or osec.get("共识与张力", "")
+    snext = osec.get("下一步阅读建议", "") or osec.get("下一步", "")
+    vrq = []
+    for m in wikilinkpattern.finditer(srelation):
+        tid = m.group(1).strip()
+        if tid not in vrq:
+            vrq.append(tid)
+    return {
+        "relation": StripWikiMarkup(srelation)[:420] if srelation else "",
+        "tensions": StripWikiMarkup(stension)[:320] if stension else "",
+        "design": StripWikiMarkup(osec.get("可借鉴的研究设计", ""))[:320],
+        "limits": StripWikiMarkup(osec.get("局限与存疑", ""))[:320],
+        "next_steps": StripWikiMarkup(snext)[:320] if snext else "",
+        "rq_links": vrq,
+        "has_research": bool(srelation or stension or snext),
+    }
+
+
 def GetSummary(nbody):
-    """取正文第一段非空、非标题文字作为摘要。"""
+    """优先取「一句话概括」，否则取正文首段。"""
+    osec = ExtractMarkdownSections(nbody)
+    if osec.get("一句话概括"):
+        s = StripWikiMarkup(osec["一句话概括"].split("\n")[0])
+        if s:
+            return s[:160]
     for line in nbody.split("\n"):
         s = line.strip()
         if not s or s.startswith(("#", ">", "|", "---")):
             continue
-        s = re.sub(r"\[\[([^\]|]+)(?:\|([^\]]+))?\]\]", lambda m: m.group(2) or m.group(1), s)
-        s = re.sub(r"[*_`]", "", s)
-        return s[:160]
+        return StripWikiMarkup(s)[:160]
     return ""
 
 
 def SourceMetaPath():
-    return os.path.join(topics.GetTopicDir(), ".paper-helper", "source_meta.json")
+    from app_meta import ResolveConfigDir
+    return os.path.join(ResolveConfigDir(topics.GetTopicDir()), "source_meta.json")
 
 
 def ReadSourceMeta():
@@ -236,14 +310,24 @@ def ScanWiki():
     vnodes = []
     vrawlinks = []
 
+    ousedids = set()
     for fn in ListSources():
         ometa = ParseSourceFilename(fn)
+        skey = ometa["key"]
+        nseq = 2
+        while skey in ousedids:
+            skey = "%s-%d" % (ometa["key"], nseq)
+            nseq += 1
+        ousedids.add(skey)
         vnodes.append({
-            "id": ometa["key"], "title": ometa["title"] or fn, "type": "source",
-            "aliases": [], "authors": [ometa["author"]] if ometa["author"] else [],
+            "id": skey, "title": ometa["title"] or fn, "type": "source",
+            "aliases": [ometa["key"]] if skey != ometa["key"] else [],
+            "authors": [ometa["author"]] if ometa["author"] else [],
             "year": ometa["year"], "venue": "", "tags": [], "rawfile": fn,
             "url": GetPendingSourceUrl(fn),
-            "ingested": False, "summary": "尚未分析。点击「分析」即可生成结构化摘要与关联。",
+            "ingested": False,
+            "summary": "尚未纳入研究。点击「纳入研究」生成摘要、关联研究问题与综述备忘。",
+            "research": {},
         })
 
     skipfiles = {"index.md", "log.md", "overview.md"}
@@ -255,19 +339,22 @@ def ScanWiki():
                 ntext = f.read()
             ofm, nbody = ParseFrontmatter(ntext)
             nodeid = os.path.splitext(fn)[0]
+            stype = ofm.get("type") or ("source" if "/sources/" in dirpath.replace("\\", "/") else "unknown")
             onode = {
-                "id": nodeid, "title": ofm.get("title", nodeid), "type": ofm.get("type", "unknown"),
+                "id": nodeid, "title": ofm.get("title", nodeid), "type": stype,
                 "aliases": ofm.get("aliases", []) if isinstance(ofm.get("aliases", []), list) else [],
                 "authors": ofm.get("authors", []) if isinstance(ofm.get("authors", []), list) else [],
                 "year": ofm.get("year", ""), "venue": ofm.get("venue", ""),
                 "tags": ofm.get("tags", []) if isinstance(ofm.get("tags", []), list) else [],
                 "url": ofm.get("url", ""),
                 "rawfile": "", "ingested": True, "summary": GetSummary(nbody),
+                "research": ExtractSourceResearch(nbody) if ofm.get("type") == "source" else {},
             }
             existing = next((n for n in vnodes if n["id"] == nodeid), None)
+            if not existing and nodeid:
+                existing = next((n for n in vnodes if nodeid in (n.get("aliases") or [])), None)
             if existing:
-                existing.update({k: v for k, v in onode.items() if v})
-                existing["ingested"] = True
+                MergeWikiIntoNode(existing, onode, ofm)
             else:
                 vnodes.append(onode)
             for t in ExtractLinks(nbody):
@@ -370,7 +457,7 @@ def GenerateIndex():
         lines.append("")
         for n in sorted(items, key=lambda x: x["id"]):
             tail = (" — %s" % n["title"]) if n["title"] and n["title"] != n["id"] else ""
-            mark = "" if n.get("ingested", True) else "（待分析）"
+            mark = "" if n.get("ingested", True) else "（待纳入研究）"
             lines.append("- [[%s]]%s%s" % (n["id"], tail, mark))
         lines.append("")
     with open(os.path.join(wikidir, "index.md"), "w", encoding="utf-8") as f:
@@ -395,7 +482,7 @@ def AppendLog(nmessage):
             f.write("---\ntype: log\ntitle: 操作审计日志\n---\n\n# Log · 操作历史\n\n" + line)
 
 
-def Render(odata, servermode=False, desktopmode=False):
+def Render(odata, servermode=False, desktopmode=False, stheme="girly", susername=""):
     payload = json.dumps(odata, ensure_ascii=False)
     startcmd = os.path.join(rootdir, "start.command").replace("\\", "\\\\").replace('"', '\\"')
     otopicsinit = {"topics": [], "current": ""}
@@ -406,11 +493,20 @@ def Render(odata, servermode=False, desktopmode=False):
             "purpose_fields": topics.GetPurposeFieldDefs(),
         }
     stopicsinit = json.dumps(otopicsinit, ensure_ascii=False)
+    sthemeid = stheme if stheme in ("fresh", "girly", "boyish", "cool") else "girly"
+    suserchip = ""
+    if susername:
+        sesc = susername.replace("&", "&amp;").replace("<", "&lt;").replace('"', "&quot;")
+        suserchip = (
+            '<span class="userchip" title="当前账号">👤 %s'
+            '<a onclick="LogoutUser()" title="退出登录">退出</a></span>' % sesc)
     return (HTMLTEMPLATE
             .replace("/*__DATA__*/", payload)
             .replace("/*__INIT_TOPICS__*/", stopicsinit)
+            .replace("/*__INIT_THEME__*/", json.dumps(sthemeid))
             .replace("/*__SERVERMODE__*/", "true" if servermode else "false")
             .replace("/*__DESKTOPMODE__*/", "true" if desktopmode else "false")
+            .replace("<!--__USERCHIP__-->", suserchip)
             .replace("/*__STARTCMD__*/", startcmd))
 
 
@@ -419,25 +515,34 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>博士论文 Wiki · 可视化</title>
-<script>try{document.documentElement.setAttribute("data-theme",localStorage.getItem("ph_theme")||"girly")}catch(e){}</script>
+<title>研栈 · 可视化</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@500;600;700&display=swap" rel="stylesheet">
+<script>try{var _phTheme=/*__INIT_THEME__*/;document.documentElement.setAttribute("data-theme",_phTheme||(localStorage.getItem("ph_theme")||"girly"))}catch(e){}</script>
 <style>
-  :root{--radius:14px;--radius-sm:10px;--radius-lg:20px}
+  :root{--radius:14px;--radius-sm:10px;--radius-lg:20px;--font-body:"Noto Sans SC","PingFang SC","Hiragino Sans GB","Microsoft YaHei UI","Microsoft YaHei",sans-serif;--font-display:"Noto Serif SC","Songti SC","STSong","PingFang SC",serif;--font-ui:var(--font-body);--font-mono:"JetBrains Mono","SF Mono",Menlo,Consolas,monospace;--font-graph:500 12px var(--font-body);--ls-title:.06em;--ls-btn:.04em;--ls-ui:.025em;--fw-display:600;--fw-btn:600;--fw-ui:500}
+  [data-theme="girly"]{--font-display:"Noto Serif SC","Songti SC","STSong","PingFang SC",serif;--ls-title:.1em;--ls-btn:.05em;--fw-display:600}
+  [data-theme="fresh"]{--font-display:"Noto Sans SC","PingFang SC","Hiragino Sans GB",sans-serif;--ls-title:.04em;--ls-btn:.03em;--fw-display:600;--fw-btn:600}
+  [data-theme="boyish"]{--font-display:"Noto Sans SC","Segoe UI","Helvetica Neue","PingFang SC",sans-serif;--ls-title:.03em;--ls-btn:.02em;--fw-display:700;--fw-btn:600}
+  [data-theme="cool"]{--font-display:"JetBrains Mono","SF Mono",Menlo,Consolas,monospace;--font-ui:"Noto Sans SC","PingFang SC",sans-serif;--ls-title:.08em;--ls-btn:.06em;--fw-display:500;--fw-btn:500;--font-graph:500 11px var(--font-ui)}
   :root,[data-theme="girly"]{--surface-hi:rgba(255,255,255,.48);--bg1:#faf6f4;--bg2:#f5ece8;--bg3:#f8f2f6;--panel:#fffcfb;--panel2:#f6f0ee;--panel-glass:rgba(255,252,251,.92);--float-panel:rgba(255,252,251,.88);--border:#eadfd9;--text:#4a3f47;--text-soft:#6d5f68;--muted:#9a8a94;--badge-text:#4a3f47;--accent:#c9789a;--accent2:#d9a0b8;--accent3:#b89fd8;--rose:#d4899f;--sage:#7eb89a;--gold:#e8b86d;--shadow:0 12px 40px rgba(74,63,71,.1);--shadow-sm:0 4px 16px rgba(74,63,71,.07);--btn-shadow:0 4px 14px rgba(201,120,154,.24);--tab-shadow:0 4px 12px rgba(201,120,154,.28);--card-hover-border:rgba(201,120,154,.45);--card-hover-shadow:0 14px 32px rgba(201,120,154,.14);--focus-border:rgba(201,120,154,.55);--focus-shadow:rgba(201,120,154,.12);--scroll-thumb:rgba(201,120,154,.28);--modal-backdrop:rgba(74,63,71,.32);--overlay-backdrop:rgba(74,63,71,.28);--dropzone-border:rgba(201,120,154,.35);--dropzone-drag:rgba(201,120,154,.08);--dropzone-bg:rgba(255,255,255,.45);--doc-preview-bg:#e8e2de;--revpick-bg:rgba(201,120,154,.08);--cmt-active-bg:rgba(201,120,154,.06);--cmt-active-border:rgba(201,120,154,.45);--ghost-hover:rgba(201,120,154,.08);--btn-sec-hover:rgba(201,120,154,.4);--ruletab-hover:rgba(201,120,154,.35);--svc-on-bg:rgba(201,120,154,.22);--toast-border:rgba(201,120,154,.35);--toast-shadow:0 10px 32px rgba(201,120,154,.18);--drawer-bg:rgba(255,252,251,.97);--drawer-shadow:-8px 0 32px rgba(74,63,71,.08);--revdiff-loading:rgba(255,252,251,.72);--graph-link:rgba(74,63,71,.14);--graph-link-active:rgba(201,120,154,.75);--graph-label:#4a3f47;--graph-ring:rgba(74,63,71,.35);  --tab-hover:rgba(255,255,255,.7);--depth3d:rgba(201,120,154,.1);--ambient3d:rgba(201,120,154,.06);--inset-edge3d:rgba(217,160,184,.09);--inset-press3d:rgba(201,120,154,.07);--rim3d:rgba(201,120,154,.18);--stone-fade3d:rgba(217,160,184,.22);--btn-depth3d:rgba(190,115,145,.13);--btn-ambient3d:rgba(201,120,154,.08);--btn-press3d:rgba(201,120,154,.09)}
   [data-theme="fresh"]{--surface-hi:rgba(255,255,255,.52);--bg1:#f3f5f2;--bg2:#eceee9;--bg3:#f0f2ef;--panel:#f8f9f7;--panel2:#eef1ec;--panel-glass:rgba(248,249,247,.94);--float-panel:rgba(248,249,247,.9);--border:#d8ddd4;--text:#3f4a44;--text-soft:#5a6560;--muted:#8a9490;--badge-text:#3f4a44;--accent:#7a9488;--accent2:#94a89e;--accent3:#a8b8a4;--rose:#b88888;--sage:#7a9488;--gold:#b8a878;--shadow:0 12px 40px rgba(63,74,68,.08);--shadow-sm:0 4px 16px rgba(63,74,68,.06);--btn-shadow:0 4px 14px rgba(122,148,136,.18);--tab-shadow:0 4px 12px rgba(122,148,136,.2);--card-hover-border:rgba(122,148,136,.38);--card-hover-shadow:0 14px 32px rgba(122,148,136,.1);--focus-border:rgba(122,148,136,.42);--focus-shadow:rgba(122,148,136,.1);--scroll-thumb:rgba(122,148,136,.24);--modal-backdrop:rgba(63,74,68,.22);--overlay-backdrop:rgba(63,74,68,.2);--dropzone-border:rgba(122,148,136,.28);--dropzone-drag:rgba(122,148,136,.07);--dropzone-bg:rgba(248,249,247,.65);--doc-preview-bg:#e6ebe6;--revpick-bg:rgba(122,148,136,.08);--cmt-active-bg:rgba(122,148,136,.06);--cmt-active-border:rgba(122,148,136,.32);--ghost-hover:rgba(122,148,136,.08);--btn-sec-hover:rgba(122,148,136,.35);--ruletab-hover:rgba(122,148,136,.3);--svc-on-bg:rgba(122,148,136,.16);--toast-border:rgba(122,148,136,.28);--toast-shadow:0 10px 32px rgba(122,148,136,.12);--drawer-bg:rgba(248,249,247,.97);--drawer-shadow:-8px 0 32px rgba(63,74,68,.06);--revdiff-loading:rgba(248,249,247,.8);--graph-link:rgba(63,74,68,.12);--graph-link-active:rgba(122,148,136,.62);--graph-label:#3f4a44;--graph-ring:rgba(63,74,68,.28);  --tab-hover:rgba(255,255,255,.55);--depth3d:rgba(122,148,136,.09);--ambient3d:rgba(122,148,136,.05);--inset-edge3d:rgba(148,168,158,.08);--inset-press3d:rgba(122,148,136,.06);--rim3d:rgba(122,148,136,.16);--stone-fade3d:rgba(148,168,158,.2);--btn-depth3d:rgba(106,138,124,.11);--btn-ambient3d:rgba(122,148,136,.07);--btn-press3d:rgba(122,148,136,.08)}
   [data-theme="boyish"]{--surface-hi:rgba(255,255,255,.55);--bg1:#f0f4fa;--bg2:#e8eef8;--bg3:#eef2fa;--panel:#ffffff;--panel2:#eef3fa;--panel-glass:rgba(255,255,255,.94);--float-panel:rgba(255,255,255,.9);--border:#c8d8ec;--text:#1e3a5f;--text-soft:#3d5a80;--muted:#6a85a8;--badge-text:#1e3a5f;--accent:#3d7dd6;--accent2:#5a9de8;--accent3:#f0a050;--rose:#e06070;--sage:#4aaa78;--gold:#e8a040;--shadow:0 12px 40px rgba(30,58,95,.1);--shadow-sm:0 4px 16px rgba(30,58,95,.08);--btn-shadow:0 4px 14px rgba(61,125,214,.28);--tab-shadow:0 4px 12px rgba(61,125,214,.26);--card-hover-border:rgba(61,125,214,.5);--card-hover-shadow:0 14px 32px rgba(61,125,214,.16);--focus-border:rgba(61,125,214,.55);--focus-shadow:rgba(61,125,214,.14);--scroll-thumb:rgba(61,125,214,.3);--modal-backdrop:rgba(30,58,95,.3);--overlay-backdrop:rgba(30,58,95,.26);--dropzone-border:rgba(61,125,214,.38);--dropzone-drag:rgba(61,125,214,.1);--dropzone-bg:rgba(255,255,255,.6);--doc-preview-bg:#d0d8e4;--revpick-bg:rgba(61,125,214,.1);--cmt-active-bg:rgba(61,125,214,.07);--cmt-active-border:rgba(61,125,214,.45);--ghost-hover:rgba(61,125,214,.08);--btn-sec-hover:rgba(61,125,214,.45);--ruletab-hover:rgba(61,125,214,.4);--svc-on-bg:rgba(61,125,214,.2);--toast-border:rgba(61,125,214,.38);--toast-shadow:0 10px 32px rgba(61,125,214,.18);--drawer-bg:rgba(255,255,255,.97);--drawer-shadow:-8px 0 32px rgba(30,58,95,.1);--revdiff-loading:rgba(255,255,255,.78);--graph-link:rgba(30,58,95,.14);--graph-link-active:rgba(61,125,214,.75);--graph-label:#1e3a5f;--graph-ring:rgba(30,58,95,.35);  --tab-hover:rgba(255,255,255,.8);--depth3d:rgba(61,125,214,.1);--ambient3d:rgba(61,125,214,.06);--inset-edge3d:rgba(140,175,220,.09);--inset-press3d:rgba(61,125,214,.07);--rim3d:rgba(61,125,214,.2);--stone-fade3d:rgba(140,175,220,.22);--btn-depth3d:rgba(50,110,195,.13);--btn-ambient3d:rgba(61,125,214,.08);--btn-press3d:rgba(61,125,214,.09)}
   [data-theme="cool"]{--surface-hi:rgba(255,255,255,.1);--bg1:#0d1117;--bg2:#121820;--bg3:#0f1419;--panel:#161b22;--panel2:#1c2330;--panel-glass:rgba(22,27,34,.94);--float-panel:rgba(22,27,34,.9);--border:#30363d;--text:#e6edf3;--text-soft:#b8c4d0;--muted:#7d8a98;--badge-text:#e6edf3;--accent:#00d4ff;--accent2:#a855f7;--accent3:#22d3ee;--rose:#ff6b8a;--sage:#34d399;--gold:#fbbf24;--shadow:0 12px 40px rgba(0,0,0,.45);--shadow-sm:0 4px 16px rgba(0,0,0,.32);--btn-shadow:0 4px 18px rgba(0,212,255,.22);--tab-shadow:0 4px 14px rgba(0,212,255,.28);--card-hover-border:rgba(0,212,255,.45);--card-hover-shadow:0 14px 36px rgba(0,212,255,.12);--focus-border:rgba(0,212,255,.55);--focus-shadow:rgba(0,212,255,.16);--scroll-thumb:rgba(0,212,255,.28);--modal-backdrop:rgba(0,0,0,.55);--overlay-backdrop:rgba(0,0,0,.48);--dropzone-border:rgba(0,212,255,.32);--dropzone-drag:rgba(0,212,255,.08);--dropzone-bg:rgba(28,35,48,.55);--doc-preview-bg:#2a3038;--revpick-bg:rgba(0,212,255,.08);--cmt-active-bg:rgba(0,212,255,.06);--cmt-active-border:rgba(0,212,255,.4);--ghost-hover:rgba(0,212,255,.1);--btn-sec-hover:rgba(0,212,255,.45);--ruletab-hover:rgba(0,212,255,.35);--svc-on-bg:rgba(0,212,255,.18);--toast-border:rgba(0,212,255,.35);--toast-shadow:0 10px 32px rgba(0,212,255,.15);--drawer-bg:rgba(22,27,34,.98);--drawer-shadow:-8px 0 36px rgba(0,0,0,.35);--revdiff-loading:rgba(22,27,34,.82);--graph-link:rgba(230,237,243,.12);--graph-link-active:rgba(0,212,255,.8);--graph-label:#e6edf3;--graph-ring:rgba(230,237,243,.4);  --tab-hover:rgba(28,35,48,.9);--depth3d:rgba(0,212,255,.11);--ambient3d:rgba(168,85,247,.07);--inset-edge3d:rgba(0,212,255,.08);--inset-press3d:rgba(0,180,220,.09);--rim3d:rgba(0,212,255,.22);--stone-fade3d:rgba(168,85,247,.18);--btn-depth3d:rgba(0,160,200,.14);--btn-ambient3d:rgba(0,212,255,.09);--btn-press3d:rgba(0,212,255,.1)}
   *{box-sizing:border-box;margin:0;padding:0}
-  body{background:linear-gradient(165deg,var(--bg1) 0%,var(--bg2) 45%,var(--bg3) 100%);color:var(--text);font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei",-apple-system,BlinkMacSystemFont,sans-serif;height:100vh;overflow:hidden;display:flex;flex-direction:column;transition:background .35s,color .25s}
+  body{background:linear-gradient(165deg,var(--bg1) 0%,var(--bg2) 45%,var(--bg3) 100%);color:var(--text);font-family:var(--font-body);font-size:14px;font-weight:400;line-height:1.6;letter-spacing:var(--ls-ui);-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;text-rendering:optimizeLegibility;height:100vh;overflow:hidden;display:flex;flex-direction:column;transition:background .35s,color .25s,font-family .25s}
+  button,input,select,textarea{font-family:inherit}
+  h1,h2,h3,.font-display{font-family:var(--font-display);font-weight:var(--fw-display);letter-spacing:var(--ls-title);line-height:1.35}
   ::-webkit-scrollbar{width:8px;height:8px}
   ::-webkit-scrollbar-thumb{background:var(--scroll-thumb);border-radius:8px}
   ::-webkit-scrollbar-track{background:transparent}
   header{padding:14px 24px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:14px;background:var(--panel-glass);backdrop-filter:blur(12px);flex-wrap:wrap;box-shadow:var(--shadow-sm)}
   .headbrand{display:flex;flex-direction:column;gap:5px;min-width:180px;max-width:min(520px,46vw)}
-  header h1{font-size:17px;font-weight:600;white-space:nowrap;color:var(--text);letter-spacing:.3px}
+  header h1{font-size:20px;font-weight:var(--fw-display);white-space:nowrap;color:var(--text);letter-spacing:var(--ls-title)}
   .curtopic{display:flex;align-items:baseline;gap:8px;min-width:0}
   .curtopic-lbl{font-size:11px;color:var(--muted);white-space:nowrap;flex-shrink:0;padding:3px 10px;border-radius:999px;background:var(--panel2);border:1px solid var(--border)}
-  .curtopic-title{font-size:14px;font-weight:600;color:var(--accent);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+  .curtopic-title{font-family:var(--font-display);font-size:14px;font-weight:var(--fw-display);color:var(--accent);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;letter-spacing:var(--ls-title)}
   header .meta{color:var(--muted);font-size:12px}
   .toolbar{display:flex;gap:8px;align-items:center}
   .svc{display:inline-flex;align-items:center;gap:7px;cursor:pointer;user-select:none}
@@ -448,7 +553,7 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   .svc input:checked+.track::after{left:20px;background:var(--accent)}
   .svc .svclbl{font-size:12px;color:var(--muted)}
   .tabs{display:flex;gap:6px;margin-left:auto;padding:4px;background:var(--panel2);border-radius:999px;border:1px solid var(--border)}
-  .tab{padding:7px 16px;border-radius:999px;cursor:pointer;font-size:13px;color:var(--muted);border:1px solid transparent;transition:.2s}
+  .tab{padding:7px 16px;border-radius:999px;cursor:pointer;font-family:var(--font-ui);font-size:13px;font-weight:var(--fw-ui);letter-spacing:var(--ls-ui);color:var(--muted);border:1px solid transparent;transition:.2s}
   .tab{transition:background .22s ease,color .22s ease,box-shadow .22s ease,transform .15s ease}
   .tab:hover{background:var(--tab-hover);color:var(--text-soft)}
   .tab.active{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;border-color:transparent;box-shadow:var(--tab-shadow)}
@@ -458,14 +563,14 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   #graphview.active{display:block;padding:0}
   .stats{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px}
   .statcard{padding:14px 20px;min-width:90px;border-radius:22px}
-  .statcard .num{font-size:22px;font-weight:600;color:var(--accent);position:relative;z-index:2}
+  .statcard .num{font-family:var(--font-display);font-size:24px;font-weight:var(--fw-display);letter-spacing:var(--ls-title);color:var(--accent);position:relative;z-index:2}
   .statcard .lbl{font-size:12px;color:var(--muted);margin-top:2px;position:relative;z-index:2}
   .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:20px}
   .libempty-wrap{display:flex;align-items:center;justify-content:center;min-height:min(360px,calc(100vh - 340px));grid-column:1/-1;width:100%}
   .libempty{text-align:center;color:var(--muted);font-size:14px;line-height:1.9;padding:24px 20px}
-  .libempty .hint-title{font-size:15px;color:var(--text-soft);margin-bottom:6px}
+  .libempty .hint-title{font-family:var(--font-display);font-size:16px;font-weight:var(--fw-display);letter-spacing:var(--ls-title);color:var(--text-soft);margin-bottom:6px}
   .card{padding:18px;border-radius:22px;cursor:pointer;position:relative}
-  .card .ttl{font-size:15px;font-weight:600;line-height:1.4;margin-bottom:8px;padding-right:20px;color:var(--text);position:relative;z-index:2}
+  .card .ttl{font-family:var(--font-display);font-size:15px;font-weight:var(--fw-display);letter-spacing:var(--ls-title);line-height:1.45;margin-bottom:8px;padding-right:20px;color:var(--text);position:relative;z-index:2}
   .card .sub{font-size:12px;color:var(--muted);margin-bottom:8px;position:relative;z-index:2}
   .card .sum{font-size:13px;color:var(--text-soft);line-height:1.6;position:relative;z-index:2}
   .card .tags,.card .pdfbtn,.card .urlbtn{position:relative;z-index:3}
@@ -476,7 +581,11 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   .badge.soft{background:var(--panel2);color:var(--muted);font-weight:500}
   .tags{margin-top:10px}
   .pending{opacity:.78}
-  .pending .ttl::after{content:" · 待分析";font-size:11px;color:var(--muted);font-weight:400}
+  .pending .ttl::after{content:" · 待纳入研究";font-size:11px;color:var(--muted);font-weight:400}
+  .field.research .k{color:var(--accent)}
+  .field.research .research-txt{font-size:13px;line-height:1.65;color:var(--text-soft);margin-top:4px;white-space:pre-wrap}
+  .field.research .rqchip{display:inline-block;margin:2px 6px 2px 0;padding:2px 10px;border-radius:999px;background:var(--panel2);border:1px solid var(--border);font-size:12px;cursor:pointer}
+  .field.research .rqchip:hover{border-color:var(--accent);color:var(--accent)}
   .typegroup{margin-bottom:24px}
   .typegroup h3{font-size:13px;color:var(--muted);margin-bottom:10px;text-transform:uppercase;letter-spacing:.5px}
   .listitem{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:8px;cursor:pointer}
@@ -488,15 +597,23 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   .legend .row{display:flex;align-items:center;gap:8px;margin:4px 0}
   .legend .dot{width:10px;height:10px}
   .hint{position:absolute;right:18px;bottom:18px;color:var(--muted);font-size:12px}
-  #drawer{position:absolute;top:0;right:0;width:380px;height:100%;background:var(--drawer-bg);border-left:1px solid var(--border);transform:translateX(100%);transition:transform .28s cubic-bezier(.22,1,.36,1);padding:22px;overflow:auto;z-index:10;box-shadow:var(--drawer-shadow)}
-  #drawer.open{transform:translateX(0)}
-  #drawer .close{position:absolute;top:14px;right:16px;cursor:pointer;color:var(--muted);font-size:20px;line-height:1}
-  #drawer h2{font-size:18px;margin:6px 40px 12px 0;line-height:1.4}
-  #drawer .field{margin:12px 0;font-size:13px}
-  #drawer .field .k{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px}
-  #drawer .links a{display:inline-block;margin:3px 6px 3px 0;padding:3px 9px;background:var(--panel2);border-radius:6px;font-size:12px;color:var(--accent);text-decoration:none;cursor:pointer}
+  .drawer-shell{position:absolute;inset:0;z-index:9;pointer-events:none}
+  .drawer-shell.is-open,.drawer-shell.is-closing{pointer-events:auto}
+  .drawer-scrim{position:absolute;inset:0;background:var(--overlay-backdrop);backdrop-filter:blur(3px);opacity:0;transition:opacity .3s ease}
+  .drawer-shell.is-open .drawer-scrim{opacity:1}
+  .drawer-shell.is-closing .drawer-scrim{opacity:0}
+  .drawer-panel{position:absolute;top:0;right:0;width:min(380px,92vw);height:100%;background:var(--drawer-bg);border-left:1px solid var(--border);padding:22px;overflow:auto;z-index:2;box-shadow:var(--drawer-shadow);transform:translateX(100%);will-change:transform}
+  .drawer-shell.is-open .drawer-panel{animation:drawerSlideIn .44s cubic-bezier(.34,1.38,.64,1) both}
+  .drawer-shell.is-closing .drawer-panel{animation:drawerSlideOut .36s cubic-bezier(.45,.05,.55,.95) both}
+  @keyframes drawerSlideIn{0%{transform:translateX(100%)}78%{transform:translateX(-12px)}92%{transform:translateX(4px)}100%{transform:translateX(0)}}
+  @keyframes drawerSlideOut{0%{transform:translateX(0)}22%{transform:translateX(-8px)}100%{transform:translateX(100%)}}
+  .drawer-panel .close{position:absolute;top:14px;right:16px;cursor:pointer;color:var(--muted);font-size:20px;line-height:1;z-index:3}
+  .drawer-panel h2{font-size:19px;margin:6px 40px 12px 0;line-height:1.4}
+  .drawer-panel .field{margin:12px 0;font-size:13px}
+  .drawer-panel .field .k{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px}
+  .drawer-panel .links a{display:inline-block;margin:3px 6px 3px 0;padding:3px 9px;background:var(--panel2);border-radius:6px;font-size:12px;color:var(--accent);text-decoration:none;cursor:pointer}
   .empty{color:var(--muted);text-align:center;padding:60px 20px;font-size:14px;line-height:1.8}
-  .btn{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:999px;font-size:13px;font-weight:600;cursor:pointer;border:1px solid transparent;background:linear-gradient(145deg,var(--accent) 0%,var(--accent2) 100%);color:#fff;text-decoration:none;white-space:nowrap;box-shadow:0 2px 0 var(--btn-depth3d),0 5px 12px var(--btn-ambient3d),inset 0 1px 0 var(--surface-hi,rgba(255,255,255,.28));transition:transform .1s ease-out,box-shadow .1s ease-out,filter .15s}
+  .btn{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:999px;font-family:var(--font-ui);font-size:13px;font-weight:var(--fw-btn);letter-spacing:var(--ls-btn);cursor:pointer;border:1px solid transparent;background:linear-gradient(145deg,var(--accent) 0%,var(--accent2) 100%);color:#fff;text-decoration:none;white-space:nowrap;box-shadow:0 2px 0 var(--btn-depth3d),0 5px 12px var(--btn-ambient3d),inset 0 1px 0 var(--surface-hi,rgba(255,255,255,.28));transition:transform .1s ease-out,box-shadow .1s ease-out,filter .15s,font-family .25s}
   .btn:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 3px 0 var(--btn-depth3d),0 8px 16px var(--btn-ambient3d),inset 0 1px 0 var(--surface-hi,rgba(255,255,255,.32))}
   .btn:active:not(:disabled){transform:translateY(1px);box-shadow:0 1px 0 var(--btn-depth3d),0 2px 6px var(--btn-ambient3d),inset 0 2px 4px var(--btn-press3d)}
   .btn.sec{background:linear-gradient(160deg,var(--panel) 0%,var(--panel2) 100%);color:var(--text-soft);border:1px solid var(--rim3d,var(--border));box-shadow:0 2px 0 var(--depth3d),0 4px 10px var(--ambient3d),inset 0 1px 0 var(--surface-hi,rgba(255,255,255,.4))}
@@ -507,20 +624,35 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   .btn.ghost:active:not(:disabled){transform:translateY(1px);box-shadow:0 1px 0 var(--depth3d),inset 0 2px 4px var(--inset-press3d)}
   .btn:disabled{opacity:.5;cursor:not-allowed;transform:none!important}
   .setbox .btn,.setbox-foot .btn,.theme-close-btn,.ruletab,.pdfbtn,.urlbtn{user-select:none}
-  .pdfbtn,.urlbtn{margin-top:10px;margin-right:8px;font-size:11px;padding:5px 12px;background:linear-gradient(160deg,var(--panel),var(--panel2));color:var(--accent);border:1px solid var(--rim3d,var(--border));border-radius:10px;cursor:pointer;text-decoration:none;display:inline-block;box-shadow:0 1px 0 var(--depth3d),0 3px 8px var(--ambient3d),inset 0 1px 0 var(--surface-hi,rgba(255,255,255,.35));transition:transform .1s,box-shadow .1s}
+  .pdfbtn,.urlbtn{margin-top:10px;margin-right:8px;font-family:var(--font-ui);font-size:11px;font-weight:var(--fw-ui);letter-spacing:var(--ls-ui);padding:5px 12px;background:linear-gradient(160deg,var(--panel),var(--panel2));color:var(--accent);border:1px solid var(--rim3d,var(--border));border-radius:10px;cursor:pointer;text-decoration:none;display:inline-block;box-shadow:0 1px 0 var(--depth3d),0 3px 8px var(--ambient3d),inset 0 1px 0 var(--surface-hi,rgba(255,255,255,.35));transition:transform .1s,box-shadow .1s}
   .pdfbtn:hover,.urlbtn:hover{border-color:var(--accent);transform:translateY(-1px)}
   .pdfbtn:active,.urlbtn:active{transform:translateY(1px);box-shadow:0 1px 0 var(--depth3d),inset 0 2px 4px var(--inset-press3d)}
   .urledit{display:flex;gap:8px;align-items:center}
   .urledit input{flex:1;min-width:0;padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--panel2);color:var(--text);font-size:12px}
-  #pdfmodal,#setmodal,#startmodal,#rulesmodal,#topicmodal,#querymodal,#lintmodal,#docexportmodal,#doccommitmodal,#dochistorymodal,#thememodal{position:fixed;inset:0;background:var(--modal-backdrop);backdrop-filter:blur(10px);z-index:50;display:flex;flex-direction:column;padding:24px;opacity:0;visibility:hidden;pointer-events:none;transition:opacity .24s ease,visibility .24s ease}
-  #pdfmodal.open,#setmodal.open,#startmodal.open,#rulesmodal.open,#topicmodal.open,#querymodal.open,#lintmodal.open,#docexportmodal.open,#doccommitmodal.open,#dochistorymodal.open,#thememodal.open{opacity:1;visibility:visible;pointer-events:auto}
+  #pdfmodal,#setmodal,#startmodal,#rulesmodal,#topicmodal,#querymodal,#lintmodal,#docexportmodal,#doccommitmodal,#dochistorymodal,#thememodal,#onboardmodal{position:fixed;inset:0;background:var(--modal-backdrop);backdrop-filter:blur(10px);z-index:50;display:flex;flex-direction:column;padding:24px;opacity:0;visibility:hidden;pointer-events:none;transition:opacity .24s ease,visibility .24s ease}
+  #pdfmodal.open,#setmodal.open,#startmodal.open,#rulesmodal.open,#topicmodal.open,#querymodal.open,#lintmodal.open,#docexportmodal.open,#doccommitmodal.open,#dochistorymodal.open,#thememodal.open,#onboardmodal.open{opacity:1;visibility:visible;pointer-events:auto}
   #pdfmodal.open>.bar,#pdfmodal.open>#pdfframe,.ph-modal.open>.setbox,.ph-modal.open>.setbox-flex{animation:modalPopIn .3s cubic-bezier(.22,1,.36,1) both}
   #pdfmodal.open>#pdfframe{animation-delay:.04s}
   #pdfmodal .bar{display:flex;align-items:center;gap:14px;padding:10px 14px;background:var(--panel);border:1px solid var(--border);border-radius:10px 10px 0 0}
   #pdfmodal .bar .name{font-size:13px;color:var(--text);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   #pdfmodal .bar .x{cursor:pointer;color:var(--muted);font-size:22px;line-height:1}
   #pdfframe{flex:1;width:100%;border:1px solid var(--border);border-top:none;border-radius:0 0 10px 10px;background:#fff}
-  #setmodal,#startmodal,#rulesmodal,#topicmodal,#querymodal,#lintmodal,#docexportmodal,#doccommitmodal,#dochistorymodal,#thememodal{align-items:center;justify-content:center}
+  #setmodal,#startmodal,#rulesmodal,#topicmodal,#querymodal,#lintmodal,#docexportmodal,#doccommitmodal,#dochistorymodal,#thememodal,#onboardmodal{align-items:center;justify-content:center}
+  #onboard_checklist{position:fixed;right:20px;bottom:20px;width:min(300px,calc(100vw - 40px));background:var(--float-panel);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow);z-index:40;padding:0;overflow:hidden;backdrop-filter:blur(12px)}
+  #onboard_checklist .ob-hd{display:flex;align-items:center;justify-content:space-between;padding:12px 14px 8px;font-family:var(--font-display);font-size:14px;font-weight:var(--fw-display);letter-spacing:var(--ls-title);color:var(--text)}
+  #onboard_checklist .ob-x{background:none;border:none;color:var(--muted);cursor:pointer;font-size:16px;padding:2px 6px;border-radius:6px}
+  #onboard_checklist .ob-x:hover{color:var(--text);background:var(--panel2)}
+  #onboard_checklist .ob-note{padding:0 14px 8px;font-size:11px;color:var(--muted);line-height:1.5}
+  #onboard_checklist .ob-list{list-style:none;margin:0;padding:8px 10px 12px}
+  #onboard_checklist .ob-item{display:flex;gap:8px;align-items:flex-start;padding:8px 6px;border-radius:8px;font-size:12px;line-height:1.45;color:var(--text-soft);cursor:pointer}
+  #onboard_checklist .ob-item:hover{background:var(--panel2)}
+  #onboard_checklist .ob-item.done{opacity:.72;cursor:default}
+  #onboard_checklist .ob-item.done .ob-action{display:none}
+  #onboard_checklist .ob-chk{width:16px;height:16px;border-radius:4px;border:1.5px solid var(--border);flex-shrink:0;margin-top:1px;display:flex;align-items:center;justify-content:center;font-size:11px}
+  #onboard_checklist .ob-item.done .ob-chk{background:var(--sage);border-color:var(--sage);color:#fff}
+  #onboard_checklist .ob-body{flex:1;min-width:0}
+  #onboard_checklist .ob-prog{font-size:11px;color:var(--muted);margin-top:2px}
+  #onboard_checklist .ob-action{font-size:11px;color:var(--accent);margin-top:3px}
   .setbox{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius-lg);padding:26px;width:min(560px,92vw);max-height:88vh;overflow:auto;box-shadow:var(--shadow)}
   .setbox-flex{display:flex;flex-direction:column;padding:0;overflow:hidden;box-shadow:var(--shadow)}
   .setbox-head{padding:22px 26px 0;flex-shrink:0;position:relative}
@@ -528,7 +660,7 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   .setbox-flex .setbox-head::before{content:"";display:block;height:4px;border-radius:var(--radius-lg) var(--radius-lg) 0 0;background:linear-gradient(90deg,var(--accent),var(--accent2),var(--accent3));margin:0 0 16px}
   .setbox-body{padding:8px 26px 12px;overflow-y:auto;flex:1;min-height:0}
   .setbox-foot{padding:14px 26px 20px;border-top:1px solid var(--border);flex-shrink:0;display:flex;gap:12px;justify-content:flex-end;background:linear-gradient(180deg,var(--panel),var(--panel2));border-radius:0 0 var(--radius-lg) var(--radius-lg)}
-  .setbox h2{font-size:18px;margin-bottom:6px;font-weight:600;letter-spacing:.2px}
+  .setbox h2{font-size:20px;margin-bottom:6px;font-weight:var(--fw-display);letter-spacing:var(--ls-title)}
   .setbox p.note{color:var(--muted);font-size:12px;margin-bottom:12px;line-height:1.7}
   .setbox label{display:block;font-size:12px;color:var(--muted);margin:14px 0 5px}
   .setbox input,.setbox select,.setbox textarea{width:100%;padding:10px 12px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--panel2);color:var(--text);font-size:13px;box-sizing:border-box;transition:border-color .2s,box-shadow .2s}
@@ -536,7 +668,7 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   .setbox .row{display:flex;gap:12px;justify-content:flex-end;margin-top:22px}
   .reqtag{color:var(--rose);margin-left:4px}
   .opttag{color:var(--muted);font-size:11px;margin-left:4px;font-weight:400}
-  #toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%) translateY(20px);background:var(--panel);border:1px solid var(--toast-border);border-radius:999px;padding:12px 22px;font-size:13px;z-index:80;opacity:0;transition:.25s;pointer-events:none;max-width:80vw;box-shadow:var(--toast-shadow)}
+  #toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%) translateY(20px);background:var(--panel);border:1px solid var(--toast-border);border-radius:999px;padding:12px 22px;font-family:var(--font-ui);font-size:13px;font-weight:var(--fw-ui);letter-spacing:var(--ls-ui);z-index:80;opacity:0;transition:.25s;pointer-events:none;max-width:80vw;box-shadow:var(--toast-shadow)}
   #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
   #overlay{position:fixed;inset:0;background:var(--overlay-backdrop);backdrop-filter:blur(8px);z-index:70;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;opacity:0;visibility:hidden;pointer-events:none;transition:opacity .22s ease,visibility .22s ease}
   #overlay.open{opacity:1;visibility:visible;pointer-events:auto}
@@ -546,7 +678,7 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   @keyframes viewIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
   @keyframes modalPopIn{from{opacity:0;transform:scale(.97) translateY(12px)}to{opacity:1;transform:scale(1) translateY(0)}}
   @keyframes rulePanelIn{from{opacity:0;transform:translateX(10px)}to{opacity:1;transform:translateX(0)}}
-  @media (prefers-reduced-motion:reduce){.view.active,.ph-modal.open>.setbox,.ph-modal.open>.setbox-flex,#pdfmodal.open>.bar,#pdfmodal.open>#pdfframe,#overlay.open>*,.rule-panel.active,#drawer{animation:none!important;transition:none!important}}
+  @media (prefers-reduced-motion:reduce){.view.active,.ph-modal.open>.setbox,.ph-modal.open>.setbox-flex,#pdfmodal.open>.bar,#pdfmodal.open>#pdfframe,#overlay.open>*,.rule-panel.active,.drawer-shell.is-open .drawer-panel,.drawer-shell.is-closing .drawer-panel{animation:none!important;transition:none!important}.drawer-shell.is-open .drawer-panel{transform:translateX(0)}.drawer-shell.is-closing .drawer-panel{transform:translateX(100%)}}
   #overlay .msg{font-size:14px;color:var(--text);max-width:70vw;text-align:center}
   #progwrap{width:300px;height:9px;background:var(--panel2);border:1px solid var(--border);border-radius:6px;overflow:hidden;display:none}
   #progwrap.show{display:block}
@@ -559,7 +691,31 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   .graphfilter select{padding:5px 8px;border-radius:6px;background:var(--panel2);border:1px solid var(--border);color:var(--text)}
   .lintlist{font-size:12px;line-height:1.7;color:var(--text)}
   .lintlist li{margin:4px 0}
-  .queryans{white-space:pre-wrap;line-height:1.7;font-size:13px;max-height:40vh;overflow:auto;padding:12px;background:var(--panel2);border-radius:8px;border:1px solid var(--border)}
+  .queryans{white-space:pre-wrap;line-height:1.7;font-size:13px;max-height:min(36vh,320px);overflow:auto;padding:12px;background:var(--panel);border-radius:8px;border:1px solid var(--border)}
+  #querymodal .query-panel{width:min(720px,96vw);max-height:min(90vh,860px);display:flex;flex-direction:column;padding:0;overflow:hidden}
+  .query-search-bar{display:flex;align-items:center;gap:8px;padding:10px 22px 12px;border-bottom:1px solid var(--border);flex-shrink:0}
+  .query-search-bar input{flex:1;min-width:0;padding:8px 11px;border-radius:8px;border:1px solid var(--border);background:var(--panel2);color:var(--text);font-size:13px}
+  .query-search-bar input:focus{outline:none;border-color:var(--focus-border);box-shadow:0 0 0 3px var(--focus-shadow)}
+  .query-search-stat{font-size:11px;color:var(--muted);white-space:nowrap}
+  .query-search-nav{display:flex;gap:4px}
+  .query-search-nav button{padding:4px 8px;font-size:12px;border-radius:6px;border:1px solid var(--border);background:var(--panel2);color:var(--text);cursor:pointer}
+  .query-search-nav button:disabled{opacity:.4;cursor:not-allowed}
+  #query_thread{flex:1;min-height:0;overflow-y:auto;padding:12px 22px 8px;display:flex;flex-direction:column;gap:16px}
+  .query-turn.query-search-hit{border-color:var(--accent);box-shadow:0 0 0 2px var(--focus-shadow)}
+  .query-turn.query-search-dim{opacity:.32}
+  .query-turn.query-search-active{outline:2px solid var(--accent);outline-offset:2px}
+  .query-turn{border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px;background:var(--panel2);box-shadow:var(--shadow-sm)}
+  .query-turn-hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+  .query-turn-hd .k{font-size:12px;color:var(--muted);font-weight:500}
+  .query-turn-hd .st{font-size:11px;color:var(--accent)}
+  .query-q-input{min-height:76px;width:100%;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-family:inherit;font-size:13px;line-height:1.55;resize:vertical;box-sizing:border-box}
+  .query-q-input:focus{outline:none;border-color:var(--focus-border);box-shadow:0 0 0 3px var(--focus-shadow)}
+  .query-turn-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:8px}
+  .query-turn.pending{opacity:.92}
+  .query-turn .query-ans{display:none;margin-top:10px}
+  .query-turn.answered .query-ans{display:block}
+  .query-turn.pending .query-ans{display:block;color:var(--muted)}
+  #query_composer_hint{padding:0 22px 10px;font-size:11px;color:var(--muted)}
   #docview.active{display:flex;flex-direction:column;padding:0;animation:viewIn .26s cubic-bezier(.22,1,.36,1) both}
   .docbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:12px 18px;border-bottom:1px solid var(--border);background:var(--panel-glass)}
   .docbar select,.docbar input{padding:6px 10px;border-radius:8px;background:var(--panel2);border:1px solid var(--border);color:var(--text);font-size:13px}
@@ -567,7 +723,7 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   .doclist{border-right:1px solid var(--border);overflow-y:auto;padding:10px}
   .docitem{padding:12px;border-radius:var(--radius-sm);cursor:pointer;margin-bottom:8px;border:1px solid transparent;transition:.2s}
   .docitem:hover,.docitem.active{background:var(--panel2);border-color:var(--cmt-active-border);box-shadow:var(--shadow-sm)}
-  .docitem .dt{font-size:13px;font-weight:600}
+  .docitem .dt{font-family:var(--font-display);font-size:13px;font-weight:var(--fw-display);letter-spacing:var(--ls-title)}
   .docitem .ds{font-size:11px;color:var(--muted);margin-top:4px}
   .docpreview-wrap{position:relative;overflow:hidden;padding:0;background:var(--doc-preview-bg);min-height:0}
   .dochint{display:none;padding:10px 18px;font-size:13px;color:var(--gold);background:var(--dropzone-drag);border-bottom:1px solid var(--dropzone-border);text-align:center;line-height:1.6}
@@ -621,7 +777,7 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   .topicbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;width:100%;margin:6px 0 2px}
   .topicbar .lbl{font-size:12px;color:var(--muted)}
   .topicpick{position:relative;min-width:180px;max-width:280px;flex:0 1 280px}
-  .topicpick-btn{width:100%;display:flex;align-items:center;gap:6px;padding:6px 10px;border-radius:8px;background:var(--panel2);border:1px solid var(--border);color:var(--text);font-size:13px;cursor:pointer;text-align:left}
+  .topicpick-btn{width:100%;display:flex;align-items:center;gap:6px;padding:6px 10px;border-radius:8px;background:var(--panel2);border:1px solid var(--border);color:var(--text);font-family:var(--font-ui);font-size:13px;font-weight:var(--fw-ui);letter-spacing:var(--ls-ui);cursor:pointer;text-align:left}
   .topicpick-btn:hover{border-color:var(--accent)}
   .topicpick-lbl{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
   .topicpick-caret{color:var(--muted);font-size:10px;flex-shrink:0}
@@ -632,7 +788,7 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   .topicpick-item.active{color:var(--accent);font-weight:600}
   .topicpick-item .topicpick-text{display:inline-block;white-space:nowrap;will-change:transform}
   .libtabs{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:0 0 10px;padding:4px 2px}
-  .libtab{display:inline-flex;align-items:center;gap:6px;max-width:min(280px,100%);padding:6px 14px;border-radius:999px;cursor:pointer;font-size:13px;color:var(--muted);background:var(--panel2);border:1px solid var(--border);transition:background .22s ease,color .22s ease,border-color .22s ease,box-shadow .22s ease}
+  .libtab{display:inline-flex;align-items:center;gap:6px;max-width:min(280px,100%);padding:6px 14px;border-radius:999px;cursor:pointer;font-family:var(--font-ui);font-size:13px;font-weight:var(--fw-ui);letter-spacing:var(--ls-ui);color:var(--muted);background:var(--panel2);border:1px solid var(--border);transition:background .22s ease,color .22s ease,border-color .22s ease,box-shadow .22s ease}
   .libtab:hover{border-color:var(--accent);color:var(--text-soft)}
   .libtab.active{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;border-color:transparent;box-shadow:var(--tab-shadow)}
   .libtab-lbl{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
@@ -640,7 +796,7 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   .libtab:not(.active) .cnt{background:var(--panel);color:var(--muted)}
   #rulesmodal,#topicmodal{align-items:center;justify-content:center}
   .ruletabs{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
-  .ruletab{padding:6px 14px;border-radius:999px;cursor:pointer;border:1px solid var(--rim3d,var(--border));font-size:12px;color:var(--text-soft);background:linear-gradient(160deg,var(--panel),var(--panel2));box-shadow:0 2px 0 var(--depth3d),0 4px 10px var(--ambient3d),inset 0 1px 0 var(--surface-hi,rgba(255,255,255,.35));transition:transform .1s,box-shadow .1s,border-color .15s,color .15s}
+  .ruletab{padding:6px 14px;border-radius:999px;cursor:pointer;border:1px solid var(--rim3d,var(--border));font-family:var(--font-ui);font-size:12px;font-weight:var(--fw-ui);letter-spacing:var(--ls-ui);color:var(--text-soft);background:linear-gradient(160deg,var(--panel),var(--panel2));box-shadow:0 2px 0 var(--depth3d),0 4px 10px var(--ambient3d),inset 0 1px 0 var(--surface-hi,rgba(255,255,255,.35));transition:transform .1s,box-shadow .1s,border-color .15s,color .15s}
   .ruletab:hover{border-color:var(--ruletab-hover);color:var(--accent);transform:translateY(-1px)}
   .ruletab:active{transform:translateY(1px);box-shadow:0 1px 0 var(--depth3d),inset 0 2px 4px var(--inset-press3d)}
   .ruletab.active{background:linear-gradient(145deg,var(--accent),var(--accent2));color:#fff;border-color:transparent;box-shadow:0 2px 0 var(--btn-depth3d),0 5px 12px var(--btn-ambient3d),inset 0 1px 0 var(--surface-hi,rgba(255,255,255,.25))}
@@ -658,9 +814,12 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   #topicmodal .setbox-head p.note,#rulesmodal .setbox-head p.note{margin-bottom:10px}
   .rule-panel{position:absolute;inset:0;overflow-y:auto;display:none}
   .rule-panel.active{display:block;animation:rulePanelIn .22s cubic-bezier(.22,1,.36,1) both}
-  #rulesmodal .ruleseditor{width:100%;height:100%;min-height:0;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--panel2);color:var(--text);font-size:12px;font-family:ui-monospace,monospace;resize:none;box-sizing:border-box}
-  .ruleseditor{width:100%;min-height:280px;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--panel2);color:var(--text);font-size:12px;font-family:ui-monospace,monospace;resize:vertical;box-sizing:border-box}
+  #rulesmodal .ruleseditor{width:100%;height:100%;min-height:0;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--panel2);color:var(--text);font-size:12px;font-family:var(--font-mono);resize:none;box-sizing:border-box}
+  .ruleseditor{width:100%;min-height:280px;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--panel2);color:var(--text);font-size:12px;font-family:var(--font-mono);resize:vertical;box-sizing:border-box}
   .setbox-flex .purposeform label:first-child{margin-top:4px}
+  .userchip{display:inline-flex;align-items:center;gap:8px;font-size:12px;color:var(--text-soft);padding:5px 12px;border:1px solid var(--border);border-radius:999px;background:var(--panel2);white-space:nowrap}
+  .userchip a{color:var(--accent);cursor:pointer;text-decoration:none}
+  .userchip a:hover{text-decoration:underline}
   .theme-fab{position:fixed;top:72px;right:20px;z-index:45;width:50px;height:50px;border-radius:16px;border:1px solid var(--rim3d,var(--border));cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:22px;background:linear-gradient(155deg,var(--panel) 0%,var(--panel2) 100%);box-shadow:0 3px 0 var(--depth3d),0 7px 16px var(--ambient3d),inset 0 1px 0 var(--surface-hi,rgba(255,255,255,.45));transition:transform .15s,box-shadow .15s}
   .theme-fab:hover{transform:translateY(-1px);box-shadow:0 4px 0 var(--depth3d),0 9px 20px var(--ambient3d),inset 0 1px 0 var(--surface-hi,rgba(255,255,255,.5))}
   .theme-fab:active{transform:translateY(1px);box-shadow:0 1px 0 var(--depth3d),0 4px 10px var(--ambient3d),inset 0 2px 4px var(--inset-press3d)}
@@ -679,7 +838,7 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   .themecard{position:relative;padding:0;border:none;border-radius:24px;cursor:pointer;background:transparent;text-align:left}
   .themecard-inner{padding:18px 18px 16px;border-radius:24px}
   .themecard .ti{font-size:32px;line-height:1;margin-bottom:10px;filter:drop-shadow(0 1px 2px var(--ambient3d))}
-  .themecard .tn{font-weight:600;font-size:15px;margin-bottom:4px;color:var(--text)}
+  .themecard .tn{font-family:var(--font-display);font-weight:var(--fw-display);font-size:16px;letter-spacing:var(--ls-title);margin-bottom:4px;color:var(--text)}
   .themecard .td{font-size:12px;color:var(--muted);line-height:1.55}
   .themeswatches{display:flex;gap:8px;margin-top:12px}
   .themeswatch{width:26px;height:26px;border-radius:50%;border:2px solid var(--rim3d,rgba(255,255,255,.35));box-shadow:0 2px 0 var(--depth3d),0 3px 6px var(--ambient3d),inset 0 -2px 5px var(--inset-edge3d),inset 0 2px 4px var(--surface-hi,rgba(255,255,255,.28))}
@@ -689,7 +848,7 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
 <body>
 <header>
   <div class="headbrand">
-    <h1>✿ 博士论文 Wiki</h1>
+    <h1>✿ 研栈</h1>
     <div class="curtopic" id="curtopic">
       <span class="curtopic-lbl">当前选题</span>
       <span class="curtopic-title" id="curtopic_title">加载中…</span>
@@ -711,7 +870,7 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   <label class="svc" title="本地服务开关"><input type="checkbox" id="svctoggle"><span class="track"></span><span class="svclbl" id="svclbl">服务</span></label>
   <div class="toolbar" id="toolbar">
     <button class="btn" onclick="AddPaper()">🌷 添加文献</button>
-    <button class="btn sec" onclick="Analyze()">✨ 智能分析</button>
+    <button class="btn sec" onclick="Analyze()">✨ 纳入研究</button>
     <button class="btn sec" onclick="OpenQuery()">💭 知识查询</button>
     <button class="btn sec" onclick="RunLint()">🌿 健康巡检</button>
     <button class="btn sec" onclick="Refresh()">↻ 刷新</button>
@@ -721,6 +880,7 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
     <input type="file" id="fileinput" accept=".pdf,.docx,.md,.txt" multiple style="display:none">
   </div>
   <span class="meta" id="metainfo"></span>
+  <!--__USERCHIP__-->
   <div class="tabs">
     <div class="tab active" data-view="libview">论文库</div>
     <div class="tab" data-view="graphview">知识图谱</div>
@@ -763,7 +923,10 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
       </aside>
     </div>
   </section>
-  <div id="drawer"><span class="close" onclick="CloseDrawer()">×</span><div id="drawerbody"></div></div>
+  <div id="drawer_shell" class="drawer-shell" data-drawer-shell>
+    <div class="drawer-scrim" aria-hidden="true"></div>
+    <aside id="drawer" class="drawer-panel"><span class="close" onclick="CloseDrawer()">×</span><div id="drawerbody"></div></aside>
+  </div>
   <div id="pdfmodal"><div class="bar"><span class="name" id="pdfname"></span><a class="btn ghost" id="pdfnewtab" target="_blank">在新标签打开 ↗</a><span class="x" onclick="ClosePdf()">×</span></div><iframe id="pdfframe"></iframe></div>
   <div id="doccommitmodal" class="ph-modal"><div class="setbox setbox-flex" style="width:min(640px,94vw)">
     <div class="setbox-head">
@@ -841,7 +1004,7 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   <div id="setmodal" class="ph-modal"><div class="setbox setbox-flex" style="width:min(560px,92vw)">
     <div class="setbox-head">
       <h2>🎀 偏好设置 · 大模型 API</h2>
-      <p class="note">填写后，点「分析」即可自动把文献摄入知识库。兼容 OpenAI 接口（OpenAI / DeepSeek / 通义 / Moonshot 等）。Key 仅保存在本机 <code>.paper-helper/config.json</code>，不会上传。</p>
+      <p class="note">新用户已默认配置<strong>智谱 GLM-4-Flash</strong>，可直接「纳入研究」与「知识查询」。也可自行替换 API Key 或其它免费模型。自定义 Key 仅保存在本机 <code>.yanzhan/config.json</code>。</p>
     </div>
     <div class="setbox-body">
       <label>快速选择（免费模型）</label>
@@ -861,7 +1024,7 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   <div id="topicmodal" class="ph-modal"><div class="setbox setbox-flex" style="width:min(600px,94vw)">
     <div class="setbox-head">
       <h2>🌷 新建选题</h2>
-      <p class="note">选题以论文题目命名。可从下方选择历史题目一键导入；未导入时结构规则与工作规范沿用当前选题。</p>
+      <p class="note">选题以论文题目命名。从旧选题导入时，会继承其<strong>已沉淀到问答库</strong>的 wiki 页面，但<strong>不会</strong>继承「知识查询」弹窗里的会话记录。未导入时结构规则与工作规范沿用当前选题。</p>
       <div class="refbar">
         <span class="note" style="margin:0">从旧选题导入</span>
         <div class="refpick">
@@ -901,28 +1064,50 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
     </div>
     <div class="setbox-foot"><button class="btn ghost" onclick="CloseRules()">取消</button><button class="btn" onclick="SaveRules()">保存</button></div>
   </div></div>
-  <div id="querymodal" class="ph-modal"><div class="setbox" style="width:min(640px,94vw)">
-    <h2>💭 知识库查询</h2>
-    <p class="note">基于已编译 wiki 页面作答，结果可沉淀到 wiki/queries/。</p>
-    <label>你的问题</label>
-    <textarea id="query_input" style="min-height:88px;width:100%;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--panel2);color:var(--text);font-family:inherit;box-sizing:border-box" placeholder="例如：行政超载与政策分诊的因果证据有哪些？"></textarea>
-    <div id="query_result" class="queryans" style="display:none;margin-top:12px"></div>
-    <div class="row"><button class="btn ghost" onclick="CloseQuery()">关闭</button><button class="btn" onclick="SubmitQuery()">提问</button></div>
+  <div id="querymodal" class="ph-modal"><div class="setbox setbox-flex query-panel">
+    <div class="setbox-head">
+      <h2>💭 知识库查询</h2>
+      <p class="note">基于已编译 wiki 作答；提问后在后台运行，可关闭本窗口继续编辑文档（⌘/Ctrl + Enter 发送）。切换选题会分别保留各选题的问答记录。</p>
+    </div>
+    <div class="query-search-bar">
+      <input id="query_search" type="search" placeholder="模糊搜索本选题问答…" oninput="RunQuerySearch()" onkeydown="QuerySearchKeydown(event)">
+      <span class="query-search-stat" id="query_search_stat"></span>
+      <div class="query-search-nav">
+        <button type="button" id="query_search_prev" onclick="JumpQuerySearch(-1)" disabled title="上一条">↑</button>
+        <button type="button" id="query_search_next" onclick="JumpQuerySearch(1)" disabled title="下一条">↓</button>
+      </div>
+    </div>
+    <div class="setbox-body" id="query_thread"></div>
+    <p class="note" id="query_composer_hint">在最新输入框提问；修改上文后点「重新提问」可更新该轮回答。</p>
+    <div class="setbox-foot"><button class="btn ghost" onclick="CloseQuery()">关闭</button></div>
   </div></div>
   <div id="lintmodal" class="ph-modal"><div class="setbox" style="width:min(640px,94vw);max-height:88vh;overflow:auto">
     <h2>🌿 知识库巡检</h2>
     <div id="lint_body" class="lintlist">加载中…</div>
     <div class="row"><button class="btn ghost" onclick="CloseLint()">关闭</button><button class="btn" onclick="RunLint()">重新巡检</button></div>
   </div></div>
+  <div id="onboardmodal" class="ph-modal"><div class="setbox" style="width:min(520px,94vw)">
+    <h2>🌱 欢迎使用研栈</h2>
+    <p class="note" style="line-height:1.7">只需填写论文题目，系统会自动生成<strong>研究目标初稿</strong>和<strong>知识库骨架</strong>，并给出第一周任务清单。</p>
+    <label>论文题目 / 选题名称 <span class="reqtag">*</span></label>
+    <input id="onboard_title" placeholder="例如：行政超载与政策执行绩效" style="width:100%;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--panel2);color:var(--text);font-size:14px;box-sizing:border-box">
+    <p class="note" style="margin-top:10px;font-size:12px">其他研究问题、范围等可稍后在「研究规则」中补充。</p>
+    <div class="row" style="margin-top:16px"><button class="btn ghost" onclick="SkipOnboarding()">稍后再说</button><button class="btn" onclick="ConfirmOnboarding()">开始搭建</button></div>
+  </div></div>
   <div id="startmodal" class="ph-modal"><div class="setbox">
     <h2>🫧 启动本地服务</h2>
-    <p class="note">出于浏览器安全限制，网页无法直接启动本机程序。请用以下任一方式开启服务，开启后「添加 / 分析 / 刷新」即可使用：</p>
+    <p class="note">出于浏览器安全限制，网页无法直接启动本机程序。请用以下任一方式开启服务，开启后「添加 / 纳入研究 / 刷新」即可使用：</p>
     <p style="font-size:13px;line-height:2">① 双击项目根目录的 <b>start.command</b><br>② 或复制下面命令到「终端」运行：</p>
     <input id="startcmdbox" readonly onclick="this.select()">
     <div class="row"><button class="btn ghost" onclick="CloseStart()">关闭</button><button class="btn" onclick="CopyStart()">复制命令</button></div>
   </div></div>
-  <div id="overlay"><div class="spinner"></div><div class="msg" id="overlaymsg">处理中…</div><div id="progwrap"><div id="progbar"></div></div><div id="progtext"></div><div id="progfail" style="font-size:12px;color:var(--rose);max-width:70vw;text-align:center;display:none"></div><button class="btn ghost cancelbtn" id="ingest_cancel_btn" style="display:none" onclick="CancelIngest()">取消分析</button></div>
+  <div id="overlay"><div class="spinner"></div><div class="msg" id="overlaymsg">处理中…</div><div id="progwrap"><div id="progbar"></div></div><div id="progtext"></div><div id="progfail" style="font-size:12px;color:var(--rose);max-width:70vw;text-align:center;display:none"></div><button class="btn ghost cancelbtn" id="ingest_cancel_btn" style="display:none" onclick="CancelIngest()">取消</button></div>
 </main>
+<div id="onboard_checklist" style="display:none">
+  <div class="ob-hd"><span>📋 第一周任务</span><button type="button" class="ob-x" onclick="DismissOnboardingChecklist()" title="关闭">×</button></div>
+  <div class="ob-note">按顺序完成以下步骤，快速上手知识库</div>
+  <ul class="ob-list" id="onboard_checklist_body"></ul>
+</div>
 <div id="toast"></div>
 <script>
 const SERVERMODE = /*__SERVERMODE__*/;
@@ -944,12 +1129,24 @@ const THEMES=[
   {id:"boyish",icon:"🌊",name:"沧澜",desc:"沧海长风，沉稳俊逸；靛蓝与琥珀，疏朗有度",swatches:["#3d7dd6","#c8a060","#f0f4fa"]},
   {id:"cool",icon:"✦",name:"玄曜",desc:"星夜幽光，深邃明净；暗色底与霓虹，静而不冷",swatches:["#6ec8e0","#9b7fd4","#161b22"]}
 ];
-function GetThemeId(){return document.documentElement.getAttribute("data-theme")||"girly"}
+const INIT_THEME=/*__INIT_THEME__*/;
+function LoadSavedThemeId(){
+  if(INIT_THEME&&THEMES.some(t=>t.id===INIT_THEME))return INIT_THEME;
+  try{
+    const sls=localStorage.getItem("ph_theme");
+    if(sls&&THEMES.some(t=>t.id===sls))return sls;
+  }catch(e){}
+  return "girly";
+}
+function GetThemeId(){return document.documentElement.getAttribute("data-theme")||LoadSavedThemeId()}
 function GetCssVar(sname){return getComputedStyle(document.documentElement).getPropertyValue(sname).trim()}
-function ApplyTheme(sid){
+function SyncGraphFont(){window.__graphFont=GetCssVar("--font-graph")||"500 12px sans-serif"}
+function ApplyTheme(sid,bpersist){
   if(!THEMES.some(t=>t.id===sid))sid="girly";
   document.documentElement.setAttribute("data-theme",sid);
   try{localStorage.setItem("ph_theme",sid)}catch(e){}
+  if(bpersist!==false&&SERVERMODE)Api("/api/config",{theme:sid}).catch(()=>{});
+  SyncGraphFont();
   RenderThemeGrid();
   if(CURRENT_DOC)LoadDocEditor(CURRENT_DOC);
   if(canvas)DrawGraph();
@@ -976,7 +1173,11 @@ function PickTheme(sid){
   if(document.getElementById("thememodal").classList.contains("open"))RenderThemeGrid();
   Toast("已切换为「"+(THEMES.find(t=>t.id===sid)||{}).name+"」主题");
 }
-function InitTheme(){ApplyTheme(GetThemeId())}
+function InitTheme(){ApplyTheme(LoadSavedThemeId(),false)}
+async function LogoutUser(){
+  try{await fetch("/auth/logout",{method:"POST"})}catch(e){}
+  location.reload();
+}
 
 const STONE_TILT=7;
 function BindStone3d(el){
@@ -1043,8 +1244,9 @@ function RenderLibrary(){
     const surl=SafeUrl(n.url);
     const urlbtn=surl?`<button class="urlbtn" onclick="event.stopPropagation();OpenPaperUrl('${Attr(surl)}')">🔗 在线阅读</button>`:"";
     const del=(SERVERMODE&&n.rawfile)?`<span class="del" title="删除" onclick="event.stopPropagation();DeletePaper('${Attr(n.rawfile)}')">🗑</span>`:"";
+    const rq=(n.research&&n.research.rq_links&&n.research.rq_links.length)?`<span class="badge soft" title="已关联研究问题">RQ</span>`:"";
     return `<div class="card ${n.ingested?'':'pending'}" onclick="OpenDrawer('${Attr(n.id)}')">
-      ${del}<div class="ttl">${Esc(n.title)}</div>
+      ${del}<div class="ttl">${Esc(n.title)} ${rq}</div>
       <div class="sub">${Esc(sub)||"—"}</div>
       <div class="sum">${Esc(n.summary||"")}</div>
       <div class="tags">${tags}</div>${urlbtn}${pdfbtn}</div>`;
@@ -1068,7 +1270,7 @@ function RenderAll(){
   document.getElementById("metainfo").textContent=(SERVERMODE?"本地服务 · ":"")+"更新于 "+DATA.generated;
   UpdateCurrentTopicDisplay();
   InitUi3d();
-  if(canvas&&document.getElementById("graphview").classList.contains("active"))InitGraph();
+  if(document.getElementById("graphview").classList.contains("active"))InitGraph();
   else canvas=null;
 }
 
@@ -1088,14 +1290,63 @@ function OpenDrawer(id){
     if(surl)h+=`<div class="field"><button class="btn ghost" onclick="OpenPaperUrl('${Attr(surl)}')">🔗 在线阅读 ↗</button></div>`;
     if(SERVERMODE)h+=`<div class="field"><div class="k">论文网址</div><div class="urledit"><input id="paper_url_input" value="${Esc(n.url||"")}" placeholder="https://doi.org/... 或期刊页面"><button class="btn ghost" onclick="SavePaperUrl('${Attr(n.id)}','${Attr(n.rawfile||"")}')">保存</button></div></div>`;
   }
-  if(n.summary)h+=`<div class="field"><div class="k">摘要</div>${Esc(n.summary)}</div>`;
+  if(n.summary)h+=`<div class="field"><div class="k">一句话</div>${Esc(n.summary)}</div>`;
+  if(n.type==="source"&&n.ingested&&n.research){
+    const r=n.research;
+    if((r.rq_links||[]).length)h+=`<div class="field research"><div class="k">关联研究问题</div>${r.rq_links.map(x=>`<span class="rqchip" onclick="OpenDrawer('${Attr(x)}')">${Esc((NODEMAP[x]||{}).title||x)}</span>`).join("")}</div>`;
+    if(r.relation)h+=`<div class="field research"><div class="k">与本论文的关系</div><div class="research-txt">${Esc(r.relation)}</div></div>`;
+    if(r.tensions)h+=`<div class="field research"><div class="k">与已有文献的张力</div><div class="research-txt">${Esc(r.tensions)}</div></div>`;
+    if(r.design)h+=`<div class="field research"><div class="k">可借鉴的研究设计</div><div class="research-txt">${Esc(r.design)}</div></div>`;
+    if(r.next_steps)h+=`<div class="field research"><div class="k">下一步</div><div class="research-txt">${Esc(r.next_steps)}</div></div>`;
+    if(r.limits)h+=`<div class="field research"><div class="k">局限与存疑</div><div class="research-txt">${Esc(r.limits)}</div></div>`;
+  }
   if((n.tags||[]).length)h+=`<div class="field"><div class="k">标签</div>${n.tags.map(t=>`<span class="badge soft">${Esc(t)}</span>`).join("")}</div>`;
   if(neigh.length)h+=`<div class="field links"><div class="k">关联页面 (${neigh.length})</div>${neigh.map(x=>`<a onclick="OpenDrawer('${Attr(x)}')">${Esc((NODEMAP[x]||{}).title||x)}</a>`).join("")}</div>`;
-  if(!n.ingested&&n.rawfile)h+=`<div class="field"><button class="btn" onclick="Analyze('${Attr(n.rawfile)}')">✨ 分析这篇文献</button></div>`;
+  if(!n.ingested&&n.rawfile)h+=`<div class="field"><button class="btn" onclick="Analyze('${Attr(n.rawfile)}')">✨ 纳入这篇文献</button></div>`;
   document.getElementById("drawerbody").innerHTML=h;
-  document.getElementById("drawer").classList.add("open");
+  OpenDrawerShell("drawer_shell");
 }
-function CloseDrawer(){document.getElementById("drawer").classList.remove("open")}
+function InitDrawerShells(){
+  document.querySelectorAll("[data-drawer-shell]").forEach(oshell=>{
+    const oscrim=oshell.querySelector(".drawer-scrim");
+    if(oscrim)oscrim.onclick=()=>CloseDrawerShell(oshell.id);
+  });
+}
+function OpenDrawerShell(sshellid){
+  const oshell=document.getElementById(sshellid);if(!oshell)return;
+  const opanel=oshell.querySelector(".drawer-panel");
+  if(opanel&&opanel._drawerCloseEnd){
+    opanel.removeEventListener("animationend",opanel._drawerCloseEnd);
+    delete opanel._drawerCloseEnd;
+  }
+  const wasclosing=oshell.classList.contains("is-closing");
+  oshell.classList.remove("is-closing");
+  if(oshell.classList.contains("is-open")&&!wasclosing)return;
+  if(wasclosing&&opanel)void opanel.offsetWidth;
+  oshell.classList.add("is-open");
+}
+function CloseDrawerShell(sshellid){
+  const oshell=document.getElementById(sshellid);
+  if(!oshell||(!oshell.classList.contains("is-open")&&!oshell.classList.contains("is-closing")))return;
+  const opanel=oshell.querySelector(".drawer-panel");
+  oshell.classList.remove("is-open");
+  oshell.classList.add("is-closing");
+  if(!opanel){oshell.classList.remove("is-closing");return}
+  if(opanel._drawerCloseEnd){
+    opanel.removeEventListener("animationend",opanel._drawerCloseEnd);
+    delete opanel._drawerCloseEnd;
+  }
+  const fend=(e)=>{
+    if(e&&e.target!==opanel)return;
+    if(e&&e.animationName!=="drawerSlideOut")return;
+    oshell.classList.remove("is-closing");
+    delete opanel._drawerCloseEnd;
+  };
+  opanel._drawerCloseEnd=fend;
+  opanel.addEventListener("animationend",fend);
+}
+function IsDrawerOpen(sshellid){const s=document.getElementById(sshellid);return s&&(s.classList.contains("is-open")||s.classList.contains("is-closing"))}
+function CloseDrawer(){CloseDrawerShell("drawer_shell")}
 async function OpenPaperUrl(surl){
   surl=SafeUrl(surl);
   if(!surl){Toast("链接无效");return}
@@ -1226,17 +1477,53 @@ function RenderTopicSelect(){
   });
   UpdateTopicPickBtn();
 }
+function ClearTopicUiState(){
+  CloseTopicMenu();
+  CloseDrawer();
+  ClosePdf();
+  CloseQuery();
+  CloseLint();
+  const olint=document.getElementById("lint_body");
+  if(olint)olint.textContent="切换选题后请重新巡检";
+  CloseRules();
+  RULES_CACHE={};
+  CloseNewTopic();
+  CloseSettings();
+  CloseOnboarding();
+  canvas=null;
+  nodes=[];
+  links=[];
+  GRAPH_FILTER="";
+  dragnode=null;
+  dragging=false;
+  hover=null;
+  const ogf=document.getElementById("graph_filter");
+  if(ogf)ogf.value="";
+}
+async function OnTopicSwitched(soldtopic,snewid,snewname,bnewtopic){
+  SaveQueryThreadForTopic(soldtopic);
+  ApplyCurrentTopic(snewid,snewname);
+  if(bnewtopic){
+    delete QUERY_HISTORY_CACHE[snewid];
+    PersistQueryHistory();
+  }
+  RestoreQueryThreadForTopic(CURRENT_TOPIC);
+  ClearQuerySearch();
+  ClearTopicUiState();
+  ClearDocEditor();
+  await Refresh(true);
+  await LoadTopics();
+  await LoadDocsList();
+  await RefreshOnboardingState();
+}
 async function PickTopic(nid){
   CloseTopicMenu();
   if(!nid||nid===CURRENT_TOPIC)return;
+  const soldtopic=CURRENT_TOPIC;
   ShowOverlay("正在切换选题…");
   try{
     const result=await Api("/api/topics/switch",{id:nid});
-    ApplyCurrentTopic(result.id||nid,result.name);
-    ClearDocEditor();
-    await Refresh(true);
-    await LoadTopics();
-    await LoadDocsList();
+    await OnTopicSwitched(soldtopic,result.id||nid,result.name,false);
     HideOverlay();Toast("已切换选题");
   }catch(e){HideOverlay();Toast("切换失败："+e.message)}
 }
@@ -1260,7 +1547,7 @@ async function ImportTopicConfig(smode){
     BuildPurposeForm(sformid,cfg.fields||{});
     if(smode==="new"){
       NEW_TOPIC_IMPORT_FROM=nid;
-      Toast("已导入研究目标；创建时将同步导入结构规则与工作规范");
+      Toast("已导入研究目标；创建时将同步导入规则，并继承旧选题问答库（不含会话记录）");
     }else{
       document.getElementById("rule_schema_editor").value=cfg.schema||"";
       document.getElementById("rule_agents_editor").value=cfg.agents||"";
@@ -1316,10 +1603,12 @@ async function CreateTopic(){
     const obody={name:ofields.working_title,fields:ofields};
     if(NEW_TOPIC_IMPORT_FROM)obody.import_from=NEW_TOPIC_IMPORT_FROM;
     const result=await Api("/api/topics/new",obody);
-    ApplyCurrentTopic(result.id,result.name||ofields.working_title);
-    CloseNewTopic();ClearDocEditor();
-    await Refresh(true);await LoadTopics();await LoadDocsList();
-    HideOverlay();Toast("新选题已创建");
+    const soldtopic=CURRENT_TOPIC;
+    await OnTopicSwitched(soldtopic,result.id,result.name||ofields.working_title,true);
+    CloseNewTopic();
+    HideOverlay();
+    const nqc=result.inherited_queries||0;
+    Toast(nqc?`新选题已创建，已继承问答库 ${nqc} 页`:"新选题已创建");
   }catch(e){HideOverlay();Toast("创建失败："+e.message)}
 }
 async function ResetTopic(){
@@ -1328,8 +1617,14 @@ async function ResetTopic(){
   ShowOverlay("正在重置…");
   try{
     await Api("/api/topics/reset",{});
+    delete QUERY_HISTORY_CACHE[CURRENT_TOPIC];
+    PersistQueryHistory();
+    RestoreQueryThreadForTopic(CURRENT_TOPIC);
+    ClearQuerySearch();
+    ClearTopicUiState();
     ClearDocEditor();
     await Refresh(true);await LoadTopics();await LoadDocsList();
+    await RefreshOnboardingState();
     HideOverlay();Toast("当前选题已重置");
   }catch(e){HideOverlay();Toast("重置失败："+e.message)}
 }
@@ -1370,6 +1665,7 @@ async function SaveRules(){
     }
     CloseRules();
     await LoadTopics();
+    await RefreshOnboardingState();
     Toast("规则已保存");
   }catch(e){Toast("保存失败："+e.message)}
 }
@@ -1413,7 +1709,7 @@ function ShowOverlay(msg){document.getElementById("overlaymsg").textContent=msg|
 function HideOverlay(){document.getElementById("overlay").classList.remove("open")}
 function NeedServer(){
   if(DESKTOPMODE&&!serverUp){Toast("功能已暂停，请打开右上角服务开关");return true}
-  if(!SERVERMODE){Toast("此功能需启动 Paper-Helper 应用后使用");return true}
+  if(!SERVERMODE){Toast("此功能需启动研栈应用后使用");return true}
   return false;
 }
 
@@ -1426,7 +1722,7 @@ async function Api(path,body){
 }
 async function Refresh(silent){
   if(!SERVERMODE){if(!silent)Toast("当前为离线只读页面，请在应用中操作以刷新");return}
-  try{DATA=await Api("/api/data");RenderAll();if(!silent)Toast("已刷新")}catch(e){Toast("刷新失败："+e.message)}
+  try{DATA=await Api("/api/data");RenderAll();if(!silent)Toast("已刷新");RefreshOnboardingState()}catch(e){Toast("刷新失败："+e.message)}
 }
 function AddPaper(){if(NeedServer())return;document.getElementById("fileinput").click()}
 document.getElementById("fileinput").onchange=async function(){
@@ -1439,7 +1735,8 @@ document.getElementById("fileinput").onchange=async function(){
       await Api("/api/upload",{name:f.name,data:b64});
     }
     await Refresh(true);
-    HideOverlay();Toast(`已添加 ${files.length} 篇文献，点「分析」生成知识页`);
+    await LoadTopics();
+    HideOverlay();Toast(`已添加 ${files.length} 篇文献，点「纳入研究」编译进知识库`);
   }catch(e){HideOverlay();Toast("上传失败："+e.message)}
 };
 function FileToBase64(file){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(",")[1]);r.onerror=rej;r.readAsDataURL(file)})}
@@ -1448,7 +1745,7 @@ async function UploadFiles(vfiles){
   ShowOverlay(`正在上传 ${vfiles.length} 个文件…`);
   try{
     for(const f of vfiles){const b64=await FileToBase64(f);await Api("/api/upload",{name:f.name,data:b64})}
-    await Refresh(true);HideOverlay();Toast(`已添加 ${vfiles.length} 篇文献`);
+    await Refresh(true);await LoadTopics();HideOverlay();Toast(`已添加 ${vfiles.length} 篇文献`);
   }catch(e){HideOverlay();Toast("上传失败："+e.message)}
 }
 function InitDropzone(){
@@ -1457,22 +1754,326 @@ function InitDropzone(){
   ["dragleave","drop"].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.remove("drag")}));
   dz.addEventListener("drop",e=>{if(NeedServer())return;UploadFiles([...e.dataTransfer.files])});
 }
-function OpenQuery(){if(NeedServer())return;document.getElementById("query_result").style.display="none";document.getElementById("querymodal").classList.add("open")}
-function CloseQuery(){document.getElementById("querymodal").classList.remove("open")}
-async function SubmitQuery(){
+const QUERY_HIST_KEY="ph_query_history";
+let QUERY_TURN_SEQ=0;
+let QUERY_HISTORY_CACHE={};
+let QUERY_SEARCH_IDX=0;
+let QUERY_SEARCH_MATCHES=[];
+const oquerypollers={};
+const oqueryTopicMap={};
+function LoadAllQueryHistory(){
+  try{QUERY_HISTORY_CACHE=JSON.parse(localStorage.getItem(QUERY_HIST_KEY)||"{}")}catch(e){QUERY_HISTORY_CACHE={}}
+}
+function PersistQueryHistory(){
+  try{localStorage.setItem(QUERY_HIST_KEY,JSON.stringify(QUERY_HISTORY_CACHE))}catch(e){}
+}
+function QueryThreadEl(){return document.getElementById("query_thread")}
+function FuzzyScore(sneedle,shaystack){
+  if(!sneedle)return 0;
+  sneedle=sneedle.toLowerCase().trim();
+  shaystack=(shaystack||"").toLowerCase();
+  if(!shaystack)return 0;
+  if(shaystack.includes(sneedle))return 100+sneedle.length;
+  let ni=0,nscore=0,nlast=-1;
+  for(let i=0;i<shaystack.length&&ni<sneedle.length;i++){
+    if(shaystack[i]===sneedle[ni]){nscore+=i===nlast+1?4:1;nlast=i;ni++}
+  }
+  return ni===sneedle.length?nscore:0;
+}
+function ClearQuerySearch(){
+  const oinp=document.getElementById("query_search");
+  if(oinp)oinp.value="";
+  QUERY_SEARCH_IDX=0;QUERY_SEARCH_MATCHES=[];
+  QueryThreadEl().querySelectorAll(".query-turn").forEach(ot=>{
+    ot.classList.remove("query-search-hit","query-search-dim","query-search-active");
+  });
+  UpdateQuerySearchUi();
+}
+function UpdateQuerySearchUi(){
+  const ostat=document.getElementById("query_search_stat");
+  const oprev=document.getElementById("query_search_prev");
+  const onext=document.getElementById("query_search_next");
+  const ncnt=QUERY_SEARCH_MATCHES.length;
+  const oinp=document.getElementById("query_search");
+  if(ostat)ostat.textContent=oinp&&oinp.value.trim()?(ncnt?`${QUERY_SEARCH_IDX+1}/${ncnt} 条匹配`:"无匹配"):"";
+  if(oprev)oprev.disabled=!ncnt;
+  if(onext)onext.disabled=!ncnt;
+  QueryThreadEl().querySelectorAll(".query-turn").forEach(ot=>ot.classList.remove("query-search-active"));
+  if(ncnt&&QUERY_SEARCH_MATCHES[QUERY_SEARCH_IDX])QUERY_SEARCH_MATCHES[QUERY_SEARCH_IDX].oturn.classList.add("query-search-active");
+}
+function ScrollToQueryTurn(oturn){
+  if(!oturn)return;
+  oturn.scrollIntoView({behavior:"smooth",block:"nearest"});
+}
+function RunQuerySearch(){
+  const sq=(document.getElementById("query_search")||{}).value||"";
+  QUERY_SEARCH_MATCHES=[];
+  QueryThreadEl().querySelectorAll(".query-turn").forEach(ot=>{
+    ot.classList.remove("query-search-hit","query-search-dim","query-search-active");
+  });
+  if(!sq.trim()){QUERY_SEARCH_IDX=0;UpdateQuerySearchUi();return}
+  [...QueryThreadEl().querySelectorAll(".query-turn")].forEach(ot=>{
+    const stext=(ot.querySelector(".query-q-input").value||"")+" "+(ot.querySelector(".query-ans").textContent||"");
+    const nsc=FuzzyScore(sq,stext);
+    if(nsc>0)QUERY_SEARCH_MATCHES.push({oturn:ot,score:nsc});
+    else ot.classList.add("query-search-dim");
+  });
+  QUERY_SEARCH_MATCHES.sort((a,b)=>b.score-a.score);
+  QUERY_SEARCH_MATCHES.forEach(m=>m.oturn.classList.add("query-search-hit"));
+  QUERY_SEARCH_IDX=0;
+  UpdateQuerySearchUi();
+  if(QUERY_SEARCH_MATCHES.length)ScrollToQueryTurn(QUERY_SEARCH_MATCHES[0].oturn);
+}
+function JumpQuerySearch(ndir){
+  if(!QUERY_SEARCH_MATCHES.length)return;
+  QUERY_SEARCH_IDX=(QUERY_SEARCH_IDX+ndir+QUERY_SEARCH_MATCHES.length)%QUERY_SEARCH_MATCHES.length;
+  UpdateQuerySearchUi();
+  ScrollToQueryTurn(QUERY_SEARCH_MATCHES[QUERY_SEARCH_IDX].oturn);
+}
+function QuerySearchKeydown(e){
+  if(e.key==="Enter"){e.preventDefault();JumpQuerySearch(e.shiftKey?-1:1)}
+}
+function SerializeQueryThread(){
+  const vels=[...QueryThreadEl().querySelectorAll(".query-turn")];
+  const vturns=[];
+  vels.forEach((ot,nidx)=>{
+    const sq=ot.querySelector(".query-q-input").value||"";
+    const sans=ot.querySelector(".query-ans").textContent||"";
+    const bpending=ot.classList.contains("pending");
+    const banswered=ot.classList.contains("answered");
+    const bempty=!sq.trim()&&!banswered&&!bpending;
+    if(bempty&&nidx===vels.length-1)return;
+    const ost=ot.querySelector(".query-turn-st");
+    vturns.push({
+      turnId:parseInt(ot.dataset.turnId,10)||0,
+      question:sq,
+      answer:(bpending&&sans.indexOf("正在查询")>=0)?"":sans,
+      answered:banswered,
+      pending:bpending,
+      savedLabel:ost?ost.textContent:"",
+      hadAnswer:ot.dataset.hadAnswer==="1"
+    });
+  });
+  return{seq:QUERY_TURN_SEQ,turns:vturns};
+}
+function SaveQueryThreadForTopic(stopicid){
+  if(!stopicid)return;
+  QUERY_HISTORY_CACHE[stopicid]=SerializeQueryThread();
+  PersistQueryHistory();
+}
+function RestoreQueryThreadForTopic(stopicid){
+  const box=QueryThreadEl();if(!box)return;
+  box.innerHTML="";
+  const odata=QUERY_HISTORY_CACHE[stopicid];
+  QUERY_TURN_SEQ=odata&&odata.seq?odata.seq:0;
+  if(odata&&odata.turns&&odata.turns.length){
+    odata.turns.forEach(t=>{
+      const oturn=CreateQueryTurnEl(t.question,null,t.turnId);
+      if(t.answered){
+        oturn.classList.add("answered");
+        oturn.querySelector(".query-ans").textContent=t.answer||"（无回答）";
+        oturn.querySelector(".query-turn-hd .k").textContent="可编辑 · 支持重新提问";
+        oturn.querySelector(".query-submit-btn").textContent="↻ 重新提问";
+        const ost=oturn.querySelector(".query-turn-st");
+        if(ost&&t.savedLabel)ost.textContent=t.savedLabel;
+        if(t.hadAnswer)oturn.dataset.hadAnswer="1";
+      }
+      if(t.pending){
+        MarkQueryTurnPending(oturn);
+        PollQueryJob(t.turnId);
+      }
+    });
+  }
+  EnsureQueryComposer();
+}
+function PatchQueryHistoryTurn(stopicid,nturnid,squestion,sanswer,ssavedLabel){
+  if(!stopicid)return;
+  const odata=QUERY_HISTORY_CACHE[stopicid]||{seq:QUERY_TURN_SEQ,turns:[]};
+  let ofound=odata.turns.find(t=>t.turnId===nturnid);
+  if(!ofound){
+    ofound={turnId:nturnid,question:squestion||"",answer:"",answered:false,pending:true,savedLabel:"",hadAnswer:false};
+    odata.turns.push(ofound);
+  }
+  ofound.question=squestion||ofound.question;
+  ofound.answer=sanswer||"";
+  ofound.answered=!!sanswer;
+  ofound.pending=false;
+  ofound.savedLabel=ssavedLabel||"";
+  if(nturnid>odata.seq)odata.seq=nturnid;
+  QUERY_HISTORY_CACHE[stopicid]=odata;
+  PersistQueryHistory();
+}
+function ScrollQueryThread(){
+  const box=QueryThreadEl();if(!box)return;
+  requestAnimationFrame(()=>{box.scrollTop=box.scrollHeight});
+}
+function BindQueryInput(oarea,nturnid){
+  oarea.addEventListener("keydown",e=>{
+    if(e.key==="Enter"&&(e.metaKey||e.ctrlKey)){e.preventDefault();SubmitQueryTurn(nturnid)}
+  });
+}
+function CreateQueryTurnEl(squestion,sanswer,nturnid){
+  const nid=(nturnid!=null)?nturnid:++QUERY_TURN_SEQ;
+  if(nid>QUERY_TURN_SEQ)QUERY_TURN_SEQ=nid;
+  const oturn=document.createElement("div");
+  oturn.className="query-turn"+(sanswer?" answered":"");
+  oturn.dataset.turnId=String(nid);
+  const shd=document.createElement("div");
+  shd.className="query-turn-hd";
+  shd.innerHTML=`<span class="k">${sanswer?"可编辑 · 支持重新提问":"新问题"}</span><span class="st query-turn-st"></span>`;
+  const oarea=document.createElement("textarea");
+  oarea.className="query-q-input";
+  oarea.placeholder="例如：行政超载与政策分诊的因果证据有哪些？";
+  oarea.value=squestion||"";
+  const oact=document.createElement("div");
+  oact.className="query-turn-actions";
+  const obtn=document.createElement("button");
+  obtn.type="button";
+  obtn.className="btn sec query-submit-btn";
+  obtn.textContent=sanswer?"↻ 重新提问":"提问";
+  obtn.onclick=()=>SubmitQueryTurn(nid);
+  oact.appendChild(obtn);
+  const oans=document.createElement("div");
+  oans.className="query-ans";
+  if(sanswer)oans.textContent=sanswer;
+  oturn.append(shd,oarea,oact,oans);
+  BindQueryInput(oarea,nid);
+  return oturn;
+}
+function EnsureQueryComposer(){
+  const box=QueryThreadEl();if(!box)return;
+  const olast=box.lastElementChild;
+  if(!olast||olast.classList.contains("answered")||olast.classList.contains("pending")){
+    box.appendChild(CreateQueryTurnEl("",null));
+    ScrollQueryThread();
+  }
+}
+function OpenQuery(){
   if(NeedServer())return;
-  const sq=document.getElementById("query_input").value.trim();
+  if(!QueryThreadEl().children.length)EnsureQueryComposer();
+  else ScrollQueryThread();
+  document.getElementById("querymodal").classList.add("open");
+}
+function CloseQuery(){document.getElementById("querymodal").classList.remove("open")}
+function IsQueryModalOpen(){return document.getElementById("querymodal").classList.contains("open")}
+function FindQueryTurn(nturnid){
+  return QueryThreadEl().querySelector(`.query-turn[data-turn-id="${nturnid}"]`);
+}
+function MarkQueryTurnPending(oturn){
+  const oans=oturn.querySelector(".query-ans");
+  const obtn=oturn.querySelector(".query-submit-btn");
+  const ost=oturn.querySelector(".query-turn-st");
+  oturn.classList.add("pending");
+  oturn.classList.remove("answered");
+  obtn.disabled=true;
+  oans.textContent="正在查询…（可关闭弹窗继续编辑文档）";
+  if(ost)ost.textContent="后台查询中…";
+}
+function RestoreQueryTurn(nturnid,serr,sprevAnswer,bwasAnswered){
+  const oturn=FindQueryTurn(nturnid);if(!oturn)return;
+  const oans=oturn.querySelector(".query-ans");
+  const obtn=oturn.querySelector(".query-submit-btn");
+  const ost=oturn.querySelector(".query-turn-st");
+  oturn.classList.remove("pending");
+  if(bwasAnswered){oturn.classList.add("answered");oans.textContent=sprevAnswer||""}
+  else{oans.textContent=""}
+  obtn.disabled=false;
+  if(ost)ost.textContent="";
+  if(serr)Toast(serr);
+  SaveQueryThreadForTopic(CURRENT_TOPIC);
+}
+function ApplyQueryResult(nturnid,p){
+  const stopic=oqueryTopicMap[nturnid]||CURRENT_TOPIC;
+  delete oqueryTopicMap[nturnid];
+  const oturn=FindQueryTurn(nturnid);
+  const ssavedLabel=p.saved?("已保存 · "+(p.saved.id||"")):"";
+  if(p.error||p.status==="error"){
+    if(stopic!==CURRENT_TOPIC||!oturn){
+      const odata=QUERY_HISTORY_CACHE[stopic];
+      if(odata){
+        const ot=odata.turns.find(t=>t.turnId===nturnid);
+        if(ot){ot.pending=false;PersistQueryHistory()}
+      }
+      Toast((TopicLabel(TOPICS.find(t=>t.id===stopic))||stopic)+" 的知识查询失败");
+      return;
+    }
+    RestoreQueryTurn(nturnid,p.error||"查询失败",oturn.dataset.prevAnswer,!!oturn.dataset.hadAnswer);
+    SaveQueryThreadForTopic(CURRENT_TOPIC);
+    return;
+  }
+  const sanswer=p.answer||"（无回答）";
+  const sq=oturn?oturn.querySelector(".query-q-input").value.trim():"";
+  if(stopic!==CURRENT_TOPIC||!oturn){
+    PatchQueryHistoryTurn(stopic,nturnid,sq,sanswer,ssavedLabel);
+    const slabel=TopicLabel(TOPICS.find(t=>t.id===stopic))||stopic;
+    Toast("「"+slabel+"」的知识查询已完成",5000);
+    Refresh(true).catch(()=>{});
+    return;
+  }
+  const oans=oturn.querySelector(".query-ans");
+  const obtn=oturn.querySelector(".query-submit-btn");
+  const ost=oturn.querySelector(".query-turn-st");
+  const bwasAnswered=!!oturn.dataset.hadAnswer;
+  oans.textContent=sanswer;
+  oturn.classList.remove("pending");
+  oturn.classList.add("answered");
+  oturn.dataset.hadAnswer="1";
+  obtn.disabled=false;
+  obtn.textContent="↻ 重新提问";
+  oturn.querySelector(".query-turn-hd .k").textContent="可编辑 · 支持重新提问";
+  if(ost)ost.textContent=ssavedLabel;
+  const box=QueryThreadEl();
+  if(box&&box.lastElementChild===oturn)EnsureQueryComposer();
+  SaveQueryThreadForTopic(CURRENT_TOPIC);
+  if(IsQueryModalOpen())ScrollQueryThread();
+  else Toast("知识查询已完成，可重新打开「知识查询」查看回答",5000);
+  if(p.saved&&!bwasAnswered)Toast("已保存到「问答」记录");
+  Refresh(true).catch(()=>{});
+}
+function PollQueryJob(nturnid){
+  if(oquerypollers[nturnid])return;
+  oquerypollers[nturnid]=1;
+  const ftick=async()=>{
+    try{
+      const p=await Api("/api/query/progress");
+      if(p.running){setTimeout(ftick,800);return}
+      delete oquerypollers[nturnid];
+      ApplyQueryResult(nturnid,p);
+    }catch(e){
+      delete oquerypollers[nturnid];
+      const oturn=FindQueryTurn(nturnid);
+      RestoreQueryTurn(nturnid,"进度获取失败："+e.message,oturn&&oturn.dataset.prevAnswer,!!(oturn&&oturn.dataset.hadAnswer));
+    }
+  };
+  ftick();
+}
+function SubmitQueryTurn(nturnid){
+  if(NeedServer())return;
+  const oturn=FindQueryTurn(nturnid);if(!oturn||oturn.classList.contains("pending"))return;
+  const sq=oturn.querySelector(".query-q-input").value.trim();
   if(!sq){Toast("请输入问题");return}
-  ShowOverlay("正在查询…");
-  try{
-    const r=await Api("/api/query",{question:sq,save:true});
-    HideOverlay();
-    if(r.status==="need_key"){Toast("请先配置 API Key");OpenSettings();return}
-    const box=document.getElementById("query_result");
-    box.style.display="block";box.textContent=r.answer||"";
-    if(r.saved)Toast("已保存到「问答」记录");
-    await Refresh(true);
-  }catch(e){HideOverlay();Toast("查询失败："+e.message)}
+  const oans=oturn.querySelector(".query-ans");
+  const bwasAnswered=oturn.classList.contains("answered");
+  oturn.dataset.hadAnswer=bwasAnswered?"1":"";
+  oturn.dataset.prevAnswer=bwasAnswered?(oans.textContent||""):"";
+  oqueryTopicMap[nturnid]=CURRENT_TOPIC;
+  MarkQueryTurnPending(oturn);
+  SaveQueryThreadForTopic(CURRENT_TOPIC);
+  Api("/api/query",{question:sq,save:true}).then(r=>{
+    if(r.status==="need_key"){
+      RestoreQueryTurn(nturnid,null,oturn.dataset.prevAnswer,bwasAnswered);
+      Toast("请先配置 API Key");OpenSettings();return;
+    }
+    if(r.status==="busy"){
+      RestoreQueryTurn(nturnid,r.message||"大模型正忙，请稍后再试",oturn.dataset.prevAnswer,bwasAnswered);
+      return;
+    }
+    if(r.status==="started"||r.status==="running"){PollQueryJob(nturnid);return}
+    if(r.answer)ApplyQueryResult(nturnid,r);
+    else RestoreQueryTurn(nturnid,"查询失败",oturn.dataset.prevAnswer,bwasAnswered);
+  }).catch(e=>{
+    RestoreQueryTurn(nturnid,"查询失败："+e.message,oturn.dataset.prevAnswer,bwasAnswered);
+  });
 }
 function CloseLint(){document.getElementById("lintmodal").classList.remove("open")}
 function RenderLintReport(r){
@@ -1519,35 +2120,52 @@ async function Analyze(rawfile){
   if(NeedServer())return;
   try{
     const res=await Api("/api/ingest",{rawfile:rawfile||null});
-    if(res.status==="need_key"){Toast(`未配置 API Key，有 ${res.pending||0} 篇待分析。请在「设置」中填写后再点分析。`,5000);OpenSettings();return}
-    if(res.status==="no_pending"){Toast("没有待分析的文献");return}
+    if(res.status==="busy"){Toast(res.message||"大模型正在处理知识查询，请稍后再纳入研究",6000);return}
+    if(res.status==="need_key"){Toast(`API Key 未配置或已损坏，有 ${res.pending||0} 篇待纳入研究。请在「偏好设置」中重新粘贴 Key 并保存。`,6000);OpenSettings();return}
+    if(res.status==="no_pending"){Toast("没有待纳入研究的文献");return}
     StartProgressUI(res.total||1);  // started 或 running 都进入进度轮询
     PollProgress();
-  }catch(e){Toast("分析失败："+e.message,5000)}
+  }catch(e){Toast("纳入研究失败："+e.message,5000)}
 }
 function StartProgressUI(total){
-  ShowOverlay("正在分析…");
+  ShowOverlay("正在研究化编译…");
   const w=document.getElementById("progwrap");w.classList.add("show");
   document.getElementById("progbar").style.width="0%";
   document.getElementById("progtext").textContent="0 / "+total;
   document.getElementById("progfail").style.display="none";
-  document.getElementById("ingest_cancel_btn").style.display="";
+  const cbtn=document.getElementById("ingest_cancel_btn");
+  cbtn.style.display="";
+  cbtn.disabled=false;
+  cbtn.textContent="取消";
 }
 async function CancelIngest(){
-  try{await Api("/api/ingest/cancel",{});Toast("正在取消…")}catch(e){Toast("取消失败："+e.message)}
+  const cbtn=document.getElementById("ingest_cancel_btn");
+  if(cbtn.disabled)return;
+  cbtn.disabled=true;
+  cbtn.textContent="取消中…";
+  document.getElementById("overlaymsg").textContent="正在取消，请稍候…";
+  try{await Api("/api/ingest/cancel",{});PollProgress()}catch(e){cbtn.disabled=false;cbtn.textContent="取消";Toast("取消失败："+e.message)}
+}
+function IngestProgressMsg(p){
+  if(p.cancelled&&p.running){
+    return p.current?("正在结束当前请求："+ShortName(p.current)+"（已跳过后续）"):"正在结束当前请求…";
+  }
+  return p.current?("正在编译："+ShortName(p.current)):"正在研究化编译…";
 }
 async function PollProgress(){
   try{
     const p=await Api("/api/ingest/progress");
     const total=p.total||1,done=p.done||0;
+    const cbtn=document.getElementById("ingest_cancel_btn");
     document.getElementById("progbar").style.width=Math.round(done/total*100)+"%";
     document.getElementById("progtext").textContent=`${done} / ${total}`+(p.current?(" · "+ShortName(p.current)):"");
-    document.getElementById("overlaymsg").textContent=p.current?("正在分析："+ShortName(p.current)):"正在分析…";
-    if(p.running){polltimer=setTimeout(PollProgress,1500);return}
+    document.getElementById("overlaymsg").textContent=IngestProgressMsg(p);
+    if(p.cancelled){cbtn.disabled=true;cbtn.textContent="取消中…"}
+    if(p.running){polltimer=setTimeout(PollProgress,800);return}
     FinishProgress(p);
   }catch(e){FinishProgress(null);Toast("进度获取失败："+e.message,4000)}
 }
-function FinishProgress(p){
+async function FinishProgress(p){
   if(polltimer){clearTimeout(polltimer);polltimer=null}
   document.getElementById("progwrap").classList.remove("show");
   document.getElementById("ingest_cancel_btn").style.display="none";
@@ -1557,18 +2175,107 @@ function FinishProgress(p){
     pf.innerHTML=p.failed.map(x=>Esc(x.file)+": "+Esc(x.error)).join("<br>");
   }else{pf.style.display="none"}
   HideOverlay();
-  Refresh(true);CloseDrawer();
-  if(p){let msg=`完成：成功 ${p.ingested?p.ingested.length:0} 篇`;if(p.failed&&p.failed.length)msg+=`，失败 ${p.failed.length} 篇`;if(p.cancelled)msg+="（已取消）";Toast(msg,6000)}
+  const blast=p&&p.briefs&&p.briefs.length?p.briefs[p.briefs.length-1]:null;
+  await Refresh(true);
+  if(p){
+    let msg=`完成：成功纳入 ${p.ingested?p.ingested.length:0} 篇`;
+    if(p.failed&&p.failed.length)msg+=`，失败 ${p.failed.length} 篇`;
+    if(p.cancelled)msg=(p.ingested&&p.ingested.length)?(msg+"（已取消，后续未处理）"):"已取消";
+    if(blast){
+      const r=blast.research||{};
+      const vparts=[];
+      if(r.supports_thesis)vparts.push(r.supports_thesis);
+      if(r.rq_links&&r.rq_links.length)vparts.push("关联 "+r.rq_links.join("、"));
+      if(r.tensions&&r.tensions.length)vparts.push("张力 "+r.tensions.length+" 条");
+      if(vparts.length)msg+=" — "+vparts.join("；");
+      if(blast.key&&NODEMAP[blast.key]){OpenDrawer(blast.key);Toast(msg,7000);return}
+    }
+    CloseDrawer();
+    if(p.failed&&p.failed.length&&!p.ingested?.length){
+      const ferr=p.failed.find(x=>x.error)||p.failed[0];
+      if(ferr&&ferr.error)msg+="："+ferr.error;
+    }
+    Toast(msg,8000);
+  }else{CloseDrawer()}
 }
+
+/* ---------- 引导入门 ---------- */
+let ONBOARD_STATE=null;
+function OpenOnboarding(){
+  const oinp=document.getElementById("onboard_title");
+  if(oinp&&!oinp.value){
+    const ocur=TOPICS.find(t=>t.id===CURRENT_TOPIC);
+    if(ocur&&ocur.working_title&&ocur.working_title!=="默认选题")oinp.value=ocur.working_title;
+  }
+  document.getElementById("onboardmodal").classList.add("open");
+  if(oinp)setTimeout(()=>oinp.focus(),120);
+}
+function CloseOnboarding(){document.getElementById("onboardmodal").classList.remove("open")}
+async function SkipOnboarding(){
+  if(NeedServer())return;
+  try{await Api("/api/onboarding/dismiss",{type:"welcome"});CloseOnboarding();await RefreshOnboardingState()}catch(e){Toast("操作失败："+e.message)}
+}
+async function ConfirmOnboarding(){
+  if(NeedServer())return;
+  const stitle=document.getElementById("onboard_title").value.trim();
+  if(!stitle){Toast("请填写论文题目");return}
+  ShowOverlay("正在搭建知识库…");
+  try{
+    await Api("/api/onboarding/setup",{title:stitle});
+    CloseOnboarding();
+    await LoadTopics();await Refresh(true);await RefreshOnboardingState();
+    HideOverlay();Toast("知识库已就绪，请按右下角任务清单继续",5000);
+  }catch(e){HideOverlay();Toast("搭建失败："+e.message)}
+}
+function RenderOnboardingChecklist(vitems){
+  const obox=document.getElementById("onboard_checklist");
+  const olist=document.getElementById("onboard_checklist_body");
+  if(!obox||!olist)return;
+  if(!vitems||!vitems.length){obox.style.display="none";return}
+  olist.innerHTML=vitems.map(it=>{
+    const sdone=it.done?" done":"";
+    const sprog=`${Math.min(it.current,it.target)} / ${it.target}`;
+    const saction=it.done?"":`<div class="ob-action">点击前往 →</div>`;
+    return `<li class="ob-item${sdone}" data-action="${Attr(it.action||"")}"><span class="ob-chk">${it.done?"✓":""}</span><div class="ob-body"><div>${Esc(it.label)}</div><div class="ob-prog">${sprog} · ${Esc(it.hint||"")}</div>${saction}</div></li>`;
+  }).join("");
+  olist.querySelectorAll(".ob-item:not(.done)").forEach(el=>{
+    el.onclick=()=>OnboardingChecklistAction(el.dataset.action);
+  });
+  obox.style.display="";
+}
+function HideOnboardingChecklist(){
+  const obox=document.getElementById("onboard_checklist");
+  if(obox)obox.style.display="none";
+}
+function OnboardingChecklistAction(saction){
+  if(saction==="add_paper")AddPaper();
+  else if(saction==="analyze")Analyze();
+  else if(saction==="rules")OpenRules();
+}
+async function DismissOnboardingChecklist(){
+  if(NeedServer())return;
+  try{await Api("/api/onboarding/dismiss",{type:"checklist"});HideOnboardingChecklist()}catch(e){Toast("操作失败："+e.message)}
+}
+async function RefreshOnboardingState(){
+  if(!SERVERMODE)return;
+  try{
+    ONBOARD_STATE=await Api("/api/onboarding");
+    if(ONBOARD_STATE.needs_welcome)OpenOnboarding();
+    else if(ONBOARD_STATE.show_checklist)RenderOnboardingChecklist(ONBOARD_STATE.checklist);
+    else HideOnboardingChecklist();
+  }catch(e){console.error("RefreshOnboardingState",e)}
+}
+async function InitOnboarding(){await RefreshOnboardingState()}
 
 /* ---------- 设置 ---------- */
 /* 内置免费模型预设：均为 OpenAI 兼容接口，模型本身免费，Key 需自行免费申请 */
 const PRESETS=[
-  {name:"⚡ Pollinations（免注册·直接可用）",base_url:"https://text.pollinations.ai/openai",model:"openai",noauth:true,hint:"公共端点，无需注册/无需 Key，只填选题名即可分析。匿名约每 15 秒 1 次请求，遇繁忙会自动等待重试；若多次提示「限流/繁忙」，请稍后再试，或改用下方带 Key 的免费模型（更稳定，注册约 1 分钟）。"},
+  {name:"默认 · 智谱 GLM-4-Flash（开箱即用）",base_url:"https://open.bigmodel.cn/api/paas/v4",model:"glm-4-flash",builtin:true,hint:"新用户已预配置，可直接纳入研究与知识查询；也可在下方替换为自己的 Key。"},
+  {name:"⚡ Pollinations（免注册·直接可用）",base_url:"https://text.pollinations.ai/openai",model:"openai",noauth:true,hint:"公共端点，无需注册/无需 Key，只填选题名即可纳入研究。匿名约每 15 秒 1 次请求，遇繁忙会自动等待重试；若多次提示「限流/繁忙」，请稍后再试，或改用下方带 Key 的免费模型（更稳定，注册约 1 分钟）。"},
   {name:"OpenRouter · DeepSeek V3（免费）",base_url:"https://openrouter.ai/api/v1",model:"deepseek/deepseek-chat-v3-0324:free",hint:"免费注册获取 Key（sk-or-...）",reg_url:"https://openrouter.ai/keys"},
   {name:"OpenRouter · Gemini 2.0 Flash（免费）",base_url:"https://openrouter.ai/api/v1",model:"google/gemini-2.0-flash-exp:free",hint:"免费注册获取 Key（sk-or-...）",reg_url:"https://openrouter.ai/keys"},
   {name:"OpenRouter · Llama 3.3 70B（免费）",base_url:"https://openrouter.ai/api/v1",model:"meta-llama/llama-3.3-70b-instruct:free",hint:"免费注册获取 Key（sk-or-...）",reg_url:"https://openrouter.ai/keys"},
-  {name:"智谱 GLM-4-Flash（免费）",base_url:"https://open.bigmodel.cn/api/paas/v4",model:"glm-4-flash",hint:"免费注册获取 API Key",reg_url:"https://open.bigmodel.cn/usercenter/apikeys"},
+  {name:"智谱 GLM-4-Flash（自备 Key）",base_url:"https://open.bigmodel.cn/api/paas/v4",model:"glm-4-flash",hint:"免费注册获取 API Key",reg_url:"https://open.bigmodel.cn/usercenter/apikeys"},
   {name:"Groq · Llama 3.3 70B（免费额度）",base_url:"https://api.groq.com/openai/v1",model:"llama-3.3-70b-versatile",hint:"免费注册获取 Key（gsk_...）",reg_url:"https://console.groq.com/keys"},
 ];
 function BuildPresetOptions(){
@@ -1585,28 +2292,37 @@ function ApplyPreset(){
   if(p.noauth){
     document.getElementById("set_apikey").value="";
     hint.innerHTML="✅ "+p.hint;
+  }else if(p.builtin){
+    hint.innerHTML="✅ "+p.hint;
   }else{
-    hint.innerHTML="提示："+p.hint+`　👉 <a href="${p.reg_url}" target="_blank" rel="noopener">点此免费注册 ↗</a>`;
+    hint.innerHTML="提示："+p.hint+`　👉 <a href="${p.reg_url||"#"}" target="_blank" rel="noopener">点此免费注册 ↗</a>`;
   }
 }
 async function OpenSettings(){
   if(NeedServer())return;
   BuildPresetOptions();
+  const okeyinp=document.getElementById("set_apikey");
   try{const c=await Api("/api/config");
     document.getElementById("set_baseurl").value=c.base_url||"https://api.openai.com/v1";
-    document.getElementById("set_apikey").value=c.api_key||"";
+    okeyinp.value="";
+    okeyinp.placeholder=c.using_builtin_llm?"已预置 GLM-4-Flash，可直接使用（留空保持）":(c.has_api_key?"已配置，留空则保持不变":"粘贴 API Key（如智谱 Key）");
     document.getElementById("set_model").value=c.model||"gpt-4o-mini";
     document.getElementById("set_lang").value=c.language||"中文";
     const idx=PRESETS.findIndex(p=>p.base_url===c.base_url&&p.model===c.model);
     document.getElementById("set_preset").value=idx>=0?String(idx):"";
     ApplyPreset();
-  }catch(e){}
+  }catch(e){okeyinp.value="";okeyinp.placeholder="粘贴 API Key"}
   document.getElementById("setmodal").classList.add("open");
 }
 function CloseSettings(){document.getElementById("setmodal").classList.remove("open")}
 async function SaveSettings(){
-  const body={base_url:document.getElementById("set_baseurl").value.trim(),api_key:document.getElementById("set_apikey").value.trim(),model:document.getElementById("set_model").value.trim(),language:document.getElementById("set_lang").value};
-  try{await Api("/api/config",body);CloseSettings();Toast("设置已保存")}catch(e){Toast("保存失败："+e.message)}
+  const body={base_url:document.getElementById("set_baseurl").value.trim(),model:document.getElementById("set_model").value.trim(),language:document.getElementById("set_lang").value};
+  const skey=document.getElementById("set_apikey").value.trim();
+  const spreset=document.getElementById("set_preset").value;
+  const bnoauth=spreset!==""&&PRESETS[+spreset]?.noauth;
+  if(bnoauth)body.clear_api_key=true;
+  else if(skey)body.api_key=skey;
+  try{await Api("/api/config",body);CloseSettings();Toast(bnoauth?"设置已保存（免注册模式）":(skey?"设置已保存":"设置已保存（API Key 未改动）"))}catch(e){Toast("保存失败："+e.message)}
 }
 
 /* ---------- 文档编辑 ---------- */
@@ -2129,7 +2845,7 @@ function DrawGraph(){
   links.forEach(l=>{const active=hover&&(l.s.id===hover.id||l.t.id===hover.id);ctx.strokeStyle=active?slinka:slink;ctx.lineWidth=active?2:1;ctx.beginPath();ctx.moveTo(l.s.x,l.s.y);ctx.lineTo(l.t.x,l.t.y);ctx.stroke()});
   nodes.forEach(n=>{const dim=hover&&n!==hover&&!(hoverNeigh&&hoverNeigh.has(n.id));ctx.globalAlpha=dim?0.3:1;ctx.beginPath();ctx.arc(n.x,n.y,n.r,0,6.2832);ctx.fillStyle=TypeColor(n.type);ctx.fill();
     if(!n.ingested){ctx.lineWidth=1.5;ctx.strokeStyle=sring;ctx.setLineDash([3,3]);ctx.stroke();ctx.setLineDash([])}
-    if(view.scale>0.6||n.degree>1||n===hover){ctx.globalAlpha=dim?0.35:1;ctx.fillStyle=slabel;ctx.font="12px PingFang SC,sans-serif";ctx.textAlign="center";const lbl=n.title.length>16?n.title.slice(0,15)+"…":n.title;ctx.fillText(lbl,n.x,n.y+n.r+13)}});
+    if(view.scale>0.6||n.degree>1||n===hover){ctx.globalAlpha=dim?0.35:1;ctx.fillStyle=slabel;ctx.font=(window.__graphFont||"500 12px sans-serif");ctx.textAlign="center";const lbl=n.title.length>16?n.title.slice(0,15)+"…":n.title;ctx.fillText(lbl,n.x,n.y+n.r+13)}});
   ctx.globalAlpha=1;ctx.restore();
 }
 function ToWorld(e){const r=canvas.getBoundingClientRect();return{x:(e.clientX-r.left-view.x)/view.scale,y:(e.clientY-r.top-view.y)/view.scale}}
@@ -2155,18 +2871,21 @@ function SwitchView(vid){
 document.querySelectorAll(".tab").forEach(tab=>{tab.onclick=()=>SwitchView(tab.dataset.view)});
 
 if(!SERVERMODE){
-  document.getElementById("toolbar").innerHTML='<span class="meta">🌷 只读浏览 · 请打开 <b>Paper-Helper</b> 应用以添加与分析文献</span>';
+  document.getElementById("toolbar").innerHTML='<span class="meta">🌷 只读浏览 · 请打开 <b>研栈</b> 应用以添加与纳入研究</span>';
   const tb=document.getElementById("topicbar");if(tb)tb.style.display="none";
   UpdateCurrentTopicDisplay();
 }else{
   RenderTopicSelect();
   UpdateCurrentTopicDisplay();
 }
+LoadAllQueryHistory();
+RestoreQueryThreadForTopic(CURRENT_TOPIC);
 InitTheme();
+InitDrawerShells();
 InitSvcToggle();
 InitDropzone();
 RenderAll();
-if(SERVERMODE){LoadTopics().then(()=>Refresh(true));LoadDocsList();}
+if(SERVERMODE){LoadTopics().then(()=>Refresh(true)).then(()=>InitOnboarding());LoadDocsList();}
 </script>
 </body>
 </html>

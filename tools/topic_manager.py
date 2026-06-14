@@ -33,13 +33,16 @@ purposefields = [
 
 
 def Init(nroot):
-    global _datadir
+    global _datadir, _layout_ready
+    if nroot != _datadir:
+        _layout_ready = False  # 多用户模式下切换数据根后需重新检查布局
     _datadir = nroot
     EnsureLayout()
 
 
 def ConfigDir():
-    return os.path.join(_datadir, ".paper-helper")
+    from app_meta import ResolveConfigDir
+    return ResolveConfigDir(_datadir)
 
 
 def TopicsDir():
@@ -154,6 +157,26 @@ def CopyWikiTemplates(ntopicdir):
             shutil.copy2(stpl, os.path.join(swikidst, ssub, "_template.md"))
     for sname in ("index.md", "log.md", "overview.md"):
         WriteText(os.path.join(swikidst, sname), "---\ntype: meta\ntitle: %s\n---\n\n" % sname)
+
+
+def CopyInheritedQueries(ntopicdir, nimportfrom):
+    """从旧选题继承已沉淀到 wiki/queries 的问答页（不含弹窗会话记录）。"""
+    if not nimportfrom:
+        return 0
+    ssrc = os.path.join(TopicsDir(), nimportfrom, "wiki", "queries")
+    sdst = os.path.join(ntopicdir, "wiki", "queries")
+    if not os.path.isdir(ssrc):
+        return 0
+    os.makedirs(sdst, exist_ok=True)
+    ncount = 0
+    for sname in os.listdir(ssrc):
+        if not sname.endswith(".md") or sname == "_template.md":
+            continue
+        spath = os.path.join(ssrc, sname)
+        if os.path.isfile(spath):
+            shutil.copy2(spath, os.path.join(sdst, sname))
+            ncount += 1
+    return ncount
 
 
 def InitTopicDirs(ntopicdir):
@@ -331,7 +354,7 @@ def RenderPurpose(ofields):
     srq4 = ofields.get("rq4", "").strip()
     srq4line = ("- RQ4：%s\n" % srq4) if srq4 else ""
     return (
-        "---\ntype: purpose\ntitle: 博士论文 Wiki 的目标\nupdated: %s\n---\n\n"
+        "---\ntype: purpose\ntitle: 研栈研究目标\nupdated: %s\n---\n\n"
         "# Purpose · 这个 Wiki 为什么存在\n\n"
         "> 这是整个知识库的「灵魂」。Agent 在每次摄入 / 查询前都会先读它。\n\n"
         "## 1. 论文主题 / Working Title\n\n"
@@ -451,6 +474,7 @@ def CreateTopic(sname, ofields=None, bcopyrules=True, nimportfrom=None):
         raise ValueError("选题已存在")
     os.makedirs(ntdir, exist_ok=True)
     InitTopicDirs(ntdir)
+    nqueries = CopyInheritedQueries(ntdir, nimportfrom) if nimportfrom else 0
     sold = nimportfrom if nimportfrom else GetCurrentTopicId()
     if bcopyrules and sold:
         for sname in ("schema.md", "AGENTS.md"):
@@ -475,7 +499,7 @@ def CreateTopic(sname, ofields=None, bcopyrules=True, nimportfrom=None):
         sdisplay = "新选题"
     WriteMeta(nid, sdisplay)
     SaveCurrentTopic(nid)
-    return {"id": nid, "name": sdisplay}
+    return {"id": nid, "name": sdisplay, "inherited_queries": nqueries}
 
 
 def SwitchTopic(ntopicid):

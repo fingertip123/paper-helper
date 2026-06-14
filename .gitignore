@@ -18,6 +18,11 @@ __pycache__/
 
 # 本地服务配置（含 API Key，切勿提交）
 .paper-helper/
+.yanzhan/
+tools/builtin_api_key.txt
+
+# 云端多用户数据（用户库与每用户数据，切勿提交）
+data/
 
 # Obsidian 工作区缓存（保留 .obsidian 配置可按需取消忽略）
 .obsidian/workspace*.json

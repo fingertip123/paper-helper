@@ -1,6 +1,6 @@
 ---
 type: purpose
-title: 博士论文 Wiki 的目标
+title: 研栈研究目标
 updated: 2026-06-11
 ---
 

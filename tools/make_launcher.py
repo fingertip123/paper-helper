@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 """生成双端统一程序入口（无终端窗口）。
 
-macOS  → Paper-Helper.app
-Windows → Paper-Helper.vbs + Paper-Helper.lnk（带图标快捷方式）
+macOS  → Yanzhan.app
+Windows → Yanzhan.vbs + Yanzhan.lnk（带图标快捷方式）
 
 开发者在项目根目录运行：  python3 tools/make_launcher.py
 """
@@ -14,7 +14,10 @@ import subprocess
 import sys
 
 rootdir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-appname = "Paper-Helper"
+appname = "Yanzhan"
+displayname = "研栈"
+configdirname = ".yanzhan"
+guienv = "YANZHAN_GUI"
 iconsrc_mac = os.path.join(rootdir, "assets", "icon.icns")
 iconsrc_win = os.path.join(rootdir, "assets", "icon.ico")
 
@@ -23,7 +26,7 @@ mac_script = r"""#!/bin/bash
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 cd "$ROOT" || exit 1
 export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.pyenv/shims:$HOME/.local/bin:/usr/bin:/bin:$PATH"
-CONFIG_DIR="$ROOT/.paper-helper"
+CONFIG_DIR="$ROOT/.yanzhan"
 CACHE="$CONFIG_DIR/python.path"
 mkdir -p "$CONFIG_DIR"
 
@@ -63,21 +66,21 @@ if [ -z "$PY" ]; then
   osascript -e 'display alert "未找到 Python" message "请先安装 Python 3（https://www.python.org/downloads/）" as stop'
   exit 1
 fi
-export PAPER_HELPER_GUI=1
+export YANZHAN_GUI=1
 exec "$PY" tools/entry.py
 """
 
-win_vbs = r"""' Paper-Helper 统一入口（Windows，无控制台窗口）
+win_vbs = r"""' 研栈统一入口（Windows，无控制台窗口）
 Option Explicit
 Dim sh, fso, root, py, cmd
 Set sh = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 root = fso.GetParentFolderName(WScript.ScriptFullName)
 sh.CurrentDirectory = root
-sh.Environment("PROCESS")("PAPER_HELPER_GUI") = "1"
+sh.Environment("PROCESS")("YANZHAN_GUI") = "1"
 py = FindPythonw()
 If py = "" Then
-  MsgBox "未找到 Python。" & vbCrLf & "请安装 Python 3 并勾选 Add to PATH。" & vbCrLf & "https://www.python.org/downloads/", vbCritical, "Paper-Helper"
+  MsgBox "未找到 Python。" & vbCrLf & "请安装 Python 3 并勾选 Add to PATH。" & vbCrLf & "https://www.python.org/downloads/", vbCritical, "研栈"
   WScript.Quit 1
 End If
 If LCase(py) = "pyw" Or LCase(py) = "pyw.exe" Then
@@ -134,9 +137,9 @@ def MakeMacApp():
 <dict>
     <key>CFBundleExecutable</key><string>%s</string>
     <key>CFBundleIconFile</key><string>icon</string>
-    <key>CFBundleIdentifier</key><string>com.paperhelper.app</string>
+    <key>CFBundleIdentifier</key><string>com.yanzhan.app</string>
     <key>CFBundleName</key><string>%s</string>
-    <key>CFBundleDisplayName</key><string>博士论文 Wiki</string>
+    <key>CFBundleDisplayName</key><string>%s</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>1.0</string>
     <key>CFBundleVersion</key><string>1</string>
@@ -144,7 +147,7 @@ def MakeMacApp():
     <key>NSHighResolutionCapable</key><true/>
 </dict>
 </plist>
-""" % (appname, appname)
+""" % (appname, appname, displayname)
     os.makedirs(macosdir, exist_ok=True)
     os.makedirs(resdir, exist_ok=True)
     with open(os.path.join(apppath, "Contents", "Info.plist"), "w", encoding="utf-8") as f:
@@ -170,7 +173,7 @@ def MakeWinLauncher():
             '$s.Arguments = \'"%s"\'; '
             '$s.WorkingDirectory = "%s"; '
             '$s.IconLocation = "%s"; '
-            '$s.Description = "博士论文 Wiki"; '
+            '$s.Description = "研栈"; '
             '$s.Save()'
         ) % (lnkpath.replace("\\", "\\\\"), vbspath.replace("\\", "\\\\"),
              rootdir.replace("\\", "\\\\"), iconsrc_win.replace("\\", "\\\\"))
@@ -182,13 +185,13 @@ def MakeWinLauncher():
 
 
 def Main():
-    print("生成 Paper-Helper 统一程序入口：")
+    print("生成研栈程序入口：")
     MakeMacApp()
     MakeWinLauncher()
     print()
     print("使用方式：")
-    print("  macOS   双击 Paper-Helper.app")
-    print("  Windows 双击 Paper-Helper.lnk（或 Paper-Helper.vbs）")
+    print("  macOS   双击 Yanzhan.app")
+    print("  Windows 双击 Yanzhan.lnk（或 Yanzhan.vbs）")
 
 
 if __name__ == "__main__":

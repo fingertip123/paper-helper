@@ -1,14 +1,14 @@
-' Paper-Helper 统一入口（Windows，无控制台窗口）
+' 研栈统一入口（Windows，无控制台窗口）
 Option Explicit
 Dim sh, fso, root, py, cmd
 Set sh = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 root = fso.GetParentFolderName(WScript.ScriptFullName)
 sh.CurrentDirectory = root
-sh.Environment("PROCESS")("PAPER_HELPER_GUI") = "1"
+sh.Environment("PROCESS")("YANZHAN_GUI") = "1"
 py = FindPythonw()
 If py = "" Then
-  MsgBox "未找到 Python。" & vbCrLf & "请安装 Python 3 并勾选 Add to PATH。" & vbCrLf & "https://www.python.org/downloads/", vbCritical, "Paper-Helper"
+  MsgBox "未找到 Python。" & vbCrLf & "请安装 Python 3 并勾选 Add to PATH。" & vbCrLf & "https://www.python.org/downloads/", vbCritical, "研栈"
   WScript.Quit 1
 End If
 If LCase(py) = "pyw" Or LCase(py) = "pyw.exe" Then

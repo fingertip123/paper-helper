@@ -2,11 +2,11 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleExecutable</key><string>Paper-Helper</string>
+    <key>CFBundleExecutable</key><string>Yanzhan</string>
     <key>CFBundleIconFile</key><string>icon</string>
-    <key>CFBundleIdentifier</key><string>com.paperhelper.app</string>
-    <key>CFBundleName</key><string>Paper-Helper</string>
-    <key>CFBundleDisplayName</key><string>博士论文 Wiki</string>
+    <key>CFBundleIdentifier</key><string>com.yanzhan.app</string>
+    <key>CFBundleName</key><string>Yanzhan</string>
+    <key>CFBundleDisplayName</key><string>研栈</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>1.0</string>
     <key>CFBundleVersion</key><string>1</string>
