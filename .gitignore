@@ -28,6 +28,19 @@ data/
 .obsidian/workspace*.json
 .obsidian/cache
 
-# 原始资料体积可能较大，按需选择是否纳入版本控制；
-# 如不想提交大文件，取消下一行注释：
-# raw/sources/*
+# Reasonix 工具缓存
+.reasonix/
+
+# 原始资料（用户上传的 PDF/docx，不提交）
+raw/sources/*
+!raw/sources/.gitkeep
+
+# 运行时知识库（Ingest 自动生成，不提交）
+wiki/
+
+# 主题下的运行时数据
+topics/*/wiki/
+topics/*/docs/
+topics/*/raw/sources/*
+!topics/*/raw/sources/.gitkeep
+topics/topic-*/
