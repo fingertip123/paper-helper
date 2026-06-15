@@ -44,3 +44,7 @@ topics/*/docs/
 topics/*/raw/sources/*
 !topics/*/raw/sources/.gitkeep
 topics/topic-*/
+topics/*/progress.json
+
+# CodeGraph 工具缓存
+.codegraph/
