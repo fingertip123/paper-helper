@@ -958,13 +958,23 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, doced.GetEditorHtml(sid, stheme), "text/html; charset=utf-8")
         except Exception as e:
             smsg = str(e).replace("&", "&amp;").replace("<", "&lt;")
+            if isinstance(e, ModuleNotFoundError) and "docx" in str(e):
+                shint = (
+                    '服务器缺少 <code>python-docx</code> 依赖。请在部署环境执行 '
+                    '<code>pip3 install --user python-docx</code>（或 '
+                    '<code>pip3 install -r requirements-server.txt</code>），'
+                    '然后重新加载（Reload）服务后再打开。'
+                )
+            else:
+                shint = "请尝试重新导入 docx，或重启应用后再打开。"
             shtml = (
                 '<!DOCTYPE html><html><head><meta charset="utf-8">'
                 '<style>body{font-family:-apple-system,sans-serif;padding:40px;color:#4a3f47;background:#f8f6f4}'
-                'h2{font-size:16px;margin-bottom:12px}.meta{font-size:13px;color:#8a7a84;line-height:1.7}</style></head>'
+                'h2{font-size:16px;margin-bottom:12px}.meta{font-size:13px;color:#8a7a84;line-height:1.7}'
+                'code{background:#efe7e3;padding:1px 6px;border-radius:5px;font-size:12px}</style></head>'
                 '<body><h2>文档编辑器加载失败</h2>'
                 '<p class="meta">' + smsg + '</p>'
-                '<p class="meta">请尝试重新导入 docx，或重启应用后再打开。</p></body></html>'
+                '<p class="meta">' + shint + '</p></body></html>'
             )
             return self._send(500, shtml, "text/html; charset=utf-8")
 
