@@ -172,6 +172,13 @@ def UrlopenJsonWithCancel(oreq, fcancel=None, ntimeout=300):
 
 def PickFolderNative():
     """系统原生文件夹选择（可从 HTTP 工作线程安全调用）。"""
+    if desktopmode and desktop_pick_folder:
+        try:
+            spath = desktop_pick_folder()
+            if spath:
+                return spath.rstrip("/\\")
+        except Exception:
+            pass
     if sys.platform == "darwin":
         try:
             r = subprocess.run(

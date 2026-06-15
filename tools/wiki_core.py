@@ -976,7 +976,7 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   <div id="docexportmodal" class="ph-modal"><div class="setbox setbox-flex" style="width:min(520px,92vw)">
     <div class="setbox-head">
       <h2>🎁 导出 docx</h2>
-      <p class="note">将精心修改后的文档保存到本机文件夹，文件名可自由定制。</p>
+      <p class="note">将精心修改后的文档保存到本机文件夹；若文件夹不存在会自动创建。导出前会先保存编辑器中的未提交段落。</p>
     </div>
     <div class="setbox-body">
       <label>文件名</label>
@@ -2799,6 +2799,10 @@ async function ConfirmDocExport(){
   if(!sname){Toast("请填写文件名");return}
   ShowOverlay("正在导出…");
   try{
+    const oiframe=document.getElementById("doc_frame");
+    if(oiframe&&oiframe.contentWindow&&oiframe.contentWindow.flushAllParas){
+      await oiframe.contentWindow.flushAllParas();
+    }
     const r=await Api("/api/docs/export",{id:CURRENT_DOC,dir:sdir,filename:sname});
     localStorage.setItem("doc_export_dir",sdir);
     HideOverlay();CloseDocExport();Toast("已导出："+r.path,4000);

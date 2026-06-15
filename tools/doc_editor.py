@@ -704,11 +704,7 @@ def _FormatDictToCss(ofmt):
     return ";".join(vstyles)
 
 
-def _WrapText(stext, orun, opara=None, othemes=None):
-    if not stext:
-        return ""
-    ofmt = _RunFormatDict(orun, opara, othemes)
-    shtml = _EscHtml(stext)
+def _ApplyInlineFmtToHtml(shtml, ofmt):
     if ofmt.get("bold"):
         shtml = "<strong>%s</strong>" % shtml
     if ofmt.get("italic"):
@@ -721,28 +717,82 @@ def _WrapText(stext, orun, opara=None, othemes=None):
     return shtml
 
 
+def _WrapText(stext, orun, opara=None, othemes=None):
+    if not stext:
+        return ""
+    ofmt = _RunFormatDict(orun, opara, othemes)
+    vlines = stext.split("\n")
+    vparts = []
+    for i, sline in enumerate(vlines):
+        if sline:
+            vparts.append(_ApplyInlineFmtToHtml(_EscHtml(sline), ofmt))
+        if i < len(vlines) - 1:
+            vparts.append("<br>")
+    return "".join(vparts)
+
+
 def _RunToHtml(orun, oimgurls, beditable=False, opara=None, othemes=None):
     vparts = []
-    if orun.text:
+    bhas_child = False
+    for ochild in orun._element:
+        stag = ochild.tag.split("}")[-1] if "}" in ochild.tag else ochild.tag
+        if stag == "t":
+            bhas_child = True
+            st = ochild.text or ""
+            if st:
+                vparts.append(_WrapText(st, orun, opara, othemes))
+        elif stag == "br":
+            bhas_child = True
+            vparts.append("<br>")
+        elif stag == "tab":
+            bhas_child = True
+            vparts.append("&#9;")
+        elif stag == "drawing":
+            bhas_child = True
+            for oblip in ochild.iter("{%s}blip" % ANS):
+                srid = oblip.get("{%s}embed" % RNS)
+                surl = oimgurls.get(srid, "")
+                if surl:
+                    sattr = ' contenteditable="false"' if beditable else ""
+                    vparts.append(
+                        '<span class="imgwrap"%s><img class="docimg" src="%s" alt=""></span>'
+                        % (sattr, surl)
+                    )
+    if not bhas_child and orun.text:
         vparts.append(_WrapText(orun.text, orun, opara, othemes))
-    for oblip in orun._element.iter("{%s}blip" % ANS):
-        srid = oblip.get("{%s}embed" % RNS)
-        surl = oimgurls.get(srid, "")
-        if surl:
-            sattr = ' contenteditable="false"' if beditable else ""
-            vparts.append(
-                '<span class="imgwrap"%s><img class="docimg" src="%s" alt=""></span>' % (sattr, surl)
-            )
+    if not vparts:
+        for oblip in orun._element.iter("{%s}blip" % ANS):
+            srid = oblip.get("{%s}embed" % RNS)
+            surl = oimgurls.get(srid, "")
+            if surl:
+                sattr = ' contenteditable="false"' if beditable else ""
+                vparts.append(
+                    '<span class="imgwrap"%s><img class="docimg" src="%s" alt=""></span>'
+                    % (sattr, surl)
+                )
     return "".join(vparts)
+
+
+def _PlainTextToHtml(stext):
+    if not stext:
+        return "&#160;"
+    vlines = stext.split("\n")
+    vparts = []
+    for i, sline in enumerate(vlines):
+        if sline:
+            vparts.append(_EscHtml(sline))
+        if i < len(vlines) - 1:
+            vparts.append("<br>")
+    return "".join(vparts) or "&#160;"
 
 
 def _ParaToHtml(opara, oimgurls, beditable=False, othemes=None):
     if not opara.runs:
-        stext = _EscHtml(opara.text or "") or "&#160;"
+        sbody = _PlainTextToHtml(opara.text or "")
         sstyle = _ParaStyleCss(opara, othemes)
-        if sstyle and stext != "&#160;":
-            return '<span style="%s">%s</span>' % (_EscAttr(sstyle), stext)
-        return stext
+        if sstyle and sbody != "&#160;":
+            return '<span style="%s">%s</span>' % (_EscAttr(sstyle), sbody)
+        return sbody
     sbody = "".join(_RunToHtml(r, oimgurls, beditable, opara, othemes) for r in opara.runs)
     return sbody or "&#160;"
 
@@ -993,9 +1043,15 @@ def _NormalizeEditorHtml(shtml):
     if not shtml:
         return ""
     shtml = shtml.strip()
-    shtml = re.sub(r"</?(?:div|p)\b[^>]*>", "", shtml, flags=re.I)
+    shtml = re.sub(r"</div>\s*<div\b[^>]*>", "<br>", shtml, flags=re.I)
+    shtml = re.sub(r"</p>\s*<p\b[^>]*>", "<br>", shtml, flags=re.I)
+    shtml = re.sub(r"<div\b[^>]*>", "", shtml, flags=re.I)
+    shtml = re.sub(r"</div>", "<br>", shtml, flags=re.I)
+    shtml = re.sub(r"<p\b[^>]*>", "", shtml, flags=re.I)
+    shtml = re.sub(r"</p>", "<br>", shtml, flags=re.I)
     shtml = re.sub(r"<br\s*/?>", "<br>", shtml, flags=re.I)
-    return shtml.strip()
+    shtml = re.sub(r"(<br>){2,}", "<br>", shtml, flags=re.I)
+    return shtml.strip().strip("<br>")
 
 
 def _ParseInlineHtml(shtml):
@@ -1043,6 +1099,21 @@ def _ApplySegmentStyle(orun, oseg):
         orun.font.color.rgb = RGBColor(orgb[0], orgb[1], orgb[2])
 
 
+def _EmitStyledText(opara, oseg):
+    stext = oseg.get("text", "")
+    if not stext:
+        return
+    vparts = stext.split("\n")
+    for i, sline in enumerate(vparts):
+        if sline:
+            orun = opara.add_run(sline)
+            _ApplySegmentStyle(orun, oseg)
+        if i < len(vparts) - 1:
+            orun = opara.add_run("")
+            _ApplySegmentStyle(orun, oseg)
+            orun.add_break()
+
+
 def _ApplyRichHtmlToPara(opara, shtml):
     vsegments = _ParseInlineHtml(shtml)
     if _ParaHasDrawing(opara):
@@ -1050,13 +1121,8 @@ def _ApplyRichHtmlToPara(opara, shtml):
         _SetParaTextPreserveMedia(opara, stext)
         return
     _ClearParaRuns(opara)
-    odoc = opara.part.document if hasattr(opara, "part") else None
     for oseg in vsegments:
-        stext = oseg.get("text", "")
-        if not stext:
-            continue
-        orun = opara.add_run(stext)
-        _ApplySegmentStyle(orun, oseg)
+        _EmitStyledText(opara, oseg)
 
 
 def _ParaComparable(opara, othemes=None):
@@ -1343,7 +1409,7 @@ def GetEditorCss(stheme="girly"):
         ".docpage .docpara{font-size:inherit;line-height:inherit}"
         ".cmtmarks{line-height:1.2;margin-bottom:2px;user-select:none}"
         ".docpara{margin:0;padding:2px 4px;border-radius:6px;outline:none;position:relative;min-height:1.4em;"
-        "-webkit-user-select:text;user-select:text}"
+        "white-space:pre-wrap;-webkit-user-select:text;user-select:text}"
         ".docpara:focus,.docpara.selected{background:%(focus_bg)s;box-shadow:inset 0 0 0 2px %(focus_border)s}"
         ".docpara.has-comment{background:%(comment_bg)s;border-left:3px solid %(comment_border)s;"
         "padding-left:8px;margin-left:-4px}"
@@ -1523,6 +1589,48 @@ function applyColor(scolor){
   saveSelection();
   updateFmtUi();
 }
+function parsePtStyle(sstyle,skey){
+  if(!sstyle)return 0;
+  const sm=sstyle.match(new RegExp(skey+'\\s*:\\s*([\\d.]+)pt','i'));
+  return sm?parseFloat(sm[1]):0;
+}
+function mergeParaStyle(el,patch){
+  const cur=(el.getAttribute('style')||el.dataset.pstyle||'').trim();
+  const omap={};
+  cur.split(';').forEach(sp=>{
+    if(!sp||sp.indexOf(':')<0)return;
+    const kv=sp.split(':');
+    omap[kv[0].trim().toLowerCase()]=kv.slice(1).join(':').trim();
+  });
+  Object.keys(patch).forEach(k=>{omap[k.toLowerCase()]=patch[k]});
+  const snew=Object.keys(omap).filter(k=>omap[k]!==''&&omap[k]!=null).map(k=>k+':'+omap[k]).join(';');
+  el.setAttribute('style',snew);
+  return snew;
+}
+function applyParaAlign(salign){
+  const op=ensureFmtReady();if(!op)return;
+  mergeParaStyle(op,{'text-align':salign});
+  savePara(op);
+}
+function applyParaIndent(ndelta){
+  const op=ensureFmtReady();if(!op)return;
+  const sstyle=op.getAttribute('style')||op.dataset.pstyle||'';
+  let nleft=parsePtStyle(sstyle,'margin-left');
+  if(!nleft)nleft=parsePtStyle(sstyle,'padding-left');
+  nleft=Math.max(0,Math.round((nleft+ndelta)*10)/10);
+  mergeParaStyle(op,{'margin-left':nleft?nleft+'pt':'0pt','padding-left':''});
+  savePara(op);
+}
+function applyLineSpacing(sval){
+  const op=ensureFmtReady();if(!op)return;
+  mergeParaStyle(op,{'line-height':sval});
+  savePara(op);
+}
+async function flushAllParas(){
+  const vels=[...document.querySelectorAll('.docpara-editable')];
+  for(const el of vels)await savePara(el);
+}
+window.flushAllParas=flushAllParas;
 function updateFmtUi(){
   const ob=document.getElementById('fmt_bold');
   const oi=document.getElementById('fmt_italic');
@@ -1585,6 +1693,14 @@ function bindFmtBar(){
   document.getElementById('fmt_bold').onclick=()=>runFmt('bold');
   document.getElementById('fmt_italic').onclick=()=>runFmt('italic');
   document.getElementById('fmt_underline').onclick=()=>runFmt('underline');
+  document.getElementById('fmt_align_left').onclick=()=>applyParaAlign('left');
+  document.getElementById('fmt_align_center').onclick=()=>applyParaAlign('center');
+  document.getElementById('fmt_align_right').onclick=()=>applyParaAlign('right');
+  document.getElementById('fmt_align_justify').onclick=()=>applyParaAlign('justify');
+  document.getElementById('fmt_indent_inc').onclick=()=>applyParaIndent(21);
+  document.getElementById('fmt_indent_dec').onclick=()=>applyParaIndent(-21);
+  const oline=document.getElementById('fmt_linespace');
+  if(oline)oline.addEventListener('change',e=>{const v=e.target.value;if(v)applyLineSpacing(v);e.target.selectedIndex=0});
   const ofont=document.getElementById('fmt_font');
   const osize=document.getElementById('fmt_size');
   const ocolor=document.getElementById('fmt_color');
@@ -1609,6 +1725,14 @@ document.querySelectorAll('.docpara-editable').forEach(el=>{
   el.addEventListener('blur',()=>savePara(el));
   el.addEventListener('mouseup',saveSelection);
   el.addEventListener('keyup',saveSelection);
+  el.addEventListener('keydown',e=>{
+    if(e.key!=='Enter'||e.isComposing)return;
+    e.preventDefault();
+    try{document.execCommand('insertLineBreak')}catch(err){
+      document.execCommand('insertHTML',false,'<br>');
+    }
+    saveSelection();
+  });
 });
 document.querySelectorAll('.cmtmark').forEach(el=>{
   el.addEventListener('click',e=>{e.stopPropagation();notify({type:'doc-cmt',cid:el.dataset.cid})});
@@ -1628,7 +1752,7 @@ def _EditorCacheKey(sdocid, stheme):
         os.path.getsize(scurrent),
         int(os.path.getmtime(scomments) * 1000) if os.path.isfile(scomments) else 0,
     )
-    return "%s:%s:%s:fmt3" % (sdocid, stheme, nver)
+    return "%s:%s:%s:fmt4" % (sdocid, stheme, nver)
 
 
 def _TouchEditorCache(skey, shtml):
@@ -1689,6 +1813,19 @@ def RenderEditorHtml(sdocid, stheme="girly"):
         '<option value="32">32pt</option>'
         '</select>'
         '<input type="color" class="fmtcolor" id="fmt_color" value="#4a3f47" title="文字颜色">'
+        '</div>'
+        '<div class="grp">'
+        '<button type="button" class="fmtbtn" id="fmt_align_left" title="左对齐">≡</button>'
+        '<button type="button" class="fmtbtn" id="fmt_align_center" title="居中">≡</button>'
+        '<button type="button" class="fmtbtn" id="fmt_align_right" title="右对齐">≡</button>'
+        '<button type="button" class="fmtbtn" id="fmt_align_justify" title="两端对齐">≡</button>'
+        '<button type="button" class="fmtbtn" id="fmt_indent_inc" title="增加缩进">→</button>'
+        '<button type="button" class="fmtbtn" id="fmt_indent_dec" title="减少缩进">←</button>'
+        '<select class="fmtselect" id="fmt_linespace" title="行距">'
+        '<option value="">行距</option>'
+        '<option value="1">单倍</option><option value="1.5">1.5倍</option>'
+        '<option value="2">2倍</option><option value="28pt">固定28pt</option>'
+        '</select>'
         '</div>'
         '</div></div>'
         '<div class="fmtpeek" title="悬停展开格式工具栏"></div>'
@@ -1756,6 +1893,15 @@ def MarkTodoDone(sdocid, stodo_id, bdone=True):
     return {"progress": _CalcProgress(otodos)}
 
 
+def _SetParaPlainText(opara, stext):
+    if _ParaHasDrawing(opara):
+        _SetParaTextPreserveMedia(opara, stext)
+        return
+    _ClearParaRuns(opara)
+    if stext:
+        _EmitStyledText(opara, {"text": stext})
+
+
 def ApplyEdit(sdocid, npara_index, snew_text, scomment_id=None, shtml=None, spara_style=None):
     from docx import Document
     scurrent = os.path.join(DocDir(sdocid), "current.docx")
@@ -1770,10 +1916,7 @@ def ApplyEdit(sdocid, npara_index, snew_text, scomment_id=None, shtml=None, spar
         stext = _SanitizeParaText(opara.text or "")
     else:
         stext = _SanitizeParaText(snew_text)
-        if _ParaHasDrawing(opara):
-            _SetParaTextPreserveMedia(opara, stext)
-        else:
-            opara.text = stext
+        _SetParaPlainText(opara, stext)
     odoc.save(scurrent)
     InvalidateEditorCache(sdocid)
     BuildPreview(sdocid)
@@ -2225,8 +2368,10 @@ def ExportDoc(sdocid, sdest_dir, sfilename):
     if not os.path.isfile(scurrent):
         raise ValueError("文档不存在")
     sdest_dir = os.path.expanduser((sdest_dir or "").strip())
-    if not sdest_dir or not os.path.isdir(sdest_dir):
+    if not sdest_dir:
         raise ValueError("请选择有效的导出文件夹")
+    sdest_dir = os.path.abspath(sdest_dir)
+    os.makedirs(sdest_dir, exist_ok=True)
     sfilename = os.path.basename((sfilename or "export.docx").strip())
     if not sfilename.lower().endswith(".docx"):
         sfilename += ".docx"
