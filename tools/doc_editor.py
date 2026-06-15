@@ -78,10 +78,109 @@ def NewDocId(sfilename):
     return sdocid
 
 
+def _ValidateDocxBytes(bcontent):
+    import io
+    if not bcontent:
+        raise ValueError("文件内容为空")
+    try:
+        with zipfile.ZipFile(io.BytesIO(bcontent), "r") as oz:
+            if "word/document.xml" not in oz.namelist():
+                raise ValueError("不是有效的 docx 文件（缺少 document.xml）")
+            oz.read("word/document.xml")
+    except zipfile.BadZipFile:
+        raise ValueError("不是有效的 docx 文件（若为 .doc 旧格式，请先在 Word/WPS 中另存为 .docx）")
+
+
+def _XmlParseOk(bdata):
+    if not bdata:
+        return True
+    try:
+        ET.fromstring(bdata)
+        return True
+    except Exception:
+        return False
+
+
+def _StripBrokenRels(brels, vskip_targets):
+    if not vskip_targets:
+        return brels
+    try:
+        oroot = ET.fromstring(brels)
+    except Exception:
+        return brels
+    vremove = []
+    for orel in list(oroot):
+        starget = (orel.get("Target") or "").replace("\\", "/")
+        if not starget:
+            continue
+        for sskip in vskip_targets:
+            if starget.endswith(sskip) or starget.endswith(os.path.basename(sskip)):
+                vremove.append(orel)
+                break
+    for orel in vremove:
+        oroot.remove(orel)
+    return ET.tostring(oroot, encoding="utf-8", xml_declaration=True)
+
+
+def _RepairDocxBytes(bcontent):
+    """剥离损坏的可选 XML（如 WPS 批注），避免 python-docx 无法打开。"""
+    import io
+    voptional_keys = ("comment", "footnote", "endnote", "people", "chart")
+    vskip = set()
+    vin = io.BytesIO(bcontent)
+    with zipfile.ZipFile(vin, "r") as zin:
+        for sname in zin.namelist():
+            if not sname.startswith("word/") or not sname.endswith(".xml"):
+                continue
+            if sname == "word/document.xml":
+                if not _XmlParseOk(zin.read(sname)):
+                    raise ValueError("文档主体损坏，无法导入")
+                continue
+            if not any(skey in sname.lower() for skey in voptional_keys):
+                continue
+            if not _XmlParseOk(zin.read(sname)):
+                vskip.add(sname)
+        if not vskip:
+            return bcontent
+        vout = io.BytesIO()
+        vin.seek(0)
+        with zipfile.ZipFile(vin, "r") as zin2:
+            with zipfile.ZipFile(vout, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+                for item in zin2.infolist():
+                    if item.filename in vskip:
+                        continue
+                    data = zin2.read(item.filename)
+                    if item.filename == "word/_rels/document.xml.rels":
+                        data = _StripBrokenRels(data, vskip)
+                    zout.writestr(item, data)
+        return vout.getvalue()
+
+
+def _BootstrapDocPreview(sdocid):
+    """批注/预览解析失败时的兜底，保证文档仍可编辑。"""
+    sdir = DocDir(sdocid)
+    WriteJson(os.path.join(sdir, "comments.json"), {
+        "extracted": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "items": [],
+        "extract_error": True,
+    })
+    WriteJson(os.path.join(sdir, "todos.json"), {
+        "updated": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "items": [],
+    })
+    try:
+        BuildPreview(sdocid, [])
+    except Exception:
+        with open(os.path.join(sdir, "preview.html"), "w", encoding="utf-8") as f:
+            f.write('<div class="docpreview"><p class="meta">预览暂不可用，可在编辑器中继续修改正文</p></div>')
+
+
 def ImportDocx(bcontent, sfilename, stitle=None, vtags=None):
     sfilename = os.path.basename(sfilename)
     if not sfilename.lower().endswith(".docx"):
         raise ValueError("仅支持 .docx 文件")
+    _ValidateDocxBytes(bcontent)
+    bcontent = _RepairDocxBytes(bcontent)
     sdocid = NewDocId(sfilename)
     sdir = DocDir(sdocid)
     os.makedirs(sdir, exist_ok=True)
@@ -90,6 +189,12 @@ def ImportDocx(bcontent, sfilename, stitle=None, vtags=None):
     with open(scurrent, "wb") as f:
         f.write(bcontent)
     shutil.copy2(scurrent, soriginal)
+    from docx import Document
+    try:
+        Document(scurrent)
+    except Exception as e:
+        shutil.rmtree(sdir, ignore_errors=True)
+        raise ValueError("Word 文档无法打开：%s" % e)
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
     ometa = {
         "id": sdocid,
@@ -104,7 +209,10 @@ def ImportDocx(bcontent, sfilename, stitle=None, vtags=None):
     omanifest = ReadManifest()
     omanifest["docs"].insert(0, {"id": sdocid, "title": ometa["title"], "updated": stamp})
     WriteManifest(omanifest)
-    ExtractComments(sdocid)
+    try:
+        ExtractComments(sdocid)
+    except Exception:
+        _BootstrapDocPreview(sdocid)
     InvalidateEditorCache(sdocid)
     return {"id": sdocid, "title": ometa["title"]}
 
@@ -1264,9 +1372,18 @@ def ExtractComments(sdocid):
         raise ValueError("文档文件不存在")
     with zipfile.ZipFile(scurrent, "r") as oz:
         scomments = oz.read("word/comments.xml").decode("utf-8") if "word/comments.xml" in oz.namelist() else ""
-        sdocument = oz.read("word/document.xml").decode("utf-8")
-    vraw = _ParseCommentsXml(scomments)
-    oparas = _MapCommentParas(sdocument)
+        try:
+            sdocument = oz.read("word/document.xml").decode("utf-8")
+        except Exception:
+            sdocument = ""
+    try:
+        vraw = _ParseCommentsXml(scomments)
+    except Exception:
+        vraw = []
+    try:
+        oparas = _MapCommentParas(sdocument)
+    except Exception:
+        oparas = {}
     vitems = []
     for i, oc in enumerate(vraw):
         scid = oc["id"]
@@ -2363,24 +2480,41 @@ def RestoreWorkingCopy(sdocid):
     return {"restored": "working", "has_working_stash": False}
 
 
-def ExportDoc(sdocid, sdest_dir, sfilename):
+def _NormalizeExportFilename(sfilename):
+    sfilename = os.path.basename((sfilename or "export.docx").strip())
+    if not sfilename.lower().endswith(".docx"):
+        sfilename += ".docx"
+    sfilename = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", sfilename).strip("._") or "export.docx"
+    return sfilename
+
+
+def _BuildExportDocx(sdocid):
     scurrent = os.path.join(DocDir(sdocid), "current.docx")
     if not os.path.isfile(scurrent):
         raise ValueError("文档不存在")
+    from docx import Document
+    odoc = Document(scurrent)
+    _CleanDocxUiArtifacts(odoc)
+    return odoc
+
+
+def ExportDocBytes(sdocid, sfilename):
+    import io
+    sfilename = _NormalizeExportFilename(sfilename)
+    obuf = io.BytesIO()
+    _BuildExportDocx(sdocid).save(obuf)
+    return obuf.getvalue(), sfilename
+
+
+def ExportDoc(sdocid, sdest_dir, sfilename):
     sdest_dir = os.path.expanduser((sdest_dir or "").strip())
     if not sdest_dir:
         raise ValueError("请选择有效的导出文件夹")
     sdest_dir = os.path.abspath(sdest_dir)
     os.makedirs(sdest_dir, exist_ok=True)
-    sfilename = os.path.basename((sfilename or "export.docx").strip())
-    if not sfilename.lower().endswith(".docx"):
-        sfilename += ".docx"
-    sfilename = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", sfilename).strip("._") or "export.docx"
+    sfilename = _NormalizeExportFilename(sfilename)
     sdest = os.path.join(sdest_dir, sfilename)
-    from docx import Document
-    odoc = Document(scurrent)
-    _CleanDocxUiArtifacts(odoc)
-    odoc.save(sdest)
+    _BuildExportDocx(sdocid).save(sdest)
     return {"path": sdest, "filename": sfilename, "dir": sdest_dir}
 
 

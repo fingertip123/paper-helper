@@ -69,7 +69,8 @@ def GetCurrentTopicId():
 def GetTopicDir(ntopicid=None):
     nid = ntopicid or GetCurrentTopicId()
     if not nid:
-        return _datadir
+        EnsureLayout()
+        nid = GetCurrentTopicId() or "default"
     return os.path.join(TopicsDir(), nid)
 
 

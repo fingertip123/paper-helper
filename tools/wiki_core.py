@@ -482,7 +482,7 @@ def AppendLog(nmessage):
             f.write("---\ntype: log\ntitle: 操作审计日志\n---\n\n# Log · 操作历史\n\n" + line)
 
 
-def Render(odata, servermode=False, desktopmode=False, stheme="girly", susername=""):
+def Render(odata, servermode=False, desktopmode=False, stheme="girly", susername="", bcloud=False):
     payload = json.dumps(odata, ensure_ascii=False)
     startcmd = os.path.join(rootdir, "start.command").replace("\\", "\\\\").replace('"', '\\"')
     otopicsinit = {"topics": [], "current": ""}
@@ -506,6 +506,7 @@ def Render(odata, servermode=False, desktopmode=False, stheme="girly", susername
             .replace("/*__INIT_THEME__*/", json.dumps(sthemeid))
             .replace("/*__SERVERMODE__*/", "true" if servermode else "false")
             .replace("/*__DESKTOPMODE__*/", "true" if desktopmode else "false")
+            .replace("/*__CLOUDMODE__*/", "true" if bcloud else "false")
             .replace("<!--__USERCHIP__-->", suserchip)
             .replace("/*__STARTCMD__*/", startcmd))
 
@@ -976,15 +977,17 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   <div id="docexportmodal" class="ph-modal"><div class="setbox setbox-flex" style="width:min(520px,92vw)">
     <div class="setbox-head">
       <h2>🎁 导出 docx</h2>
-      <p class="note">将精心修改后的文档保存到本机文件夹；若文件夹不存在会自动创建。导出前会先保存编辑器中的未提交段落。</p>
+      <p class="note" id="docexport_note">将精心修改后的文档保存到本机文件夹；若文件夹不存在会自动创建。导出前会先保存编辑器中的未提交段落。</p>
     </div>
     <div class="setbox-body">
       <label>文件名</label>
       <input id="docexport_name" placeholder="论文修改稿.docx">
+      <div id="docexport_local_row">
       <label>导出文件夹</label>
       <div class="urledit">
         <input id="docexport_dir" placeholder="选择或输入文件夹路径">
         <button class="btn ghost" onclick="PickExportFolder()">浏览…</button>
+      </div>
       </div>
     </div>
     <div class="setbox-foot"><button class="btn ghost" onclick="CloseDocExport()">取消</button><button class="btn" onclick="ConfirmDocExport()">导出</button></div>
@@ -1112,6 +1115,7 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
 <script>
 const SERVERMODE = /*__SERVERMODE__*/;
 const DESKTOPMODE = /*__DESKTOPMODE__*/;
+const CLOUDMODE = /*__CLOUDMODE__*/;
 let DATA = /*__DATA__*/;
 let TC = DATA.typeconfig;
 let NODEMAP = {};
@@ -1717,8 +1721,13 @@ async function Api(path,body){
   const opt={method:body?"POST":"GET",headers:{"Content-Type":"application/json"}};
   if(body)opt.body=JSON.stringify(body);
   const r=await fetch(path,opt);
-  if(!r.ok)throw new Error("HTTP "+r.status);
-  return r.json();
+  let odata=null;
+  try{odata=await r.json()}catch(e){}
+  if(!r.ok){
+    const smsg=(odata&&odata.error)||("HTTP "+r.status);
+    throw new Error(smsg);
+  }
+  return odata||{};
 }
 async function Refresh(silent){
   if(!SERVERMODE){if(!silent)Toast("当前为离线只读页面，请在应用中操作以刷新");return}
@@ -2775,11 +2784,47 @@ function DefaultExportName(){
 function OpenDocExport(){
   if(NeedServer()||NeedDoc("export"))return;
   document.getElementById("docexport_name").value=DefaultExportName();
-  const slast=localStorage.getItem("doc_export_dir")||"";
-  document.getElementById("docexport_dir").value=slast;
+  const onote=document.getElementById("docexport_note");
+  const orow=document.getElementById("docexport_local_row");
+  if(CLOUDMODE){
+    if(onote)onote.textContent="将修改后的 docx 下载到本机（保存到浏览器默认下载目录）。导出前会先保存编辑器中的未提交段落。";
+    if(orow)orow.style.display="none";
+    const obtn=document.querySelector("#docexportmodal .setbox-foot .btn:not(.ghost)");
+    if(obtn)obtn.textContent="下载";
+  }else{
+    if(onote)onote.textContent="将精心修改后的文档保存到本机文件夹；若文件夹不存在会自动创建。导出前会先保存编辑器中的未提交段落。";
+    if(orow)orow.style.display="";
+    const obtn=document.querySelector("#docexportmodal .setbox-foot .btn:not(.ghost)");
+    if(obtn)obtn.textContent="导出";
+    const slast=localStorage.getItem("doc_export_dir")||"";
+    document.getElementById("docexport_dir").value=slast;
+  }
   document.getElementById("docexportmodal").classList.add("open");
 }
 function CloseDocExport(){document.getElementById("docexportmodal").classList.remove("open")}
+async function FlushDocEditor(){
+  const oiframe=document.getElementById("doc_frame");
+  if(oiframe&&oiframe.contentWindow&&oiframe.contentWindow.flushAllParas){
+    await oiframe.contentWindow.flushAllParas();
+  }
+}
+async function DownloadDocFile(sname){
+  const surl="/api/docs/download?id="+encodeURIComponent(CURRENT_DOC)+"&filename="+encodeURIComponent(sname);
+  const r=await fetch(surl,{credentials:"same-origin"});
+  if(!r.ok){
+    let smsg="HTTP "+r.status;
+    try{const j=await r.json();if(j.error)smsg=j.error}catch(e){}
+    throw new Error(smsg);
+  }
+  const blob=await r.blob();
+  const olink=document.createElement("a");
+  olink.href=URL.createObjectURL(blob);
+  olink.download=sname;
+  document.body.appendChild(olink);
+  olink.click();
+  olink.remove();
+  setTimeout(()=>URL.revokeObjectURL(olink.href),1000);
+}
 async function PickExportFolder(){
   try{
     const resp=await fetch("/api/docs/pick-folder",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
@@ -2793,16 +2838,18 @@ async function PickExportFolder(){
 }
 async function ConfirmDocExport(){
   if(NeedServer()||!CURRENT_DOC)return;
-  const sdir=document.getElementById("docexport_dir").value.trim();
   const sname=document.getElementById("docexport_name").value.trim();
-  if(!sdir){Toast("请填写导出文件夹");return}
   if(!sname){Toast("请填写文件名");return}
   ShowOverlay("正在导出…");
   try{
-    const oiframe=document.getElementById("doc_frame");
-    if(oiframe&&oiframe.contentWindow&&oiframe.contentWindow.flushAllParas){
-      await oiframe.contentWindow.flushAllParas();
+    await FlushDocEditor();
+    if(CLOUDMODE){
+      await DownloadDocFile(sname);
+      HideOverlay();CloseDocExport();Toast("已开始下载："+sname,4000);
+      return;
     }
+    const sdir=document.getElementById("docexport_dir").value.trim();
+    if(!sdir){Toast("请填写导出文件夹");HideOverlay();return}
     const r=await Api("/api/docs/export",{id:CURRENT_DOC,dir:sdir,filename:sname});
     localStorage.setItem("doc_export_dir",sdir);
     HideOverlay();CloseDocExport();Toast("已导出："+r.path,4000);

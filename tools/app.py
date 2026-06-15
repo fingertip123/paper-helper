@@ -847,6 +847,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, core.Render(
                 core.BuildData(), servermode=True, desktopmode=desktopmode,
                 stheme=GetUserTheme(), susername=ouser["username"] if ouser else "",
+                bcloud=multiuser,
             ), "text/html; charset=utf-8")
         if path == "/api/data":
             core.GenerateIndex()
@@ -943,6 +944,8 @@ class Handler(BaseHTTPRequestHandler):
                 shead = doced._HeadRevisionId(sid)
                 srev_b = shead if shead else "original"
             return self._send(200, doced.CompareRevisions(sid, srev_a, srev_b))
+        if path == "/api/docs/download":
+            return self._docsdownload()
         return self._send(404, {"error": "not found"})
 
     def _servedoceditor(self):
@@ -1272,14 +1275,28 @@ class Handler(BaseHTTPRequestHandler):
         name = SafeName(body.get("name", ""))
         if not name.lower().endswith(".docx"):
             return self._send(400, {"error": "仅支持 docx"})
+        sdata = body.get("data") or ""
+        if not sdata:
+            return self._send(400, {"error": "文件数据为空，请重新选择"})
+        try:
+            bcontent = base64.b64decode(sdata, validate=True)
+        except Exception:
+            return self._send(400, {"error": "文件编码损坏，请重新上传"})
+        core.ReloadTopicPaths()
         doced.Init(topics.GetTopicDir())
-        result = doced.ImportDocx(
-            base64.b64decode(body.get("data", "")),
-            name,
-            body.get("title"),
-            body.get("tags"),
-        )
-        core.AppendLog("[doc] 导入文档 %s（%s）" % (result.get("title"), result.get("id")))
+        try:
+            result = doced.ImportDocx(
+                bcontent,
+                name,
+                body.get("title"),
+                body.get("tags"),
+            )
+        except ValueError as e:
+            return self._send(400, {"error": str(e)})
+        try:
+            core.AppendLog("[doc] 导入文档 %s（%s）" % (result.get("title"), result.get("id")))
+        except Exception:
+            pass
         return self._send(200, result)
 
     def _docsmeta(self):
@@ -1355,16 +1372,56 @@ class Handler(BaseHTTPRequestHandler):
     def _docsexport(self):
         body = self._body()
         doced.Init(topics.GetTopicDir())
-        sdir = body.get("dir", "")
-        if multiuser:  # 云端模式：导出固定到用户自己的数据目录，防止写服务器任意路径
-            sdir = os.path.join(_boundroot, "exports")
-        result = doced.ExportDoc(
-            body.get("id", ""),
-            sdir,
-            body.get("filename", ""),
-        )
-        core.AppendLog("[doc] 导出 %s → %s" % (body.get("id"), result.get("path")))
+        sdocid = body.get("id", "")
+        sfilename = body.get("filename", "")
+        if multiuser:
+            import urllib.parse
+            bdata, sname = doced.ExportDocBytes(sdocid, sfilename)
+            sexports = os.path.join(_boundroot, "exports")
+            os.makedirs(sexports, exist_ok=True)
+            spath = os.path.join(sexports, sname)
+            with open(spath, "wb") as f:
+                f.write(bdata)
+            result = {
+                "filename": sname,
+                "download": "/api/docs/download?id=%s&filename=%s" % (
+                    urllib.parse.quote(sdocid, safe=""),
+                    urllib.parse.quote(sname, safe=""),
+                ),
+            }
+        else:
+            result = doced.ExportDoc(sdocid, body.get("dir", ""), sfilename)
+        try:
+            core.AppendLog("[doc] 导出 %s → %s" % (sdocid, result.get("path") or result.get("filename")))
+        except Exception:
+            pass
         return self._send(200, result)
+
+    def _docsdownload(self):
+        import urllib.parse
+        oq = urllib.parse.parse_qs(self.path.split("?", 1)[-1] if "?" in self.path else "")
+        sid = (oq.get("id") or [""])[0]
+        sfilename = (oq.get("filename") or ["export.docx"])[0]
+        doced.Init(topics.GetTopicDir())
+        try:
+            bdata, sname = doced.ExportDocBytes(sid, sfilename)
+        except ValueError as e:
+            return self._send(400, {"error": str(e)})
+        except Exception as e:
+            return self._send(404, {"error": str(e)})
+        sencoded = urllib.parse.quote(sname)
+        self.send_response(200)
+        self.send_header(
+            "Content-Type",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+        self.send_header(
+            "Content-Disposition",
+            "attachment; filename=\"%s\"; filename*=UTF-8''%s" % (sname.replace('"', ""), sencoded),
+        )
+        self.send_header("Content-Length", str(len(bdata)))
+        self.end_headers()
+        self.wfile.write(bdata)
 
     def _docsdelete(self):
         body = self._body()
