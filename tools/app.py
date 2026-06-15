@@ -26,6 +26,7 @@ import wiki_core as core
 import topic_manager as topics
 import wiki_ops as wops
 import doc_editor as doced
+import progress_manager as progm
 import onboarding as onboard
 import builtin_llm as bllm
 import auth
@@ -877,6 +878,10 @@ class Handler(BaseHTTPRequestHandler):
             })
         if path == "/api/rules":
             return self._send(200, topics.GetRules())
+        if path == "/api/progress":
+            return self._send(200, progm.LoadProgress())
+        if path == "/api/progress/coverage":
+            return self._send(200, progm.ComputeCoverage())
         if path == "/api/topics/config":
             import urllib.parse
             oquery = urllib.parse.parse_qs(self.path.split("?", 1)[-1] if "?" in self.path else "")
@@ -1056,6 +1061,22 @@ class Handler(BaseHTTPRequestHandler):
                 return self._docspickfolder()
             if self.path == "/api/docs/delete":
                 return self._docsdelete()
+            if self.path == "/api/progress/chapter":
+                return self._progress_chapter_add()
+            if self.path == "/api/progress/chapter/update":
+                return self._progress_chapter_update()
+            if self.path == "/api/progress/chapter/delete":
+                return self._progress_chapter_delete()
+            if self.path == "/api/progress/chapter/reorder":
+                return self._progress_chapter_reorder()
+            if self.path == "/api/progress/chapter/task":
+                return self._progress_task_add()
+            if self.path == "/api/progress/chapter/task/update":
+                return self._progress_task_update()
+            if self.path == "/api/progress/chapter/task/delete":
+                return self._progress_task_delete()
+            if self.path == "/api/progress/sync-wordcount":
+                return self._send(200, progm.SyncWordCount())
             return self._send(404, {"error": "not found"})
         except Exception as e:
             return self._send(500, {"error": str(e)})
@@ -1363,6 +1384,41 @@ class Handler(BaseHTTPRequestHandler):
         body = self._body()
         doced.Init(topics.GetTopicDir())
         return self._send(200, doced.DeleteDoc(body.get("id", "")))
+
+    # --- 进度看板 ---
+    def _progress_chapter_add(self):
+        body = self._body()
+        return self._send(200, progm.AddChapter(None, body.get("title", ""), body.get("target_words", 0)))
+
+    def _progress_chapter_update(self):
+        body = self._body()
+        nchid = body.pop("id", "")
+        if not nchid:
+            return self._send(400, {"error": "missing chapter id"})
+        body.pop("tasks", None)  # 不允许直接更新 tasks 数组
+        return self._send(200, progm.UpdateChapter(None, nchid, body))
+
+    def _progress_chapter_delete(self):
+        body = self._body()
+        return self._send(200, progm.DeleteChapter(None, body.get("id", "")))
+
+    def _progress_chapter_reorder(self):
+        body = self._body()
+        return self._send(200, progm.ReorderChapters(None, body.get("ids", [])))
+
+    def _progress_task_add(self):
+        body = self._body()
+        return self._send(200, progm.AddTask(None, body.get("chapter_id", ""), body.get("title", "")))
+
+    def _progress_task_update(self):
+        body = self._body()
+        nchid = body.pop("chapter_id", "")
+        ntaskid = body.pop("task_id", "")
+        return self._send(200, progm.UpdateTask(None, nchid, ntaskid, body))
+
+    def _progress_task_delete(self):
+        body = self._body()
+        return self._send(200, progm.DeleteTask(None, body.get("chapter_id", ""), body.get("task_id", "")))
 
     def _ingest(self):
         global ingestjob

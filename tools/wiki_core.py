@@ -843,6 +843,50 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   .themeswatches{display:flex;gap:8px;margin-top:12px}
   .themeswatch{width:26px;height:26px;border-radius:50%;border:2px solid var(--rim3d,rgba(255,255,255,.35));box-shadow:0 2px 0 var(--depth3d),0 3px 6px var(--ambient3d),inset 0 -2px 5px var(--inset-edge3d),inset 0 2px 4px var(--surface-hi,rgba(255,255,255,.28))}
   .setbox,.setbox-flex{transform-style:preserve-3d}
+  /* --- 进度看板 --- */
+  .kanban-wrap{display:flex;gap:24px;height:calc(100vh - 148px);min-height:400px}
+  .kanban-col{flex:1;background:var(--panel);border-radius:var(--radius-lg);border:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
+  .kanban-col-head{padding:16px 20px 10px;flex-shrink:0;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--border);background:var(--panel-glass)}
+  .kanban-col-head .dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+  .kanban-col-head .dot.dot-todo{background:var(--muted)}
+  .kanban-col-head .dot.dot-writing{background:var(--gold)}
+  .kanban-col-head .dot.dot-done{background:var(--sage)}
+  .kanban-col-head .col-title{font-family:var(--font-display);font-size:14px;font-weight:var(--fw-display);letter-spacing:var(--ls-title);color:var(--text)}
+  .kanban-col-head .count{font-size:11px;color:var(--muted);min-width:18px;text-align:center}
+  .kanban-col-body{flex:1;overflow-y:auto;padding:12px 16px;display:flex;flex-direction:column;gap:12px}
+  .kanban-card{background:var(--surface-hi,rgba(255,255,255,.48));border-radius:var(--radius);border:1px solid var(--border);padding:16px;cursor:grab;transition:box-shadow .18s,transform .12s,border-color .18s;position:relative}
+  .kanban-card:active{cursor:grabbing}
+  .kanban-card:hover{border-color:var(--card-hover-border);box-shadow:var(--card-hover-shadow)}
+  .kanban-card.drag-over{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent)}
+  .kanban-card.dragging{opacity:.45;transform:scale(.97)}
+  .kanban-card .kch-title{font-family:var(--font-display);font-size:14px;font-weight:var(--fw-display);letter-spacing:var(--ls-title);color:var(--text);margin-bottom:8px;padding-right:24px;line-height:1.4}
+  .kanban-card .kch-del{position:absolute;top:8px;right:10px;color:var(--muted);cursor:pointer;font-size:15px;opacity:0;transition:.15s;z-index:2;line-height:1}
+  .kanban-card:hover .kch-del{opacity:1}
+  .kanban-card .kch-del:hover{color:var(--rose)}
+  .kanban-card .kch-meta{display:flex;gap:16px;font-size:11px;color:var(--muted);margin-bottom:6px;flex-wrap:wrap}
+  .kanban-card .kch-meta span{white-space:nowrap}
+  .kanban-card .kch-tasks{margin-top:6px;padding-top:8px;border-top:1px dashed var(--border)}
+  .kanban-card .ktask{display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12px;color:var(--text-soft)}
+  .kanban-card .ktask input[type="checkbox"]{accent-color:var(--accent);width:15px;height:15px;cursor:pointer;flex-shrink:0}
+  .kanban-card .ktask .ktask-title{flex:1;min-width:0}
+  .kanban-card .ktask.done .ktask-title{text-decoration:line-through;color:var(--muted)}
+  .kanban-card .ktask .ktask-del{color:var(--muted);cursor:pointer;font-size:13px;opacity:0;transition:.12s}
+  .kanban-card .ktask:hover .ktask-del{opacity:1}
+  .kanban-card .ktask .ktask-del:hover{color:var(--rose)}
+  .kanban-card .kch-add-task{display:flex;gap:6px;margin-top:8px}
+  .kanban-card .kch-add-task input{flex:1;padding:5px 10px;border-radius:999px;border:1px solid var(--border);background:var(--panel2);color:var(--text);font-size:12px;outline:none;transition:.15s}
+  .kanban-card .kch-add-task input:focus{border-color:var(--accent);box-shadow:0 0 0 2px var(--focus-shadow)}
+  .kanban-card .kch-add-task button{padding:4px 12px;border-radius:999px;border:none;background:var(--accent);color:#fff;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap}
+  .kanban-add-chapter-btn{padding:8px 14px;border-radius:999px;border:1.5px dashed var(--border);background:transparent;color:var(--muted);font-size:12px;cursor:pointer;transition:.15s;width:100%}
+  .kanban-add-chapter-btn:hover{border-color:var(--accent);color:var(--accent)}
+  .kanban-progressbar{display:flex;align-items:center;gap:14px;padding:12px 20px;margin-bottom:0;border-radius:var(--radius);background:var(--panel);border:1px solid var(--border)}
+  .kanban-progressbar .bar{flex:1;height:10px;border-radius:10px;background:var(--panel2);overflow:hidden;min-width:80px}
+  .kanban-progressbar .bar-fill{height:100%;border-radius:10px;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .4s}
+  .kanban-progressbar .bar-label{font-size:12px;color:var(--muted);white-space:nowrap}
+  .kanban-progressbar .bar-pct{font-family:var(--font-display);font-size:16px;font-weight:var(--fw-display);color:var(--accent);white-space:nowrap}
+  .kanban-empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--muted);font-size:14px;text-align:center;padding:40px;line-height:1.9}
+  .kanban-empty-state .hint-title{font-family:var(--font-display);font-size:16px;font-weight:var(--fw-display);letter-spacing:var(--ls-title);color:var(--text-soft);margin-bottom:6px}
+  @media (max-width:860px){.kanban-wrap{flex-direction:column;height:auto}.kanban-col{min-height:200px}}
 </style>
 </head>
 <body>
@@ -886,6 +930,7 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
     <div class="tab" data-view="graphview">知识图谱</div>
     <div class="tab" data-view="listview">全部页面</div>
     <div class="tab" data-view="docview">文档编辑</div>
+    <div class="tab" data-view="progressview">进度</div>
   </div>
 </header>
 <button type="button" class="theme-fab" id="theme_fab" onclick="OpenThemePicker()" title="切换界面主题">🎨</button>
@@ -921,6 +966,31 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
         </div>
         <div class="docpanel-body" id="docpanel_list"></div>
       </aside>
+    </div>
+  </section>
+  <section id="progressview" class="view">
+    <div class="kanban-progressbar" id="kanban_progressbar">
+      <span class="bar-pct" id="kb_pct">0%</span>
+      <div class="bar"><div class="bar-fill" id="kb_fill" style="width:0%"></div></div>
+      <span class="bar-label" id="kb_label">0 / 0 字</span>
+    </div>
+    <div style="padding:4px 0 12px">
+      <button class="btn sec" onclick="KanbanAddChapter()" style="font-size:12px">＋ 添加章节</button>
+      <button class="btn sec" onclick="KanbanSyncWords()" style="font-size:12px">📊 同步字数</button>
+    </div>
+    <div class="kanban-wrap" id="kanban_wrap">
+      <div class="kanban-col" data-status="todo">
+        <div class="kanban-col-head"><span class="dot dot-todo"></span><span class="col-title">待写</span><span class="count" id="kb_count_todo">0</span></div>
+        <div class="kanban-col-body" id="kb_todo"></div>
+      </div>
+      <div class="kanban-col" data-status="writing">
+        <div class="kanban-col-head"><span class="dot dot-writing"></span><span class="col-title">撰写中</span><span class="count" id="kb_count_writing">0</span></div>
+        <div class="kanban-col-body" id="kb_writing"></div>
+      </div>
+      <div class="kanban-col" data-status="done">
+        <div class="kanban-col-head"><span class="dot dot-done"></span><span class="col-title">已完成</span><span class="count" id="kb_count_done">0</span></div>
+        <div class="kanban-col-body" id="kb_done"></div>
+      </div>
     </div>
   </section>
   <div id="drawer_shell" class="drawer-shell" data-drawer-shell>
@@ -2867,6 +2937,7 @@ function SwitchView(vid){
   }
   if(vid==="graphview"){if(!canvas)InitGraph();else ResizeCanvas()}
   if(vid==="docview")LoadDocsList();
+  if(vid==="progressview")LoadKanban();
 }
 document.querySelectorAll(".tab").forEach(tab=>{tab.onclick=()=>SwitchView(tab.dataset.view)});
 
@@ -2886,6 +2957,159 @@ InitSvcToggle();
 InitDropzone();
 RenderAll();
 if(SERVERMODE){LoadTopics().then(()=>Refresh(true)).then(()=>InitOnboarding());LoadDocsList();}
+/* ---------- 进度看板 ---------- */
+let _kanbanData=null;
+async function LoadKanban(){
+  try{
+    const oresp=await (await fetch("/api/progress")).json();
+    _kanbanData=oresp;
+    RenderKanban(oresp);
+  }catch(e){Toast("加载进度失败："+e.message)}
+}
+function RenderKanban(odata){
+  const vchaps=odata.chapters||[];
+  const omap={todo:[],writing:[],done:[]};
+  vchaps.forEach(c=>{(omap[c.status]||(omap[c.status]=[])).push(c)});
+  ["todo","writing","done"].forEach(st=>{
+    const el=document.getElementById("kb_"+st);
+    if(!el)return;
+    if(!omap[st]||omap[st].length===0){
+      el.innerHTML='<div class="kanban-empty-state"><div class="hint-title">'+(st==="todo"?"暂无待写章节":st==="writing"?"暂无撰写中章节":"暂无已完成章节")+'</div>拖拽卡片到此处</div>';
+    }else{
+      el.innerHTML=omap[st].map(c=>RenderKanbanCard(c)).join("");
+    }
+    const cnt=document.getElementById("kb_count_"+st);
+    if(cnt)cnt.textContent=(omap[st]||[]).length;
+  });
+  BindKanbanEvents(omap);
+  UpdateKanbanProgress(odata);
+}
+function RenderKanbanCard(och){
+  const vtasks=och.tasks||[];
+  const ndone=vtasks.filter(t=>t.done).length;
+  const ntotal=vtasks.length;
+  const slinked=(och.linked_sources||[]).length;
+  let staskhtml="";
+  if(ntotal>0){
+    staskhtml='<div class="kch-tasks">'+
+      vtasks.map(t=>'<div class="ktask'+(t.done?" done":"")+'" data-taskid="'+t.id+'">'+
+        '<input type="checkbox"'+(t.done?" checked":"")+' onchange="KanbanToggleTask(\''+och.id+'\',\''+t.id+'\')">'+
+        '<span class="ktask-title">'+EscHtml(t.title)+'</span>'+
+        '<span class="ktask-del" onclick="event.stopPropagation();KanbanDeleteTask(\''+och.id+'\',\''+t.id+'\')">×</span>'+
+      '</div>').join("")+'</div>';
+  }
+  return '<div class="kanban-card" draggable="true" data-chapter-id="'+och.id+'" ondragstart="KanbanDragStart(event)" ondragend="KanbanDragEnd(event)">'+
+    '<span class="kch-del" onclick="KanbanDeleteChapter(\''+och.id+'\')" title="删除章节">×</span>'+
+    '<div class="kch-title">'+EscHtml(och.title)+'</div>'+
+    '<div class="kch-meta">'+
+    (och.target_words>0?'<span title="目标字数">🎯 '+och.target_words.toLocaleString()+'</span>':'')+
+    (och.current_words>0?'<span title="当前字数">✏️ '+och.current_words.toLocaleString()+'</span>':'')+
+    (slinked>0?'<span title="已连接文献">📚 '+slinked+'篇</span>':'')+
+    (och.actual_done?'<span title="完成日期">✅ '+och.actual_done+'</span>':'')+
+    '</div>'+
+    staskhtml+
+    '<div class="kch-add-task" onclick="event.stopPropagation()">'+
+      '<input id="kch_ta_'+och.id+'" placeholder="添加子任务..." onkeydown="if(event.key===\'Enter\')KanbanAddTask(\''+och.id+'\')">'+
+      '<button onclick="KanbanAddTask(\''+och.id+'\')">添加</button>'+
+    '</div>'+
+    '</div>';
+}
+function BindKanbanEvents(omap){
+  document.querySelectorAll(".kanban-col-body").forEach(col=>{
+    col.ondragover=e=>{e.preventDefault();e.dataTransfer.dropEffect="move";col.classList.add("drag-over")};
+    col.ondragleave=e=>col.classList.remove("drag-over");
+    col.ondrop=e=>{
+      e.preventDefault();
+      col.classList.remove("drag-over");
+      const nchid=e.dataTransfer.getData("text/plain");
+      if(!nchid)return;
+      const nstatus=col.closest(".kanban-col")?.dataset?.status;
+      if(!nstatus)return;
+      const card=document.querySelector('.kanban-card[data-chapter-id="'+nchid+'"]');
+      if(card)card.classList.remove("dragging");
+      KanbanMoveChapter(nchid,nstatus);
+    };
+  });
+}
+function KanbanDragStart(e){
+  const nchid=e.target.closest(".kanban-card")?.dataset?.chapterId;
+  if(!nchid)return;
+  e.dataTransfer.setData("text/plain",nchid);
+  e.dataTransfer.effectAllowed="move";
+  setTimeout(()=>e.target.classList.add("dragging"),0);
+}
+function KanbanDragEnd(e){e.target.classList.remove("dragging")}
+async function KanbanMoveChapter(nchid,nstatus){
+  try{
+    await Api("/api/progress/chapter/update",{id:nchid,status:nstatus});
+    LoadKanban();
+  }catch(e){Toast("移动失败："+e.message)}
+}
+async function KanbanAddChapter(){
+  const stitle=prompt("章节标题：");
+  if(!stitle||!stitle.trim())return;
+  try{
+    await Api("/api/progress/chapter",{title:stitle.trim()});
+    LoadKanban();
+    Toast("章节已添加");
+  }catch(e){Toast("添加失败："+e.message)}
+}
+async function KanbanDeleteChapter(nchid){
+  if(!confirm("确定删除此章节？"))return;
+  try{
+    await Api("/api/progress/chapter/delete",{id:nchid});
+    LoadKanban();
+    Toast("章节已删除");
+  }catch(e){Toast("删除失败："+e.message)}
+}
+async function KanbanAddTask(nchid){
+  const el=document.getElementById("kch_ta_"+nchid);
+  if(!el)return;
+  const stitle=el.value.trim();
+  if(!stitle)return;
+  try{
+    await Api("/api/progress/chapter/task",{chapter_id:nchid,title:stitle});
+    el.value="";
+    LoadKanban();
+  }catch(e){Toast("添加失败："+e.message)}
+}
+async function KanbanToggleTask(nchid,ntaskid){
+  try{
+    const och=_kanbanData?.chapters?.find(c=>c.id===nchid);
+    const otask=och?.tasks?.find(t=>t.id===ntaskid);
+    const bdone=!otask?.done;
+    await Api("/api/progress/chapter/task/update",{chapter_id:nchid,task_id:ntaskid,done:bdone});
+    LoadKanban();
+  }catch(e){Toast("操作失败："+e.message)}
+}
+async function KanbanDeleteTask(nchid,ntaskid){
+  try{
+    await Api("/api/progress/chapter/task/delete",{chapter_id:nchid,task_id:ntaskid});
+    LoadKanban();
+  }catch(e){Toast("删除失败："+e.message)}
+}
+async function KanbanSyncWords(){
+  try{
+    Toast("正在同步字数...");
+    const oresp=await (await fetch("/api/progress/sync-wordcount",{method:"POST"})).json();
+    _kanbanData=oresp;
+    RenderKanban(oresp);
+    Toast("字数已同步");
+  }catch(e){Toast("同步失败："+e.message)}
+}
+function UpdateKanbanProgress(odata){
+  const onstats=odata.writing_stats||{};
+  const ntotal=onstats.target_words||0;
+  const ncurrent=onstats.total_words||0;
+  const npct=ntotal>0?Math.round(ncurrent/ntotal*100):0;
+  const elpct=document.getElementById("kb_pct");
+  const elfill=document.getElementById("kb_fill");
+  const ellabel=document.getElementById("kb_label");
+  if(elpct)elpct.textContent=npct+"%";
+  if(elfill)elfill.style.width=npct+"%";
+  if(ellabel)ellabel.textContent=ncurrent.toLocaleString()+" / "+ntotal.toLocaleString()+" 字";
+}
+function EscHtml(s){return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}
 </script>
 </body>
 </html>
