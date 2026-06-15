@@ -13,10 +13,33 @@ PythonAnywhere 配置（Web → WSGI configuration file）填入：
 import io
 import os
 import sys
+import site
 from email.message import Message
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "tools"))
+
+
+def _EnsureUserSite():
+    """部分托管平台的 WSGI 进程未把 ~/.local 用户级包目录加入 sys.path，
+    导致 pip install --user 装的依赖（如 python-docx）找不到。这里补回。"""
+    vpaths = []
+    try:
+        spath = site.getusersitepackages()
+        if isinstance(spath, str):
+            vpaths.append(spath)
+        else:
+            vpaths.extend(spath)
+    except Exception:
+        pass
+    nver = "python%d.%d" % (sys.version_info[0], sys.version_info[1])
+    vpaths.append(os.path.join(os.path.expanduser("~"), ".local", "lib", nver, "site-packages"))
+    for spath in vpaths:
+        if spath and os.path.isdir(spath) and spath not in sys.path:
+            sys.path.append(spath)
+
+
+_EnsureUserSite()
 
 import server as srv  # noqa: E402
 import app as appmod  # noqa: E402

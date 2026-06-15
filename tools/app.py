@@ -959,11 +959,17 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             smsg = str(e).replace("&", "&amp;").replace("<", "&lt;")
             if isinstance(e, ModuleNotFoundError) and "docx" in str(e):
+                spy = "%d.%d.%d" % sys.version_info[:3]
+                sexe = (sys.executable or "?").replace("&", "&amp;").replace("<", "&lt;")
                 shint = (
-                    '服务器缺少 <code>python-docx</code> 依赖。请在部署环境执行 '
-                    '<code>pip3 install --user python-docx</code>（或 '
-                    '<code>pip3 install -r requirements-server.txt</code>），'
-                    '然后重新加载（Reload）服务后再打开。'
+                    '服务器缺少 <code>python-docx</code> 依赖。注意：Web 进程实际运行的是 '
+                    '<b>Python %s</b>（解释器 <code>%s</code>），'
+                    '请确认你安装 python-docx 时用的是<strong>同一个版本</strong>。'
+                    '<br>若 Web 应用配置了 <b>virtualenv</b>，须在该 virtualenv 内安装：'
+                    '<code>pip install python-docx</code>；'
+                    '否则执行 <code>python%s -m pip install --user python-docx</code>，'
+                    '然后到 Web 页点 <b>Reload</b> 再打开。'
+                    % (spy, sexe, spy.rsplit(".", 1)[0])
                 )
             else:
                 shint = "请尝试重新导入 docx，或重启应用后再打开。"

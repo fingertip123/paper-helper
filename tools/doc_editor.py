@@ -1640,6 +1640,73 @@ function initParaState(el){
   if(!el.dataset.plain)el.dataset.plain=paraPlainText(el);
   if(!el.dataset.pstyle)el.dataset.pstyle=paraBlockStyle(el);
 }
+function paraSnapshot(el){return {h:el.innerHTML,s:el.getAttribute('style')||''}}
+function paraRestore(el,snap){
+  el._restoring=true;
+  el.innerHTML=snap.h;
+  if(snap.s)el.setAttribute('style',snap.s);else el.removeAttribute('style');
+  el._restoring=false;
+}
+function ensureHist(el){if(el&&!el._undo){el._undo=[paraSnapshot(el)];el._redo=[]}}
+function recordChange(el){
+  if(!el)return;
+  ensureHist(el);
+  const snap=paraSnapshot(el);
+  const last=el._undo[el._undo.length-1];
+  if(last&&last.h===snap.h&&last.s===snap.s)return;
+  el._undo.push(snap);
+  if(el._undo.length>150)el._undo.shift();
+  el._redo=[];
+}
+function undoPara(el){
+  if(!el)return false;
+  ensureHist(el);
+  if(el._undo.length<2)return false;
+  const cur=el._undo.pop();
+  el._redo.push(cur);
+  paraRestore(el,el._undo[el._undo.length-1]);
+  return true;
+}
+function redoPara(el){
+  if(!el||!el._redo||!el._redo.length)return false;
+  const snap=el._redo.pop();
+  el._undo.push(snap);
+  paraRestore(el,snap);
+  return true;
+}
+function activeEditable(){
+  if(activePara&&document.contains(activePara))return activePara;
+  const sel=window.getSelection();
+  if(sel&&sel.rangeCount){const p=paraFromNode(sel.getRangeAt(0).commonAncestorContainer);if(p)return p}
+  return document.querySelector('.docpara-editable.selected')||document.querySelector('.docpara-editable');
+}
+function undoActive(){
+  const el=activeEditable();if(!el)return;
+  if(undoPara(el)){touchPara(el,false);el.focus({preventScroll:true});savePara(el);showStatus('已撤销')}
+  else showStatus('没有可撤销的修改');
+}
+function redoActive(){
+  const el=activeEditable();if(!el)return;
+  if(redoPara(el)){touchPara(el,false);el.focus({preventScroll:true});savePara(el);showStatus('已重做')}
+  else showStatus('没有可重做的修改');
+}
+let typingTimer=0,typingEl=null;
+function scheduleTypingSnap(el){
+  typingEl=el;
+  clearTimeout(typingTimer);
+  typingTimer=setTimeout(()=>{if(typingEl)recordChange(typingEl)},350);
+}
+function commitFmt(el){if(!el)return;recordChange(el);savePara(el);}
+function targetParas(){
+  const all=[...document.querySelectorAll('.docpara-editable')];
+  const sel=window.getSelection();
+  if(sel&&sel.rangeCount&&!sel.getRangeAt(0).collapsed){
+    const r=sel.getRangeAt(0);
+    const within=all.filter(p=>{try{return r.intersectsNode(p)}catch(e){return false}});
+    if(within.length)return within;
+  }
+  const op=ensureFmtReady();return op?[op]:[];
+}
 async function savePara(el){
   if(saving)return;
   const n=parseInt(el.dataset.para,10);
@@ -1662,48 +1729,56 @@ async function savePara(el){
 }
 function showStatus(s){const el=document.getElementById('docstatus');el.textContent=s;el.classList.add('show');setTimeout(()=>el.classList.remove('show'),1800);}
 function runFmt(cmd,val){
-  if(!ensureFmtReady())return;
+  const op=ensureFmtReady();if(!op)return;
   const orange=needSelection();if(!orange)return;
+  ensureHist(op);
   const osel=window.getSelection();
   osel.removeAllRanges();
   osel.addRange(orange);
   try{document.execCommand('styleWithCSS',false,true)}catch(e){}
   document.execCommand(cmd,false,val||null);
   saveSelection();
+  commitFmt(op);
   updateFmtUi();
 }
 function applyFontName(sname){
   if(!sname)return;
-  if(!ensureFmtReady())return;
+  const op=ensureFmtReady();if(!op)return;
   const orange=needSelection();if(!orange)return;
+  ensureHist(op);
   const osel=window.getSelection();
   osel.removeAllRanges();
   osel.addRange(orange);
   wrapRangeStyle(orange,"font-family:'"+sname.replace(/'/g,"")+"'");
   saveSelection();
+  commitFmt(op);
   updateFmtUi();
 }
 function applyFontSize(spt){
   if(!spt)return;
-  if(!ensureFmtReady())return;
+  const op=ensureFmtReady();if(!op)return;
   const orange=needSelection();if(!orange)return;
+  ensureHist(op);
   const osel=window.getSelection();
   osel.removeAllRanges();
   osel.addRange(orange);
   wrapRangeStyle(orange,'font-size:'+spt+'pt');
   saveSelection();
+  commitFmt(op);
   updateFmtUi();
 }
 function applyColor(scolor){
   if(!scolor)return;
-  if(!ensureFmtReady())return;
+  const op=ensureFmtReady();if(!op)return;
   const orange=needSelection();if(!orange)return;
+  ensureHist(op);
   const osel=window.getSelection();
   osel.removeAllRanges();
   osel.addRange(orange);
   try{document.execCommand('styleWithCSS',false,true)}catch(e){}
   if(!document.execCommand('foreColor',false,scolor))wrapRangeStyle(orange,'color:'+scolor);
   saveSelection();
+  commitFmt(op);
   updateFmtUi();
 }
 function parsePtStyle(sstyle,skey){
@@ -1725,23 +1800,27 @@ function mergeParaStyle(el,patch){
   return snew;
 }
 function applyParaAlign(salign){
-  const op=ensureFmtReady();if(!op)return;
-  mergeParaStyle(op,{'text-align':salign});
-  savePara(op);
+  const vps=targetParas();if(!vps.length){showStatus('请先点选要排版的段落');return}
+  vps.forEach(op=>{ensureHist(op);mergeParaStyle(op,{'text-align':salign});recordChange(op);savePara(op)});
+  showStatus('已设置对齐');
 }
 function applyParaIndent(ndelta){
-  const op=ensureFmtReady();if(!op)return;
-  const sstyle=op.getAttribute('style')||op.dataset.pstyle||'';
-  let nleft=parsePtStyle(sstyle,'margin-left');
-  if(!nleft)nleft=parsePtStyle(sstyle,'padding-left');
-  nleft=Math.max(0,Math.round((nleft+ndelta)*10)/10);
-  mergeParaStyle(op,{'margin-left':nleft?nleft+'pt':'0pt','padding-left':''});
-  savePara(op);
+  const vps=targetParas();if(!vps.length){showStatus('请先点选要排版的段落');return}
+  vps.forEach(op=>{
+    ensureHist(op);
+    const sstyle=op.getAttribute('style')||op.dataset.pstyle||'';
+    let nleft=parsePtStyle(sstyle,'margin-left');
+    if(!nleft)nleft=parsePtStyle(sstyle,'padding-left');
+    nleft=Math.max(0,Math.round((nleft+ndelta)*10)/10);
+    mergeParaStyle(op,{'margin-left':nleft?nleft+'pt':'0pt','padding-left':''});
+    recordChange(op);savePara(op);
+  });
+  showStatus(ndelta>0?'已增加缩进':'已减少缩进');
 }
 function applyLineSpacing(sval){
-  const op=ensureFmtReady();if(!op)return;
-  mergeParaStyle(op,{'line-height':sval});
-  savePara(op);
+  const vps=targetParas();if(!vps.length){showStatus('请先点选要排版的段落');return}
+  vps.forEach(op=>{ensureHist(op);mergeParaStyle(op,{'line-height':sval});recordChange(op);savePara(op)});
+  showStatus('已设置行距');
 }
 async function flushAllParas(){
   const vels=[...document.querySelectorAll('.docpara-editable')];
@@ -1807,6 +1886,8 @@ function bindFmtBar(){
     });
   }
   InitFmtReveal();
+  const oundo=document.getElementById('fmt_undo');if(oundo)oundo.onclick=undoActive;
+  const oredo=document.getElementById('fmt_redo');if(oredo)oredo.onclick=redoActive;
   document.getElementById('fmt_bold').onclick=()=>runFmt('bold');
   document.getElementById('fmt_italic').onclick=()=>runFmt('italic');
   document.getElementById('fmt_underline').onclick=()=>runFmt('underline');
@@ -1838,10 +1919,12 @@ window.focusPara=function(npara,scid){
 };
 document.querySelectorAll('.docpara-editable').forEach(el=>{
   initParaState(el);
-  el.addEventListener('focus',()=>selectPara(el,false));
-  el.addEventListener('blur',()=>savePara(el));
+  ensureHist(el);
+  el.addEventListener('focus',()=>{ensureHist(el);selectPara(el,false)});
+  el.addEventListener('blur',()=>{if(typingEl===el){clearTimeout(typingTimer);recordChange(el);typingEl=null}savePara(el)});
   el.addEventListener('mouseup',saveSelection);
   el.addEventListener('keyup',saveSelection);
+  el.addEventListener('input',()=>{if(!el._restoring)scheduleTypingSnap(el)});
   el.addEventListener('keydown',e=>{
     if(e.key!=='Enter'||e.isComposing)return;
     e.preventDefault();
@@ -1849,8 +1932,19 @@ document.querySelectorAll('.docpara-editable').forEach(el=>{
       document.execCommand('insertHTML',false,'<br>');
     }
     saveSelection();
+    scheduleTypingSnap(el);
   });
 });
+document.addEventListener('keydown',e=>{
+  const bmod=e.metaKey||e.ctrlKey;
+  if(!bmod)return;
+  const sk=(e.key||'').toLowerCase();
+  if(sk==='z'){e.preventDefault();if(e.shiftKey)redoActive();else undoActive();return}
+  if(sk==='y'){e.preventDefault();redoActive();return}
+  if(sk==='b'){e.preventDefault();runFmt('bold');return}
+  if(sk==='i'){e.preventDefault();runFmt('italic');return}
+  if(sk==='u'){e.preventDefault();runFmt('underline');return}
+},true);
 document.querySelectorAll('.cmtmark').forEach(el=>{
   el.addEventListener('click',e=>{e.stopPropagation();notify({type:'doc-cmt',cid:el.dataset.cid})});
 });
@@ -1869,7 +1963,7 @@ def _EditorCacheKey(sdocid, stheme):
         os.path.getsize(scurrent),
         int(os.path.getmtime(scomments) * 1000) if os.path.isfile(scomments) else 0,
     )
-    return "%s:%s:%s:fmt4" % (sdocid, stheme, nver)
+    return "%s:%s:%s:fmt5" % (sdocid, stheme, nver)
 
 
 def _TouchEditorCache(skey, shtml):
@@ -1904,9 +1998,13 @@ def RenderEditorHtml(sdocid, stheme="girly"):
         '<div class="fmtshell">'
         '<div class="fmtbar">'
         '<div class="grp">'
-        '<button type="button" class="fmtbtn" id="fmt_bold" title="加粗">B</button>'
-        '<button type="button" class="fmtbtn i" id="fmt_italic" title="倾斜">I</button>'
-        '<button type="button" class="fmtbtn u" id="fmt_underline" title="下划线">U</button>'
+        '<button type="button" class="fmtbtn" id="fmt_undo" title="撤销 (Ctrl/⌘+Z)">↶</button>'
+        '<button type="button" class="fmtbtn" id="fmt_redo" title="重做 (Ctrl/⌘+Shift+Z)">↷</button>'
+        '</div>'
+        '<div class="grp">'
+        '<button type="button" class="fmtbtn" id="fmt_bold" title="加粗 (Ctrl/⌘+B)">B</button>'
+        '<button type="button" class="fmtbtn i" id="fmt_italic" title="倾斜 (Ctrl/⌘+I)">I</button>'
+        '<button type="button" class="fmtbtn u" id="fmt_underline" title="下划线 (Ctrl/⌘+U)">U</button>'
         '</div>'
         '<div class="grp">'
         '<select class="fmtselect" id="fmt_font" title="字体">'
@@ -1932,10 +2030,10 @@ def RenderEditorHtml(sdocid, stheme="girly"):
         '<input type="color" class="fmtcolor" id="fmt_color" value="#4a3f47" title="文字颜色">'
         '</div>'
         '<div class="grp">'
-        '<button type="button" class="fmtbtn" id="fmt_align_left" title="左对齐">≡</button>'
+        '<button type="button" class="fmtbtn" id="fmt_align_left" title="左对齐">⫷</button>'
         '<button type="button" class="fmtbtn" id="fmt_align_center" title="居中">≡</button>'
-        '<button type="button" class="fmtbtn" id="fmt_align_right" title="右对齐">≡</button>'
-        '<button type="button" class="fmtbtn" id="fmt_align_justify" title="两端对齐">≡</button>'
+        '<button type="button" class="fmtbtn" id="fmt_align_right" title="右对齐">⫸</button>'
+        '<button type="button" class="fmtbtn" id="fmt_align_justify" title="两端对齐">☰</button>'
         '<button type="button" class="fmtbtn" id="fmt_indent_inc" title="增加缩进">→</button>'
         '<button type="button" class="fmtbtn" id="fmt_indent_dec" title="减少缩进">←</button>'
         '<select class="fmtselect" id="fmt_linespace" title="行距">'
