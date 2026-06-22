@@ -898,7 +898,7 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
     <div class="docbar">
       <button class="btn" onclick="ImportDocx()">🌸 导入 Word</button>
       <button class="btn sec" onclick="ExtractDocComments()">💌 抓取批注</button>
-      <button class="btn sec" onclick="OpenDocCommit()">🎀 保存版本</button>
+      <button class="btn sec" id="doc_commit_topbtn" onclick="OpenDocCommit()">🎀 保存版本</button>
       <button class="btn sec" onclick="OpenDocHistory()">🕯 版本历史</button>
       <button class="btn sec" onclick="OpenDocExport()">🎁 导出文档</button>
       <span id="doc_git_status" class="docgitstatus"></span>
@@ -2418,7 +2418,8 @@ function BindDocMessages(){
         MarkDocDirty(CURRENT_DOC,detail.working_status&&detail.working_status.is_dirty);
         if(d.commentId)LoadDocEditor(CURRENT_DOC,detail.meta&&detail.meta.updated);
       }catch(err){}
-    }else if(d.type==="doc-error"){Toast("保存失败："+d.msg)}
+    }else if(d.type==="doc-flushed"){if(CURRENT_DOC)await RefreshGitStatus();}
+    else if(d.type==="doc-error"){Toast("保存失败："+d.msg)}
   });
 }
 function RenderDocListSidebar(vdocs){
@@ -2429,7 +2430,15 @@ function RenderDocListSidebar(vdocs){
     return `<div class="docitem${d.id===CURRENT_DOC?" active":""}" data-id="${Attr(d.id)}" onclick="SelectDoc('${Attr(d.id)}')"><div class="dt">${sdirty}${Esc(d.title)}</div><div class="ds">Todo ${d.todo_done}/${d.todo_total}${scmt}</div><div class="progbar-mini"><i style="width:${d.progress||0}%"></i></div></div>`;
   }).join("")||'<div class="meta">暂无文档，请导入 Word</div>';
 }
+function UpdateDocCommitBtn(ws){
+  const otop=document.getElementById("doc_commit_topbtn");
+  if(!otop)return;
+  const bdirty=!!(ws&&ws.is_dirty);
+  otop.disabled=!bdirty;
+  otop.title=bdirty?"把当前修改保存为一个版本":"当前文稿与最新版本一致，无需保存版本";
+}
 function RenderGitStatus(ws){
+  UpdateDocCommitBtn(ws);
   const el=document.getElementById("doc_git_status");
   if(!el)return;
   if(!ws){el.innerHTML="";el.className="docgitstatus";return}
@@ -2765,7 +2774,9 @@ document.addEventListener("keydown",e=>{
   if(!(e.metaKey||e.ctrlKey)||(e.key!=="s"&&e.key!=="S"))return;
   const odoc=document.getElementById("docview");
   if(!odoc||!odoc.classList.contains("active"))return;
-  e.preventDefault();OpenDocCommit();
+  e.preventDefault();
+  const oiframe=document.getElementById("doc_frame");
+  if(oiframe&&oiframe.contentWindow&&oiframe.contentWindow.saveNow)oiframe.contentWindow.saveNow();
 });
 async function ExtractDocComments(){
   if(NeedServer()||NeedDoc("extract"))return;

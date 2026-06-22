@@ -930,11 +930,26 @@ def _CommentMarks(npara, opara_comments):
     )
 
 
+_RE_LEAKED_TAG = re.compile(
+    r"</?\s*(?:span|font|strong|em|u|br|p|div|b|i)\b[^<>]*>"
+    r"|(?:span|font)\b[^<>]*?(?:style|face|color|size)\s*=[^<>]*>",
+    re.I,
+)
+
+
+def _StripHtmlTags(stext):
+    """剥离误写入正文的 HTML 标签（如 round-trip 泄漏的 <span style=...>）。"""
+    if not stext or "<" not in stext and ">" not in stext:
+        return stext or ""
+    return _RE_LEAKED_TAG.sub("", stext)
+
+
 def _SanitizeParaText(stext):
-    """去除预览 UI 泄漏的批注图标等，不写入 docx。"""
+    """去除预览 UI 泄漏的批注图标及误写入的标签，不写入 docx。"""
     if not stext:
         return ""
-    return stext.replace("\U0001f4dd", "").replace("📝", "").strip()
+    stext = stext.replace("\U0001f4dd", "").replace("📝", "")
+    return _StripHtmlTags(stext).strip()
 
 
 _FONT_SIZE_LEGACY = {1: 8, 2: 10, 3: 12, 4: 14, 5: 18, 6: 24, 7: 36}
@@ -1171,7 +1186,7 @@ def _ParseInlineHtml(shtml):
         return [{"text": _SanitizeParaText(re.sub(r"<[^>]+>", "", shtml or ""))}]
     vmerged = []
     for oseg in sparser.vsegments:
-        stext = oseg.get("text", "")
+        stext = _StripHtmlTags(oseg.get("text", ""))
         if not stext:
             continue
         ostyle = {k: v for k, v in oseg.items() if k != "text"}
@@ -1238,7 +1253,7 @@ def _ParaComparable(opara, othemes=None):
     for orun in opara.runs:
         ofmt = _RunFormatDict(orun, opara, othemes)
         vruns.append({
-            "t": orun.text or "",
+            "t": _StripHtmlTags(orun.text or ""),
             "b": ofmt.get("bold"),
             "i": ofmt.get("italic"),
             "u": ofmt.get("underline"),
@@ -1827,6 +1842,13 @@ async function flushAllParas(){
   for(const el of vels)await savePara(el);
 }
 window.flushAllParas=flushAllParas;
+async function saveNow(){
+  showStatus('正在保存…');
+  try{await flushAllParas();showStatus('已保存');}
+  catch(e){showStatus('保存失败');}
+  notify({type:'doc-flushed'});
+}
+window.saveNow=saveNow;
 function updateFmtUi(){
   const ob=document.getElementById('fmt_bold');
   const oi=document.getElementById('fmt_italic');
@@ -1886,6 +1908,7 @@ function bindFmtBar(){
     });
   }
   InitFmtReveal();
+  const osave=document.getElementById('fmt_save');if(osave)osave.onclick=saveNow;
   const oundo=document.getElementById('fmt_undo');if(oundo)oundo.onclick=undoActive;
   const oredo=document.getElementById('fmt_redo');if(oredo)oredo.onclick=redoActive;
   document.getElementById('fmt_bold').onclick=()=>runFmt('bold');
@@ -1939,6 +1962,7 @@ document.addEventListener('keydown',e=>{
   const bmod=e.metaKey||e.ctrlKey;
   if(!bmod)return;
   const sk=(e.key||'').toLowerCase();
+  if(sk==='s'){e.preventDefault();saveNow();return}
   if(sk==='z'){e.preventDefault();if(e.shiftKey)redoActive();else undoActive();return}
   if(sk==='y'){e.preventDefault();redoActive();return}
   if(sk==='b'){e.preventDefault();runFmt('bold');return}
@@ -1997,6 +2021,9 @@ def RenderEditorHtml(sdocid, stheme="girly"):
     sfmtbar = (
         '<div class="fmtshell">'
         '<div class="fmtbar">'
+        '<div class="grp">'
+        '<button type="button" class="fmtbtn" id="fmt_save" title="保存当前文本 (Ctrl/⌘+S)">💾</button>'
+        '</div>'
         '<div class="grp">'
         '<button type="button" class="fmtbtn" id="fmt_undo" title="撤销 (Ctrl/⌘+Z)">↶</button>'
         '<button type="button" class="fmtbtn" id="fmt_redo" title="重做 (Ctrl/⌘+Shift+Z)">↷</button>'
@@ -2167,7 +2194,7 @@ def _BodyParaTexts(sdocx_path):
     if not os.path.isfile(sdocx_path):
         return []
     odoc = Document(sdocx_path)
-    return [opara.text or "" for opara in odoc.paragraphs]
+    return [_SanitizeParaText(opara.text or "") for opara in odoc.paragraphs]
 
 
 def _BodyParaComparable(sdocx_path):
