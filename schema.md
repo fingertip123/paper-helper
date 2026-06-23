@@ -29,6 +29,7 @@ updated: 2026-06-10
 | `wiki/synthesis/` | synthesis | 跨多篇文献的综合分析、综述片段 |
 | `wiki/comparisons/` | comparison | 方法/模型/数据集的并列对比 |
 | `wiki/queries/` | query | 沉淀下来的有价值问答 |
+| `wiki/analysis/` | analysis-report | 三阶段深度文献分析报告（结构提取→方法论评估→知识网络整合） |
 
 ## 3. Frontmatter 规范
 

@@ -28,6 +28,7 @@ import wiki_ops as wops
 import doc_editor as doced
 import onboarding as onboard
 import builtin_llm as bllm
+import research_deep as rdeep
 import auth
 from app_meta import APP_NAME, ResolveConfigDir
 from contextlib import contextmanager
@@ -862,6 +863,8 @@ class Handler(BaseHTTPRequestHandler):
                                             "ingested": [], "failed": [], "briefs": [],
                                             "total": 0, "done": 0, "current": ""})
                 return self._send(200, {k: v for k, v in ingestjob.items() if k != "uid"})
+        if path == "/api/deep/progress":
+            return self._send(200, rdeep.GetDeepJobStatus())
         if path == "/api/query/progress":
             with querylock:
                 if multiuser and queryjob.get("uid") not in (0, None, self._Uid()):
@@ -1028,6 +1031,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._delete()
             if self.path == "/api/ingest":
                 return self._ingest()
+            if self.path == "/api/ingest/deep":
+                return self._deep_analyze()
             if self.path == "/api/config":
                 body = self._body()
                 SaveConfig(body)
@@ -1483,6 +1488,25 @@ class Handler(BaseHTTPRequestHandler):
             daemon=True,
         ).start()
         return self._send(200, {"status": "started", "total": len(targets)})
+
+    def _deep_analyze(self):
+        """触发深度分析。"""
+        oconfig = LoadConfig()
+        body = self._body()
+        sfile = SafeName(body.get("rawfile", ""))
+        if not sfile:
+            return self._send(400, {"error": "missing rawfile"})
+        noauth = "pollinations.ai" in (oconfig.get("base_url") or "")
+        if not HasUsableApiKey(oconfig) and not noauth:
+            return self._send(200, {"status": "need_key"})
+        ouser = getattr(self, "_user", None)
+        serr = self._CheckLlmQuota(3)
+        if serr:
+            return self._send(200, {"status": "error", "error": serr})
+        oresult = rdeep.StartDeepAnalysis(oconfig, sfile, ouser["root"] if ouser else None)
+        if "error" in oresult:
+            return self._send(200, oresult)
+        return self._send(200, {"status": "started", "file": sfile})
 
 
 def Main():

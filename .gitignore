@@ -36,7 +36,7 @@ raw/sources/*
 !raw/sources/.gitkeep
 
 # 运行时知识库（Ingest 自动生成，不提交）
-wiki/
+/wiki/
 
 # 主题下的运行时数据
 topics/*/wiki/
