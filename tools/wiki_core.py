@@ -395,6 +395,8 @@ def DedupeSourceNodes(vnodes):
         omatch = next((m for m in vmerged if _SameSource(n, m)), None)
         if omatch:
             MergeWikiIntoNode(omatch, n, {"type": "source"})
+            if n.get("ingested") or omatch.get("ingested"):
+                omatch["ingested"] = True
             EnsureNodeRawfile(omatch)
         else:
             vmerged.append(n)
@@ -404,9 +406,13 @@ def DedupeSourceNodes(vnodes):
 def EnrichSourceLibraryMeta(vnodes):
     """为 source 节点补充论文库分类阶段与自定义标签。"""
     for n in vnodes:
+        EnsureNodeRawfile(n)
+        if n.get("rawfile") or FindSourcePagePath(n.get("id", "")):
+            n["type"] = "source"
+            if FindSourcePagePath(n.get("id", "")):
+                n["ingested"] = True
         if n.get("type") != "source":
             continue
-        EnsureNodeRawfile(n)
         bdeep = HasDeepReportFile(n.get("id", ""))
         n["deep_done"] = bdeep
         if bdeep:
@@ -1422,7 +1428,22 @@ function LibFuzzyMatch(n,q){
   const vwords=q.split(/\s+/).filter(Boolean);
   return vwords.every(w=>hay.includes(w));
 }
+function SyncLibSearchFromInput(){
+  const osearch=document.getElementById("libsearch");
+  if(osearch)LIB_SEARCH=osearch.value||"";
+}
+function ClearLibUiFilters(){
+  LIB_SEARCH="";LIB_TAG="";
+  const osearch=document.getElementById("libsearch");
+  if(osearch)osearch.value="";
+}
+function ResetLibGridAnim(){
+  clearTimeout(_libAnimTimer);_libAnimTimer=null;
+  const grid=document.getElementById("libgrid");
+  if(grid)grid.classList.remove("lib-fade-out","lib-fade-in");
+}
 function LibFilterMatch(n){
+  SyncLibSearchFromInput();
   if(LIB_TAG){
     const vtags=[...(n.lib_tags||[]),...(n.tags||[])];
     if(!vtags.includes(LIB_TAG))return false;
@@ -1463,7 +1484,7 @@ function RenderLibFilters(){
 function RenderLibTagBar(){
   const bar=document.getElementById("libtagbar");if(!bar)return;
   const vtags=LibAllTags();
-  if(!vtags.length){bar.style.display="none";bar.innerHTML="";return}
+  if(!vtags.length){bar.style.display="none";bar.innerHTML="";if(LIB_TAG)LIB_TAG="";return}
   bar.style.display="";
   bar.innerHTML=`<button type="button" class="libtagchip${!LIB_TAG?" active":""}" data-tag="">全部标签</button>`+
     vtags.map(t=>`<button type="button" class="libtagchip${LIB_TAG===t?" active":""}" data-tag="${Attr(t)}">${Esc(t)}</button>`).join("");
@@ -1484,11 +1505,13 @@ function AnimateRenderLibrary(){
   grid.classList.remove("lib-fade-in");
   grid.classList.add("lib-fade-out");
   _libAnimTimer=setTimeout(()=>{
-    RenderLibGrid();
-    grid.classList.remove("lib-fade-out");
-    void grid.offsetWidth;
-    grid.classList.add("lib-fade-in");
-    setTimeout(()=>grid.classList.remove("lib-fade-in"),320);
+    try{RenderLibGrid()}
+    finally{
+      grid.classList.remove("lib-fade-out");
+      void grid.offsetWidth;
+      grid.classList.add("lib-fade-in");
+      setTimeout(()=>grid.classList.remove("lib-fade-in"),320);
+    }
   },180);
 }
 function RenderLibTabs(){
@@ -1504,15 +1527,19 @@ function RenderLibTabs(){
 }
 function PickLibTopic(nid){PickTopic(nid)}
 function RenderLibGrid(){
-  const sources=LibSources().filter(LibFilterMatch);
+  ResetLibGridAnim();
+  SyncLibSearchFromInput();
+  const vs=LibSources();
+  const sources=vs.filter(LibFilterMatch);
   const grid=document.getElementById("libgrid");
   if(!grid)return;
-  if(!LibSources().length){
+  if(!vs.length){
     grid.innerHTML='<div class="libempty-wrap"><div class="libempty"><div class="hint-title">📚 论文库为空</div>点击左上角「＋ 添加文献」上传 PDF、Word 或 Markdown<br>也可拖放到上方区域开始整理</div></div>';
     return;
   }
   if(!sources.length){
-    grid.innerHTML='<div class="libempty-wrap"><div class="libempty"><div class="hint-title">🔍 无匹配文献</div>试试切换分类、清除标签或修改搜索词</div></div>';
+    const shint=(LIB_SEARCH||LIB_TAG)?"试试清除搜索词或标签筛选":"试试切换分类";
+    grid.innerHTML=`<div class="libempty-wrap"><div class="libempty"><div class="hint-title">🔍 无匹配文献</div>${Esc(shint)}</div></div>`;
     return;
   }
   grid.innerHTML=sources.map(n=>{
@@ -1827,6 +1854,7 @@ function ClearTopicUiState(){
   dragnode=null;
   dragging=false;
   hover=null;
+  ClearLibUiFilters();
   const ogf=document.getElementById("graph_filter");
   if(ogf)ogf.value="";
 }
@@ -2569,6 +2597,8 @@ async function FinishProgress(p){
   }else{pf.style.display="none"}
   HideOverlay();
   const blast=p&&p.briefs&&p.briefs.length?p.briefs[p.briefs.length-1]:null;
+  ClearLibUiFilters();
+  if(p&&p.ingested&&p.ingested.length&&LIB_FILTER==="pending")LIB_FILTER="all";
   await Refresh(true);
   if(p){
     let msg=`完成：成功纳入 ${p.ingested?p.ingested.length:0} 篇`;
