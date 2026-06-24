@@ -8,6 +8,7 @@ import shutil
 from datetime import datetime
 
 import topic_manager as topics
+import io_utils
 
 # 由 wiki_core 注入
 wikidir = ""
@@ -169,8 +170,7 @@ def GenerateOverview():
 
     lines += ["", "## 当前论点速览", "", "见 [[purpose]]。", ""]
     opath = os.path.join(wikidir, "overview.md")
-    with open(opath, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
+    io_utils.AtomicWriteText(opath, "\n".join(lines))
 
 
 def FindPagesBySource(skey):
@@ -190,21 +190,21 @@ def DeleteSourceCascade(srawfile, bcascade=True):
     skey = core.ParseSourceFilename(sname)["key"]
     vremoved = []
 
-    spdf = os.path.join(rawsourcesdir, sname)
-    if os.path.isfile(spdf):
-        os.remove(spdf)
-        vremoved.append(sname)
-
     ssrc = os.path.join(wikidir, "sources", skey + ".md")
-    if os.path.isfile(ssrc):
-        os.remove(ssrc)
-        vremoved.append("wiki/sources/%s.md" % skey)
-
     if bcascade:
         for spath in FindPagesBySource(skey):
             if spath != ssrc and os.path.isfile(spath):
                 os.remove(spath)
                 vremoved.append(os.path.relpath(spath, rootdir))
+
+    if os.path.isfile(ssrc):
+        os.remove(ssrc)
+        vremoved.append("wiki/sources/%s.md" % skey)
+
+    spdf = os.path.join(rawsourcesdir, sname)
+    if os.path.isfile(spdf):
+        os.remove(spdf)
+        vremoved.append(sname)
 
     ometa = core.ReadSourceMeta()
     if sname in ometa:

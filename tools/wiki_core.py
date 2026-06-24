@@ -9,7 +9,12 @@ import re
 import sys
 import json
 import shutil
+import logging
 from datetime import datetime
+
+import io_utils
+
+logger = logging.getLogger(__name__)
 
 def ResolveRootDir():
     """开发态返回项目根目录；打包态返回用户主目录下的可写数据目录。
@@ -229,8 +234,7 @@ def ReadSourceMeta():
 def WriteSourceMeta(odata):
     spath = SourceMetaPath()
     os.makedirs(os.path.dirname(spath), exist_ok=True)
-    with open(spath, "w", encoding="utf-8") as f:
-        json.dump(odata, f, ensure_ascii=False, indent=2)
+    io_utils.AtomicWriteJson(spath, odata)
 
 
 def NormalizeUrl(surl):
@@ -587,13 +591,12 @@ def GenerateIndex():
             mark = "" if n.get("ingested", True) else "（待纳入研究）"
             lines.append("- [[%s]]%s%s" % (n["id"], tail, mark))
         lines.append("")
-    with open(os.path.join(wikidir, "index.md"), "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
+    io_utils.AtomicWriteText(os.path.join(wikidir, "index.md"), "\n".join(lines))
     try:
         wops.Init(wikidir, rawsourcesdir, rootdir)
         wops.GenerateOverview()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("GenerateOverview 失败：%s", e)
 
 
 def AppendLog(nmessage):
@@ -610,7 +613,7 @@ def AppendLog(nmessage):
 
 
 def Render(odata, servermode=False, desktopmode=False, stheme="girly", susername="", bcloud=False):
-    payload = json.dumps(odata, ensure_ascii=False)
+    payload = json.dumps(odata, ensure_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e")
     startcmd = os.path.join(rootdir, "start.command").replace("\\", "\\\\").replace('"', '\\"')
     otopicsinit = {"topics": [], "current": ""}
     if servermode:
@@ -619,7 +622,7 @@ def Render(odata, servermode=False, desktopmode=False, stheme="girly", susername
             "current": topics.GetCurrentTopicId() or "",
             "purpose_fields": topics.GetPurposeFieldDefs(),
         }
-    stopicsinit = json.dumps(otopicsinit, ensure_ascii=False)
+    stopicsinit = json.dumps(otopicsinit, ensure_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e")
     sthemeid = stheme if stheme in ("fresh", "girly", "boyish", "cool") else "girly"
     suserchip = ""
     if susername:
@@ -1285,7 +1288,7 @@ ReindexNodes();
 function TypeLabel(t){return (TC[t]||TC.unknown).label}
 function TypeColor(t){return (TC[t]||TC.unknown).color}
 function Esc(s){return (s||"").replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
-function Attr(s){return (s||"").replace(/'/g,"\\'").replace(/"/g,"&quot;")}
+function Attr(s){return (s||"").replace(/\\/g,"\\\\").replace(/'/g,"\\'").replace(/"/g,"&quot;").replace(/\n/g,"\\n").replace(/\r/g,"")}
 function SafeUrl(u){return(u||"").trim().match(/^https?:\/\//i)?u.trim():""}
 const THEMES=[
   {id:"fresh",icon:"🍃",name:"青岚",desc:"远山含翠，草木蒙雾；低饱和豆沙绿，久读不累",swatches:["#7a9488","#94a89e","#f3f5f2"]},
@@ -1526,7 +1529,7 @@ function RenderLibGrid(){
     if(LibIsDeep(n)){
       actionbtn=`<button class="urlbtn" onclick="event.stopPropagation();OpenDrawer('${Attr(n.id)}-report')">📋 研究报告</button>`;
     }else if(LibIsAwaitDeep(n)&&SERVERMODE){
-      actionbtn=`<button class="urlbtn" id="deep_btn_${Attr(n.id)}" onclick="event.stopPropagation();DeepAnalyzeById('${Attr(n.id)}')">📋 深度分析</button>`;
+      actionbtn=DeepActionBtn(n.id,"urlbtn","deep_btn_",true);
     }else if(LibIsPending(n)&&SERVERMODE&&n.rawfile){
       actionbtn=`<button class="urlbtn" onclick="event.stopPropagation();Analyze('${Attr(n.rawfile)}')">✨ 纳入研究</button>`;
     }
@@ -1609,7 +1612,7 @@ function OpenDrawer(id){
       if(!n.rawfile){
         h+=`<div class="field"><div class="research-txt" style="color:var(--rose)">未检测到原始 PDF。深度研究需要 PDF 原文，请重新上传后再分析。</div></div>`;
       }
-      h+=`<div class="field"><button class="btn" id="deep_drawer_btn_${Attr(n.id)}" onclick="DeepAnalyzeById('${Attr(n.id)}')">📋 深度分析这篇文献</button></div>`;
+      h+=`<div class="field">${DeepActionBtn(n.id,"btn","deep_drawer_btn_",false,"📋 深度分析这篇文献")}</div>`;
     }else if(LibIsDeep(n)){
       h+=`<div class="field"><button class="btn" onclick="OpenDrawer('${Attr(n.id)}-report')">📋 查看深度研究报告</button> `+
         (n.rawfile&&SERVERMODE?`<button class="btn ghost" onclick="DeepAnalyzeById('${Attr(n.id)}')">↻ 重新分析</button>`:"")+`</div>`;
@@ -3272,54 +3275,73 @@ InitDrawerShells();
 InitSvcToggle();
 InitDropzone();
 RenderAll();
-if(SERVERMODE){LoadTopics().then(()=>Refresh(true)).then(()=>InitOnboarding());LoadDocsList();}
+if(SERVERMODE){LoadTopics().then(()=>Refresh(true)).then(()=>{InitOnboarding();ResumeDeepIfRunning()});LoadDocsList();}
 /* ---------- 深度分析 ---------- */
 function HasDeepReport(skey){return DATA.nodes.some(n=>n.id===skey+"-report"&&n.type==="analysis-report")}
+/* 当前正在深度分析的文献 key（用于跨页签 / 重渲染保持转圈态） */
+let _deepActiveKey=null,_deepActiveStage="分析中…",_deepPoll=null;
+function DeepActionBtn(sid,sklass,sidprefix,bstop,slabel){
+  const sclick=(bstop?"event.stopPropagation();":"")+"DeepAnalyzeById('"+Attr(sid)+"')";
+  const stext=slabel||"📋 深度分析";
+  if(_deepActiveKey===sid){
+    return `<button class="${sklass}" id="${sidprefix}${Attr(sid)}" disabled><span class="spin"></span> ${Esc(_deepActiveStage)}</button>`;
+  }
+  return `<button class="${sklass}" id="${sidprefix}${Attr(sid)}" onclick="${sclick}">${stext}</button>`;
+}
+function DeepBtnEls(skey){return [document.getElementById("deep_btn_"+skey),document.getElementById("deep_drawer_btn_"+skey)].filter(Boolean)}
+function SetDeepBtns(skey,bdisabled,shtml){DeepBtnEls(skey).forEach(btn=>{btn.disabled=bdisabled;btn.innerHTML=shtml})}
+function ResetDeepBtn(skey){SetDeepBtns(skey,false,"📋 深度分析")}
 function DeepAnalyzeById(skey){
   const n=NODEMAP[skey];
   if(!n||!skey){Toast("参数错误");return}
   DeepAnalyze(n.rawfile||"", skey);
 }
-let _deepPoll=null;
+async function ResumeDeepIfRunning(){
+  try{
+    const oresp=await(await fetch("/api/deep/progress")).json();
+    if(oresp.running&&!oresp.finished){
+      _deepActiveKey=oresp.key||oresp.current||null;
+      _deepActiveStage=oresp.stage||"分析中…";
+      if(_deepActiveKey){RenderLibGrid();StartDeepPolling(_deepActiveKey);Toast("检测到深度分析仍在进行，已恢复进度")}
+    }
+  }catch(e){}
+}
 async function DeepAnalyze(rawfile,skey){
   if(!skey){Toast("参数错误");return}
-  const btn=document.getElementById("deep_btn_"+skey)||document.getElementById("deep_drawer_btn_"+skey);
-  if(btn){btn.disabled=true;btn.innerHTML='<span class="spin"></span> 分析中…'}
+  if(_deepActiveKey&&_deepActiveKey!==skey){Toast("已有文献正在深度分析中，请等待完成");return}
+  _deepActiveKey=skey;_deepActiveStage="准备";
+  SetDeepBtns(skey,true,'<span class="spin"></span> 准备');
   try{
     const oresp=await Api("/api/ingest/deep",{rawfile:rawfile||null,id:skey});
-    if(oresp.status==="need_key"){Toast("请先在设置中配置 API Key");if(btn){btn.disabled=false;btn.innerHTML="📋 深度分析"};return}
-    if(oresp.error){Toast(oresp.error);if(btn){btn.disabled=false;btn.innerHTML="📋 深度分析"};return}
-    Toast("深度分析已启动（五阶段约需 3–6 分钟）");
-    StartDeepPolling(rawfile,skey);
+    if(oresp.status==="need_key"){Toast("请先在设置中配置 API Key");_deepActiveKey=null;ResetDeepBtn(skey);return}
+    if(oresp.error){Toast(oresp.error);_deepActiveKey=null;ResetDeepBtn(skey);return}
+    Toast("深度分析已启动（五阶段约需 3–6 分钟，可自由切换页签）");
+    StartDeepPolling(skey);
   }catch(e){
     Toast("启动失败："+e.message);
-    if(btn){btn.disabled=false;btn.innerHTML="📋 深度分析"}
+    _deepActiveKey=null;ResetDeepBtn(skey);
   }
 }
-function StartDeepPolling(rawfile,skey){
+function StartDeepPolling(skey){
   if(_deepPoll)clearInterval(_deepPoll);
   _deepPoll=setInterval(async()=>{
-    try{
-      const oresp=await(await fetch("/api/deep/progress")).json();
-      if(oresp.error&&oresp.finished){
-        clearInterval(_deepPoll);_deepPoll=null;
-        const btn=document.getElementById("deep_btn_"+skey)||document.getElementById("deep_drawer_btn_"+skey);
-        if(btn){btn.disabled=false;btn.innerHTML="📋 深度分析"}
-        Toast("分析失败："+oresp.error);
-        return;
-      }
-      const npct=oresp.progress||0;
-      const sstage=oresp.stage||"分析";
-      const btn=document.getElementById("deep_btn_"+skey)||document.getElementById("deep_drawer_btn_"+skey);
-      if(btn)btn.innerHTML='<span class="spin"></span> '+sstage;
-      if(oresp.finished&&oresp.result){
-        clearInterval(_deepPoll);_deepPoll=null;
-        Toast("✅ 深度分析完成");
-        await Refresh(true);
-        AnimateRenderLibrary();
-        if(oresp.result.key)OpenDrawer(oresp.result.key+"-report");
-      }
-    }catch(e){/* continue polling */}
+    let oresp;
+    try{oresp=await(await fetch("/api/deep/progress")).json()}catch(e){return/* 网络抖动，继续轮询 */}
+    if(oresp.error&&oresp.finished){
+      clearInterval(_deepPoll);_deepPoll=null;_deepActiveKey=null;
+      ResetDeepBtn(skey);Toast("分析失败："+oresp.error);return;
+    }
+    _deepActiveStage=oresp.stage||"分析中…";
+    SetDeepBtns(skey,true,'<span class="spin"></span> '+Esc(_deepActiveStage));
+    if(oresp.finished&&oresp.result){
+      clearInterval(_deepPoll);_deepPoll=null;_deepActiveKey=null;
+      const rkey=oresp.result.key||skey;
+      Toast("✅ 深度分析完成，正在打开报告");
+      await Refresh(true);
+      if(document.getElementById("libview").classList.contains("active"))AnimateRenderLibrary();
+      if(HasDeepReport(rkey))OpenDrawer(rkey+"-report");
+      else if(NODEMAP[rkey]){OpenDrawer(rkey);Toast("报告已生成，请在抽屉中查看「深度研究报告」")}
+    }
   },1500);
 }
 </script>

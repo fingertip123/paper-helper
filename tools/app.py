@@ -10,17 +10,19 @@
 """
 
 import os
-import re
 import sys
 import json
 import time
 import base64
+import logging
 import threading
 import subprocess
 import webbrowser
 import urllib.request
 import urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+logger = logging.getLogger(__name__)
 
 import wiki_core as core
 import topic_manager as topics
@@ -31,6 +33,19 @@ import builtin_llm as bllm
 import auth
 from app_meta import APP_NAME, ResolveConfigDir
 from contextlib import contextmanager
+from io_utils import AtomicWriteJson, AtomicWriteText, SafeName
+from llm_client import (
+    CallLlm, HasUsableApiKey, IngestCancelled, IsPlaceholderApiKey,
+    ParseLlmJson, apikeymask,
+)
+from job_state import (
+    BeginIngestJob, BeginQueryJob, GetIngestJob, GetQueryJob,
+    IngestJobAlive, IsIngestCancelled, LlmBusyPayload, QueryJobAlive,
+    ReleaseLlm, TryAcquireLlm, ingest_active_uid, query_active_uid,
+    ingestlock, querylock,
+)
+from paper_io import ExtractPaperText
+import research_deep as rdeep
 
 host = "127.0.0.1"
 port = 8765
@@ -73,101 +88,9 @@ def UserScope(nroot=None):
     finally:
         datalock.release()
 
-# 摄入任务进度（供前端轮询；同一时刻只跑一个任务）
-ingestlock = threading.Lock()
-ingestjob = {"running": False, "total": 0, "done": 0, "current": "",
-             "ingested": [], "failed": [], "briefs": [], "finished": False, "cancelled": False}
-querylock = threading.Lock()
-queryjob = {"running": False, "question": "", "answer": "", "error": "",
-            "finished": False, "saved": None, "status": "idle"}
-llmrunlock = threading.Lock()
-ollmstate = {"owner": "", "detail": ""}
-
-
-def TryAcquireLlm(sowner, sdetail=""):
-    """同一时刻只允许一个 LLM 任务（纳入研究 / 知识查询）。"""
-    with llmrunlock:
-        if ollmstate["owner"] and ollmstate["owner"] != sowner:
-            return False
-        ollmstate["owner"] = sowner
-        ollmstate["detail"] = sdetail
-        return True
-
-
-def ReleaseLlm(sowner):
-    with llmrunlock:
-        if ollmstate["owner"] == sowner:
-            ollmstate["owner"] = ""
-            ollmstate["detail"] = ""
-
-
-def LlmBusyPayload():
-    """返回当前占用大模型的任务说明，供前端提示。"""
-    with llmrunlock:
-        sowner = ollmstate.get("owner") or ""
-        sdetail = ollmstate.get("detail") or ""
-    if not sowner:
-        return None
-    if sowner == "ingest":
-        with ingestlock:
-            scur = ingestjob.get("current") or sdetail or "文献"
-        sshort = scur if len(scur) <= 34 else scur[:33] + "…"
-        return {
-            "status": "busy", "busy": "ingest",
-            "message": "正在纳入研究（%s），大模型暂无法同时处理其他任务，请稍后再试。" % sshort,
-        }
-    if sowner == "query":
-        with querylock:
-            sq = queryjob.get("question") or sdetail or "问题"
-        sshort = sq if len(sq) <= 28 else sq[:27] + "…"
-        return {
-            "status": "busy", "busy": "query",
-            "message": "知识查询进行中（「%s」），请稍后再纳入研究。" % sshort,
-        }
-    return {"status": "busy", "busy": sowner, "message": "大模型正在处理其他任务，请稍后再试。"}
-
-
-class IngestCancelled(Exception):
-    """用户取消纳入研究。"""
-
-
-def IsIngestCancelled():
-    with ingestlock:
-        return bool(ingestjob.get("cancelled"))
-
-
-def SleepWithCancel(nseconds, fcancel=None):
-    """可中断的 sleep，供 LLM 重试退避使用。"""
-    nend = time.time() + nseconds
-    while time.time() < nend:
-        if fcancel and fcancel():
-            raise IngestCancelled("用户已取消")
-        time.sleep(min(0.35, max(0.05, nend - time.time())))
-
-
-def UrlopenJsonWithCancel(oreq, fcancel=None, ntimeout=300):
-    """在独立线程中发起 HTTP 请求，主线程轮询取消标志。"""
-    if not fcancel:
-        with urllib.request.urlopen(oreq, timeout=ntimeout, context=SslContext()) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    oholder = {"obj": None, "err": None}
-
-    def work():
-        try:
-            with urllib.request.urlopen(oreq, timeout=ntimeout, context=SslContext()) as resp:
-                oholder["obj"] = json.loads(resp.read().decode("utf-8"))
-        except Exception as e:
-            oholder["err"] = e
-
-    othread = threading.Thread(target=work, daemon=True)
-    othread.start()
-    while othread.is_alive():
-        if fcancel():
-            raise IngestCancelled("用户已取消")
-        othread.join(0.35)
-    if oholder["err"]:
-        raise oholder["err"]
-    return oholder["obj"]
+# PDF 静态服务大小上限（150MB）
+pdf_max_serve_bytes = 150 * 1024 * 1024
+pdf_serve_chunk = 256 * 1024
 
 
 def PickFolderNative():
@@ -252,20 +175,6 @@ def PickFolderNative():
     return ""
 
 
-apikeymask = "***"
-
-
-def IsPlaceholderApiKey(skey):
-    """判断是否为掩码/占位符，避免把 *** 写回 config 覆盖真实 Key。"""
-    skey = (skey or "").strip()
-    return not skey or skey in (apikeymask, "****", "•••", "······")
-
-
-def HasUsableApiKey(oconfig):
-    """是否配置了可用于调用的 API Key（免注册端点除外）。"""
-    return not IsPlaceholderApiKey(oconfig.get("api_key"))
-
-
 VALID_THEMES = frozenset({"fresh", "girly", "boyish", "cool"})
 
 
@@ -291,8 +200,8 @@ def LoadConfigRaw():
                 odata = json.load(f)
                 if isinstance(odata, dict):
                     return odata
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("读取 config.json 失败，将使用默认配置：%s", e)
     return {}
 
 
@@ -349,14 +258,8 @@ def SaveConfig(oconfig):
     if oconfig.get("use_builtin_llm") is False:
         merged["use_builtin_llm"] = False
     opersist = {k: v for k, v in merged.items() if not str(k).startswith("_")}
-    with open(configpath, "w", encoding="utf-8") as f:
-        json.dump(opersist, f, ensure_ascii=False, indent=2)
+    AtomicWriteJson(configpath, opersist)
     return LoadConfig()
-
-
-def SafeName(nfilename):
-    """只保留文件名本身，去掉路径分隔符，防止目录穿越。"""
-    return os.path.basename(nfilename or "").replace("\x00", "")
 
 
 def SafeWikiPath(nrelpath):
@@ -372,126 +275,6 @@ def SafeWikiPath(nrelpath):
     if not (fullpath == nwbase or fullpath.startswith(nwbase + os.sep)):
         return None
     return fullpath
-
-
-def ExtractPaperText(nfullpath):
-    """提取 PDF / docx / 文本 内容。"""
-    slow = nfullpath.lower()
-    if slow.endswith((".md", ".txt")):
-        with open(nfullpath, "r", encoding="utf-8", errors="ignore") as f:
-            return f.read()
-    if slow.endswith(".docx"):
-        from docx import Document
-        odoc = Document(nfullpath)
-        return "\n".join(p.text for p in odoc.paragraphs if p.text.strip())
-    from pdfminer.high_level import extract_text
-    return extract_text(nfullpath) or ""
-
-
-_sslcontext = None
-
-
-def SslContext():
-    """构造 HTTPS 验证上下文：优先用 certifi 的 CA 包（打包环境必备）。"""
-    global _sslcontext
-    if _sslcontext is not None:
-        return _sslcontext
-    import ssl
-    try:
-        import certifi
-        _sslcontext = ssl.create_default_context(cafile=certifi.where())
-    except Exception:
-        _sslcontext = ssl.create_default_context()
-    return _sslcontext
-
-
-# 部分免费端点（Pollinations 等）由 Cloudflare 防护，会拦截 Python 默认 UA（403/1010），
-# 必须伪装成浏览器 UA 才能访问；这是免注册模型「分析失败」的根因。
-browserua = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-             "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
-
-
-def _RetryAfterSeconds(oerr, ndefault):
-    """从 429 响应的 Retry-After 头解析等待秒数，缺失则用默认值。"""
-    try:
-        sval = oerr.headers.get("Retry-After")
-        if sval and sval.strip().isdigit():
-            return min(int(sval.strip()), 60)
-    except Exception:
-        pass
-    return ndefault
-
-
-def CallLlm(oconfig, vmessages, bjson=True, fcancel=None):
-    """调用 OpenAI 兼容的 chat/completions 接口，返回助手文本。
-
-    免注册端点（无 Key）受 Cloudflare 防护且限流严格，这里统一带浏览器 UA，
-    并对 429（限流）/5xx 做退避重试，让只填选题名也能用免费模型稳定分析。
-    fcancel：可选取消检测（纳入研究时传入，轮询期间可中断）。
-    """
-    url = oconfig["base_url"].rstrip("/") + "/chat/completions"
-    nbaseurl = oconfig.get("base_url") or ""
-    bnoauth = not HasUsableApiKey(oconfig)  # 无 Key 即免注册端点，限流更重
-    payload = {
-        "model": oconfig.get("model") or "gpt-4o-mini",
-        "messages": vmessages,
-        "temperature": 0.2,
-    }
-    if bjson and "pollinations.ai" not in nbaseurl:
-        payload["response_format"] = {"type": "json_object"}
-    data = json.dumps(payload).encode("utf-8")
-    oheaders = {"Content-Type": "application/json", "User-Agent": browserua}
-    if HasUsableApiKey(oconfig):  # 免注册端点可无 Key，无 Key 时不发 Authorization
-        oheaders["Authorization"] = "Bearer " + oconfig["api_key"].strip()
-    req = urllib.request.Request(url, data=data, method="POST", headers=oheaders)
-
-    nmaxtry = 6 if bnoauth else 2
-    slasterr = ""
-    for ntry in range(nmaxtry):
-        if fcancel and fcancel():
-            raise IngestCancelled("用户已取消")
-        try:
-            obj = UrlopenJsonWithCancel(req, fcancel=fcancel)
-            if not obj.get("choices"):  # 限流/异常时常返回无 choices 的对象
-                raise RuntimeError("接口未返回有效结果：" + json.dumps(obj, ensure_ascii=False)[:200])
-            return obj["choices"][0]["message"]["content"]
-        except IngestCancelled:
-            raise
-        except urllib.error.HTTPError as e:
-            sdetail = e.read().decode("utf-8", "ignore")[:300]
-            if e.code in (429, 503) and ntry < nmaxtry - 1:
-                SleepWithCancel(_RetryAfterSeconds(e, 16 if bnoauth else 4), fcancel)
-                continue
-            if e.code in (500, 502, 504) and ntry < nmaxtry - 1:
-                SleepWithCancel(3, fcancel)
-                continue
-            if e.code == 429:
-                raise RuntimeError("免费接口繁忙(限流)。请等待约 15 秒后重试，"
-                                   "或在「设置」中改用带 Key 的免费模型（更稳定）。")
-            if e.code in (401, 403):
-                raise RuntimeError("接口拒绝访问(%s)。该免费端点可能已变更或需要 Key，"
-                                   "建议在「设置」中改用带 Key 的免费模型。" % e.code)
-            raise RuntimeError("接口返回 %s：%s" % (e.code, sdetail))
-        except urllib.error.URLError as e:
-            slasterr = str(getattr(e, "reason", e))
-            if ntry < nmaxtry - 1:
-                SleepWithCancel(3, fcancel)
-                continue
-            raise RuntimeError("网络连接失败：%s" % slasterr)
-    raise RuntimeError(slasterr or "调用失败")
-
-
-def ParseLlmJson(ntext):
-    """容错解析 LLM 输出的 JSON（去掉可能的代码围栏）。"""
-    s = ntext.strip()
-    s = re.sub(r"^```(json)?\s*|\s*```$", "", s, flags=re.IGNORECASE)
-    start, end = s.find("{"), s.rfind("}")
-    if start >= 0 and end > start:
-        s = s[start:end + 1]
-    return json.loads(s)
-
-
-import research_deep as rdeep
 
 
 def BuildIngestMessages(oconfig, nfilename, npapertext):
@@ -573,24 +356,39 @@ def IngestPrepare(oconfig, nfilename):
 
 
 def IngestFinalize(nfilename, content):
-    """摄入阶段三（文件写入，须在 UserScope 内）：解析 LLM 输出并写入 wiki。"""
+    """摄入阶段三（文件写入，须在 UserScope 内）：解析 LLM 输出，staging 后一次性 commit。"""
+    import shutil
+    import uuid
+
     if IsIngestCancelled():
         raise IngestCancelled("用户已取消")
     result = ParseLlmJson(content)
-    vwritten = []
-    for item in result.get("files", []):
-        if IsIngestCancelled():
-            raise IngestCancelled("用户已取消")
-        fp = SafeWikiPath(item.get("path", ""))
-        body = item.get("content", "")
-        if not fp or not body.strip():
-            continue
-        os.makedirs(os.path.dirname(fp), exist_ok=True)
-        with open(fp, "w", encoding="utf-8") as f:
-            f.write(body)
-        vwritten.append(os.path.relpath(fp, core.rootdir))
-    if not vwritten:
-        raise ValueError("LLM 未返回有效页面")
+    vcommits = []
+    sstaging = os.path.join(core.wikidir, ".ingest-staging", uuid.uuid4().hex)
+    try:
+        for item in result.get("files", []):
+            if IsIngestCancelled():
+                raise IngestCancelled("用户已取消")
+            fp = SafeWikiPath(item.get("path", ""))
+            body = item.get("content", "")
+            if not fp or not body.strip():
+                continue
+            srel = os.path.relpath(fp, core.wikidir)
+            spart = os.path.join(sstaging, srel)
+            os.makedirs(os.path.dirname(spart), exist_ok=True)
+            with open(spart, "w", encoding="utf-8") as f:
+                f.write(body)
+            vcommits.append((spart, fp))
+        if not vcommits:
+            raise ValueError("LLM 未返回有效页面")
+        vwritten = []
+        for spart, fp in vcommits:
+            os.makedirs(os.path.dirname(fp), exist_ok=True)
+            os.replace(spart, fp)
+            vwritten.append(os.path.relpath(fp, core.rootdir))
+    finally:
+        if os.path.isdir(sstaging):
+            shutil.rmtree(sstaging, ignore_errors=True)
     skey = result.get("key") or core.ParseSourceFilename(nfilename)["key"]
     core.MergePendingUrlToSource(nfilename, skey)
     logmsg = result.get("log") or ("摄入 %s" % nfilename)
@@ -609,15 +407,16 @@ def IngestFinalize(nfilename, content):
     }
 
 
-def RunQueryJob(oconfig, squestion, bsave, sroot=None):
+def RunQueryJob(oconfig, squestion, bsave, sroot=None, nuid=0, ngen=0):
     """后台线程：知识库问答，不阻塞网页其他操作。文件读写阶段绑定提交者的数据根。"""
-    global queryjob
     if not TryAcquireLlm("query", squestion[:48]):
         with querylock:
-            queryjob["running"] = False
-            queryjob["finished"] = True
-            queryjob["error"] = "大模型正忙，请稍后再试"
-            queryjob["status"] = "error"
+            if QueryJobAlive(nuid, ngen):
+                ojob = GetQueryJob(nuid)
+                ojob["running"] = False
+                ojob["finished"] = True
+                ojob["error"] = "大模型正忙，请稍后再试"
+                ojob["status"] = "error"
         return
     try:
         with UserScope(sroot):
@@ -640,44 +439,55 @@ def RunQueryJob(oconfig, squestion, bsave, sroot=None):
                 core.GenerateIndex()
                 core.AppendLog("[query] %s → %s" % (squestion[:60], osaved.get("id")))
         with querylock:
-            queryjob["answer"] = sanswer
-            queryjob["saved"] = osaved
-            queryjob["error"] = ""
-            queryjob["status"] = "done"
+            if QueryJobAlive(nuid, ngen):
+                ojob = GetQueryJob(nuid)
+                ojob["answer"] = sanswer
+                ojob["saved"] = osaved
+                ojob["error"] = ""
+                ojob["status"] = "done"
     except Exception as e:
+        logger.exception("知识查询失败 uid=%s gen=%s", nuid, ngen)
         with querylock:
-            queryjob["error"] = str(e)
-            queryjob["status"] = "error"
+            if QueryJobAlive(nuid, ngen):
+                ojob = GetQueryJob(nuid)
+                ojob["error"] = str(e)
+                ojob["status"] = "error"
     finally:
         ReleaseLlm("query")
         with querylock:
-            queryjob["running"] = False
-            queryjob["finished"] = True
+            if QueryJobAlive(nuid, ngen):
+                ojob = GetQueryJob(nuid)
+                ojob["running"] = False
+                ojob["finished"] = True
 
 
-def RunIngestJob(oconfig, vtargets, sroot=None):
+def RunIngestJob(oconfig, vtargets, sroot=None, nuid=0, ngen=0):
     """后台线程：逐篇摄入并实时更新 ingestjob 进度。
 
     收尾逻辑放在 finally，保证无论中途发生何种异常，running 都会被置为 False，
     避免打包（无终端/证书等差异）环境下线程半途崩溃导致前端「一直转圈」。
     文件读写阶段绑定提交者的数据根（LLM 网络调用在锁外，不阻塞其他用户）。
     """
-    global ingestjob
     if not TryAcquireLlm("ingest", vtargets[0] if vtargets else ""):
         with ingestlock:
-            ingestjob["running"] = False
-            ingestjob["finished"] = True
-            ingestjob["failed"].append({
-                "file": "(忙碌)",
-                "error": "知识查询进行中，请稍后再纳入研究",
-            })
+            if IngestJobAlive(nuid, ngen):
+                ojob = GetIngestJob(nuid)
+                ojob["running"] = False
+                ojob["finished"] = True
+                ojob["failed"].append({
+                    "file": "(忙碌)",
+                    "error": "知识查询进行中，请稍后再纳入研究",
+                })
         return
     try:
         for fn in vtargets:
             with ingestlock:
-                if ingestjob.get("cancelled"):
+                if not IngestJobAlive(nuid, ngen):
                     break
-                ingestjob["current"] = fn
+                ojob = GetIngestJob(nuid)
+                if ojob.get("cancelled"):
+                    break
+                ojob["current"] = fn
             bbreak = False
             try:
                 with UserScope(sroot):
@@ -686,23 +496,29 @@ def RunIngestJob(oconfig, vtargets, sroot=None):
                 with UserScope(sroot):
                     oresult = IngestFinalize(fn, content)
                 with ingestlock:
-                    ingestjob["ingested"].append(fn)
-                    if isinstance(oresult, dict) and oresult.get("research"):
-                        ingestjob.setdefault("briefs", []).append({
-                            "file": fn,
-                            "key": oresult.get("key", ""),
-                            "research": oresult.get("research", {}),
-                            "review": oresult.get("review", []),
-                        })
+                    if IngestJobAlive(nuid, ngen):
+                        ojob = GetIngestJob(nuid)
+                        ojob["ingested"].append(fn)
+                        if isinstance(oresult, dict) and oresult.get("research"):
+                            ojob.setdefault("briefs", []).append({
+                                "file": fn,
+                                "key": oresult.get("key", ""),
+                                "research": oresult.get("research", {}),
+                                "review": oresult.get("review", []),
+                            })
             except IngestCancelled:
                 bbreak = True
                 with ingestlock:
-                    ingestjob["failed"].append({"file": fn, "error": "已取消"})
+                    if IngestJobAlive(nuid, ngen):
+                        GetIngestJob(nuid)["failed"].append({"file": fn, "error": "已取消"})
             except Exception as e:
+                logger.exception("纳入研究失败 file=%s uid=%s gen=%s", fn, nuid, ngen)
                 with ingestlock:
-                    ingestjob["failed"].append({"file": fn, "error": str(e)})
+                    if IngestJobAlive(nuid, ngen):
+                        GetIngestJob(nuid)["failed"].append({"file": fn, "error": str(e)})
             with ingestlock:
-                ingestjob["done"] += 1
+                if IngestJobAlive(nuid, ngen):
+                    GetIngestJob(nuid)["done"] += 1
             if bbreak:
                 break
         if not IsIngestCancelled():
@@ -710,17 +526,24 @@ def RunIngestJob(oconfig, vtargets, sroot=None):
                 with UserScope(sroot):
                     core.GenerateIndex()
             except Exception as e:
+                logger.warning("纳入研究后刷新索引失败：%s", e)
                 with ingestlock:
-                    ingestjob["failed"].append({"file": "(刷新索引)", "error": str(e)})
+                    if IngestJobAlive(nuid, ngen):
+                        GetIngestJob(nuid)["failed"].append(
+                            {"file": "(刷新索引)", "error": str(e)})
     except Exception as e:
+        logger.exception("纳入研究任务异常 uid=%s gen=%s", nuid, ngen)
         with ingestlock:
-            ingestjob["failed"].append({"file": "(任务异常)", "error": str(e)})
+            if IngestJobAlive(nuid, ngen):
+                GetIngestJob(nuid)["failed"].append({"file": "(任务异常)", "error": str(e)})
     finally:
         ReleaseLlm("ingest")
         with ingestlock:
-            ingestjob["running"] = False
-            ingestjob["finished"] = True
-            ingestjob["current"] = ""
+            if IngestJobAlive(nuid, ngen):
+                ojob = GetIngestJob(nuid)
+                ojob["running"] = False
+                ojob["finished"] = True
+                ojob["current"] = ""
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -768,6 +591,9 @@ class Handler(BaseHTTPRequestHandler):
         self._user = ouser
         return False
 
+    def _RequestSecure(self):
+        return self.headers.get("X-Forwarded-Proto", "").lower() == "https"
+
     def _AuthPost(self):
         """多用户模式下的 POST 认证网关。返回 True 表示已应答。"""
         if self.path == "/auth/register":
@@ -779,7 +605,8 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as e:
                 self._send(200, {"error": str(e)})
                 return True
-            self._send(200, {"status": "ok"}, vheaders=[("Set-Cookie", auth.MakeSetCookie(stoken))])
+            self._send(200, {"status": "ok"},
+                       vheaders=[("Set-Cookie", auth.MakeSetCookie(stoken, bsecure=self._RequestSecure()))])
             return True
         if self.path == "/auth/login":
             body = self._body()
@@ -789,11 +616,13 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as e:
                 self._send(200, {"error": str(e)})
                 return True
-            self._send(200, {"status": "ok"}, vheaders=[("Set-Cookie", auth.MakeSetCookie(stoken))])
+            self._send(200, {"status": "ok"},
+                       vheaders=[("Set-Cookie", auth.MakeSetCookie(stoken, bsecure=self._RequestSecure()))])
             return True
         if self.path == "/auth/logout":
             auth.Logout(auth.CookieFromHeaders(self.headers.get("Cookie", "")))
-            self._send(200, {"status": "ok"}, vheaders=[("Set-Cookie", auth.MakeSetCookie("", bclear=True))])
+            self._send(200, {"status": "ok"},
+                       vheaders=[("Set-Cookie", auth.MakeSetCookie("", bclear=True, bsecure=self._RequestSecure()))])
             return True
         ouser = self._SessionUser()
         if not ouser:
@@ -820,6 +649,27 @@ class Handler(BaseHTTPRequestHandler):
             return ("今日共享模型额度已用完（%d 次/天）。"
                     "可在「偏好设置」填写自己的免费 API Key（如智谱），不受限额。" % llmdailylimit)
         return ""
+
+    def _BusyOwnerUid(self, sbusy):
+        """返回当前占用某类 LLM 任务的用户 uid（多用户隔离用）。"""
+        if sbusy == "ingest":
+            with ingestlock:
+                return GetIngestJob(ingest_active_uid).get("uid")
+        if sbusy == "query":
+            with querylock:
+                return GetQueryJob(query_active_uid).get("uid")
+        if sbusy == "deep":
+            return rdeep.GetDeepActiveUid()
+        return None
+
+    def _MaybeOtherUserBusy(self, obusy):
+        """多用户模式下，若占用者是其他用户，替换为通用「他人任务」提示。"""
+        if not obusy or not multiuser:
+            return obusy
+        if self._BusyOwnerUid(obusy.get("busy")) not in (0, None, self._Uid()):
+            return {"status": "busy", "busy": obusy.get("busy"),
+                    "message": "服务器正在处理其他用户的任务，请稍后再试。"}
+        return obusy
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
@@ -852,21 +702,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, GetConfigForApi())
         if path == "/api/ingest/progress":
             with ingestlock:
-                if multiuser and ingestjob.get("uid") not in (0, None, self._Uid()):
-                    return self._send(200, {"running": ingestjob.get("running", False),
-                                            "finished": True, "status": "other_user",
-                                            "ingested": [], "failed": [], "briefs": [],
-                                            "total": 0, "done": 0, "current": ""})
-                return self._send(200, {k: v for k, v in ingestjob.items() if k != "uid"})
+                ojob = GetIngestJob(self._Uid())
+                return self._send(200, {k: v for k, v in ojob.items() if k not in ("uid", "gen")})
         if path == "/api/deep/progress":
-            return self._send(200, rdeep.GetDeepJobStatus())
+            ostatus = rdeep.GetDeepJobStatus(self._Uid())
+            return self._send(200, {k: v for k, v in ostatus.items() if k not in ("uid", "gen", "started_at")})
         if path == "/api/query/progress":
             with querylock:
-                if multiuser and queryjob.get("uid") not in (0, None, self._Uid()):
-                    return self._send(200, {"running": queryjob.get("running", False),
-                                            "finished": True, "status": "other_user",
-                                            "question": "", "answer": "", "error": "", "saved": None})
-                return self._send(200, {k: v for k, v in queryjob.items() if k != "uid"})
+                ojob = GetQueryJob(self._Uid())
+                return self._send(200, {k: v for k, v in ojob.items() if k not in ("uid", "gen")})
         if path == "/api/onboarding":
             return self._send(200, onboard.GetState())
         if path == "/api/lint":
@@ -1007,16 +851,22 @@ class Handler(BaseHTTPRequestHandler):
         full = os.path.normpath(os.path.join(core.rawsourcesdir, nfilename))
         if not full.startswith(os.path.normpath(core.rawsourcesdir)) or not os.path.isfile(full):
             return self._send(404, {"error": "file not found"})
+        nsize = os.path.getsize(full)
+        if nsize > pdf_max_serve_bytes:
+            return self._send(413, {"error": "文件过大（上限 %d MB）" % (pdf_max_serve_bytes // (1024 * 1024))})
         ctype = "application/pdf" if full.lower().endswith(".pdf") else "application/octet-stream"
-        with open(full, "rb") as f:
-            data = f.read()
         self.send_response(200)
         self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Length", str(nsize))
         if full.lower().endswith(".pdf"):
             self.send_header("Content-Disposition", 'inline; filename="%s"' % os.path.basename(full))
         self.end_headers()
-        self.wfile.write(data)
+        with open(full, "rb") as f:
+            while True:
+                bchunk = f.read(pdf_serve_chunk)
+                if not bchunk:
+                    break
+                self.wfile.write(bchunk)
 
     def _HandlePost(self):
         try:
@@ -1086,6 +936,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._docsdelete()
             return self._send(404, {"error": "not found"})
         except Exception as e:
+            logger.exception("POST %s 失败", self.path)
+            if multiuser:
+                return self._send(500, {"error": "服务器内部错误"})
             return self._send(500, {"error": str(e)})
 
     def _topicswitch(self):
@@ -1183,18 +1036,24 @@ class Handler(BaseHTTPRequestHandler):
         core.ReloadTopicPaths()
         os.makedirs(core.rawsourcesdir, exist_ok=True)
         spath = os.path.join(core.rawsourcesdir, name)
-        with open(spath, "wb") as f:
-            f.write(base64.b64decode(body.get("data", "")))
-        if os.path.getsize(spath) <= 0:
-            os.remove(spath)
+        stmp = spath + ".part"
+        try:
+            bdata = base64.b64decode(body.get("data", ""))
+        except Exception:
+            return self._send(400, {"error": "上传数据编码损坏"})
+        with open(stmp, "wb") as f:
+            f.write(bdata)
+        if os.path.getsize(stmp) <= 0:
+            os.remove(stmp)
             return self._send(400, {"error": "文件为空或上传数据损坏"})
+        os.replace(stmp, spath)
         surl = wops.ResolveDoiUrl((body.get("url") or "").strip())
         if surl:
             core.SetPaperUrl(surl, srawfile=name)
         try:
             core.GenerateIndex()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("上传后刷新索引失败：%s", e)
         ometa = core.ParseSourceFilename(name)
         core.AppendLog("[upload] 添加文献 %s（key: %s）" % (name, ometa["key"]))
         return self._send(200, {
@@ -1241,17 +1100,17 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(200, {"status": "ok", **oresult})
 
     def _ingestcancel(self):
-        global ingestjob
+        nuid = self._Uid()
         with ingestlock:
-            if multiuser and ingestjob.get("uid") not in (0, None, self._Uid()):
-                return self._send(403, {"error": "只能取消自己的任务"})
-            if not ingestjob.get("running"):
-                return self._send(200, {"status": "idle", **ingestjob})
-            ingestjob["cancelled"] = True
-            return self._send(200, dict(ingestjob, status="cancelling"))
+            ojob = GetIngestJob(nuid)
+            if not ojob.get("running"):
+                return self._send(200, {"status": "idle", **{k: v for k, v in ojob.items()
+                                                             if k not in ("uid", "gen")}})
+            ojob["cancelled"] = True
+            return self._send(200, {k: v for k, v in dict(ojob, status="cancelling").items()
+                                    if k not in ("uid", "gen")})
 
     def _query(self):
-        global queryjob
         body = self._body()
         squestion = (body.get("question") or "").strip()
         if not squestion:
@@ -1260,39 +1119,32 @@ class Handler(BaseHTTPRequestHandler):
         noauth = "pollinations.ai" in (oconfig.get("base_url") or "")
         if not HasUsableApiKey(oconfig) and not noauth:
             return self._send(200, {"status": "need_key"})
+        nuid = self._Uid()
         with querylock:
-            if queryjob.get("running"):
-                if multiuser and queryjob.get("uid") not in (0, None, self._Uid()):
-                    return self._send(200, {
-                        "status": "busy", "busy": "query",
-                        "message": "服务器正在处理其他用户的任务，请稍后再试。",
-                    })
-                if queryjob.get("question") == squestion:
-                    return self._send(200, dict(queryjob, status="running"))
+            ojob = GetQueryJob(nuid)
+            if ojob.get("running"):
+                if ojob.get("question") == squestion:
+                    return self._send(200, dict(ojob, status="running"))
                 return self._send(200, {
                     "status": "busy", "busy": "query",
                     "message": "上一条问答仍在进行，请稍后再提问。",
                 })
         obusy = LlmBusyPayload()
-        if obusy and obusy.get("busy") == "ingest":
-            if multiuser and ingestjob.get("uid") not in (0, None, self._Uid()):
-                obusy = {"status": "busy", "busy": "ingest",
-                         "message": "服务器正在处理其他用户的任务，请稍后再试。"}
-            return self._send(200, obusy)
+        if obusy and obusy.get("busy") != "query":
+            return self._send(200, self._MaybeOtherUserBusy(obusy))
         serr = self._CheckLlmQuota(1)
         if serr:
             return self._send(200, {"status": "error", "error": serr})
         bsave = body.get("save", True)
         ouser = getattr(self, "_user", None)
-        with querylock:
-            queryjob = {
-                "running": True, "question": squestion, "answer": "", "error": "",
-                "finished": False, "saved": None, "status": "running",
-                "uid": self._Uid(),
-            }
+        _, ngen = BeginQueryJob(
+            nuid,
+            running=True, question=squestion, answer="", error="",
+            finished=False, saved=None, status="running",
+        )
         threading.Thread(
             target=RunQueryJob,
-            args=(oconfig, squestion, bsave, ouser["root"] if ouser else None),
+            args=(oconfig, squestion, bsave, ouser["root"] if ouser else None, nuid, ngen),
             daemon=True,
         ).start()
         return self._send(200, {"status": "started", "question": squestion})
@@ -1462,41 +1314,35 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(200, doced.DeleteDoc(body.get("id", "")))
 
     def _ingest(self):
-        global ingestjob
         body = self._body()
         oconfig = LoadConfig()
+        nuid = self._Uid()
         with ingestlock:
-            if ingestjob["running"]:  # 已有任务在跑：返回当前进度，前端继续轮询
-                if multiuser and ingestjob.get("uid") not in (0, None, self._Uid()):
-                    return self._send(200, {
-                        "status": "busy", "busy": "ingest",
-                        "message": "服务器正在处理其他用户的任务，请稍后再试。",
-                    })
-                return self._send(200, dict(ingestjob, status="running"))
+            ojob = GetIngestJob(nuid)
+            if ojob["running"]:
+                return self._send(200, dict(ojob, status="running"))
         obusy = LlmBusyPayload()
-        if obusy and obusy.get("busy") == "query":
-            if multiuser and queryjob.get("uid") not in (0, None, self._Uid()):
-                obusy = {"status": "busy", "busy": "query",
-                         "message": "服务器正在处理其他用户的任务，请稍后再试。"}
-            return self._send(200, obusy)
+        if obusy and obusy.get("busy") != "ingest":
+            return self._send(200, self._MaybeOtherUserBusy(obusy))
         rawfile = body.get("rawfile")
         targets = [SafeName(rawfile)] if rawfile else core.PendingSources()
         if not targets:
             return self._send(200, {"status": "no_pending"})
-        noauth = "pollinations.ai" in (oconfig.get("base_url") or "")  # 免注册端点跳过 Key 检查
+        noauth = "pollinations.ai" in (oconfig.get("base_url") or "")
         if not HasUsableApiKey(oconfig) and not noauth:
             return self._send(200, {"status": "need_key", "pending": len(targets)})
         serr = self._CheckLlmQuota(len(targets))
         if serr:
             return self._send(200, {"status": "error", "error": serr})
         ouser = getattr(self, "_user", None)
-        with ingestlock:
-            ingestjob = {"running": True, "total": len(targets), "done": 0, "current": "",
-                         "ingested": [], "failed": [], "briefs": [], "finished": False,
-                         "cancelled": False, "uid": self._Uid()}
+        _, ngen = BeginIngestJob(
+            nuid,
+            running=True, total=len(targets), done=0, current="",
+            ingested=[], failed=[], briefs=[], finished=False, cancelled=False,
+        )
         threading.Thread(
             target=RunIngestJob,
-            args=(oconfig, targets, ouser["root"] if ouser else None),
+            args=(oconfig, targets, ouser["root"] if ouser else None, nuid, ngen),
             daemon=True,
         ).start()
         return self._send(200, {"status": "started", "total": len(targets)})
@@ -1519,12 +1365,18 @@ class Handler(BaseHTTPRequestHandler):
         noauth = "pollinations.ai" in (oconfig.get("base_url") or "")
         if not HasUsableApiKey(oconfig) and not noauth:
             return self._send(200, {"status": "need_key"})
+        nuid = self._Uid()
+        if rdeep.GetDeepJobStatus(nuid).get("running"):
+            return self._send(200, {"error": "深度分析正在进行中，请等待完成"})
+        obusy = LlmBusyPayload()
+        if obusy and obusy.get("busy") != "deep":
+            return self._send(200, self._MaybeOtherUserBusy(obusy))
         ouser = getattr(self, "_user", None)
-        serr = self._CheckLlmQuota(3)
+        serr = self._CheckLlmQuota(5)
         if serr:
             return self._send(200, {"status": "error", "error": serr})
         oresult = rdeep.StartDeepAnalysis(
-            oconfig, sfile, ouser["root"] if ouser else None, skey=sid or None)
+            oconfig, sfile, ouser["root"] if ouser else None, skey=sid or None, nuid=nuid)
         if "error" in oresult:
             return self._send(200, oresult)
         return self._send(200, {"status": "started", "file": sfile, "id": sid or ""})

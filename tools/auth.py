@@ -170,11 +170,12 @@ def CookieFromHeaders(scookieheader):
     return ""
 
 
-def MakeSetCookie(stoken, bclear=False):
+def MakeSetCookie(stoken, bclear=False, bsecure=False):
+    ssecure = "; Secure" if bsecure else ""
     if bclear:
-        return "%s=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0" % SESSION_COOKIE
-    return "%s=%s; Path=/; HttpOnly; SameSite=Lax; Max-Age=%d" % (
-        SESSION_COOKIE, stoken, SESSION_DAYS * 86400)
+        return "%s=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0%s" % (SESSION_COOKIE, ssecure)
+    return "%s=%s; Path=/; HttpOnly; SameSite=Lax; Max-Age=%d%s" % (
+        SESSION_COOKIE, stoken, SESSION_DAYS * 86400, ssecure)
 
 
 def CheckAndCountLlm(nuid, ncalls, nlimit):
