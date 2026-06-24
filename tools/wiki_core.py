@@ -408,9 +408,9 @@ def EnrichSourceLibraryMeta(vnodes):
         if bdeep:
             n["lib_stage"] = "deep"
         elif n.get("ingested"):
-            n["lib_stage"] = "active"
+            n["lib_stage"] = "await_deep"
         else:
-            n["lib_stage"] = "todo"
+            n["lib_stage"] = "pending"
         n["lib_tags"] = GetLibTags(n.get("id", ""))
 
 
@@ -715,7 +715,6 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   .badge.soft{background:var(--panel2);color:var(--muted);font-weight:500}
   .tags{margin-top:10px}
   .pending{opacity:.92}
-  .pending.lib-todo .ttl::after{content:" · 待纳入";font-size:11px;color:var(--muted);font-weight:400}
   .field.research .k{color:var(--accent)}
   .field.research .research-txt{font-size:13px;line-height:1.65;color:var(--text-soft);margin-top:4px;white-space:pre-wrap}
   .field.research .rqchip{display:inline-block;margin:2px 6px 2px 0;padding:2px 10px;border-radius:999px;background:var(--panel2);border:1px solid var(--border);font-size:12px;cursor:pointer}
@@ -928,7 +927,7 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   .libfilt{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
   .libfiltbtn{padding:6px 14px;border-radius:999px;border:1px solid var(--border);background:var(--panel2);color:var(--muted);font-family:var(--font-ui);font-size:12px;font-weight:var(--fw-ui);cursor:pointer;transition:background .2s,color .2s,border-color .2s,box-shadow .2s,transform .15s}
   .libfiltbtn:hover{border-color:var(--accent);color:var(--text-soft)}
-  .libfiltbtn.active{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;border-color:transparent;box-shadow:var(--tab-shadow)}
+  .libfiltbtn.active{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;border-color:transparent;box-shadow:var(--tab-shadow);font-weight:600}
   .libfiltbtn .cnt{font-size:10px;margin-left:5px;padding:1px 6px;border-radius:999px;background:rgba(255,255,255,.2)}
   .libfiltbtn:not(.active) .cnt{background:var(--panel);color:var(--muted)}
   .libsearch{flex:1;min-width:180px;max-width:360px;padding:8px 14px;border-radius:999px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:13px;outline:none;transition:border-color .2s,box-shadow .2s}
@@ -1378,18 +1377,22 @@ let LIB_SEARCH="";
 let _libAnimTimer=null;
 const LIB_FILTERS=[
   {id:"all",label:"全部"},
-  {id:"todo",label:"待研究"},
+  {id:"pending",label:"待纳入"},
+  {id:"await_deep",label:"待深度研究"},
   {id:"deep",label:"已深度研究"},
 ];
 function LibSources(){return (DATA.nodes||[]).filter(n=>n.type==="source")}
+function LibIsDeep(n){return !!(n.deep_done||n.lib_stage==="deep")}
+function LibIsPending(n){return !LibIsDeep(n)&&!n.ingested}
+function LibIsAwaitDeep(n){return !LibIsDeep(n)&&!!n.ingested}
 function LibStageLabel(n){
-  if(n.lib_stage==="deep"||n.deep_done)return "已深度研究";
-  if(n.lib_stage==="active"||(n.ingested&&!n.deep_done))return "研究中";
+  if(LibIsDeep(n))return "已深度研究";
+  if(LibIsAwaitDeep(n))return "待深度研究";
   return "待纳入";
 }
 function LibStageClass(n){
-  if(n.lib_stage==="deep"||n.deep_done)return "lib-deep";
-  if(n.lib_stage==="active"||(n.ingested&&!n.deep_done))return "lib-active";
+  if(LibIsDeep(n))return "lib-deep";
+  if(LibIsAwaitDeep(n))return "lib-active";
   return "lib-todo";
 }
 function LibAllTags(){
@@ -1413,17 +1416,23 @@ function LibFilterMatch(n){
   }
   if(!LibFuzzyMatch(n,LIB_SEARCH))return false;
   if(LIB_FILTER==="all")return true;
-  if(LIB_FILTER==="todo")return !(n.deep_done||n.lib_stage==="deep");
-  if(LIB_FILTER==="deep")return !!(n.deep_done||n.lib_stage==="deep");
+  if(LIB_FILTER==="pending")return LibIsPending(n);
+  if(LIB_FILTER==="await_deep")return LibIsAwaitDeep(n);
+  if(LIB_FILTER==="deep")return LibIsDeep(n);
   return true;
 }
 function LibFilterCounts(){
   const vs=LibSources();
   return {
     all:vs.length,
-    todo:vs.filter(n=>!(n.deep_done||n.lib_stage==="deep")).length,
-    deep:vs.filter(n=>n.deep_done||n.lib_stage==="deep").length,
+    pending:vs.filter(LibIsPending).length,
+    await_deep:vs.filter(LibIsAwaitDeep).length,
+    deep:vs.filter(LibIsDeep).length,
   };
+}
+function RenderLibToolbar(){
+  RenderLibFilters();
+  RenderLibTagBar();
 }
 function RenderLibFilters(){
   const bar=document.getElementById("libfilt");if(!bar)return;
@@ -1445,20 +1454,24 @@ function RenderLibTagBar(){
   bar.style.display="";
   bar.innerHTML=`<button type="button" class="libtagchip${!LIB_TAG?" active":""}" data-tag="">全部标签</button>`+
     vtags.map(t=>`<button type="button" class="libtagchip${LIB_TAG===t?" active":""}" data-tag="${Attr(t)}">${Esc(t)}</button>`).join("");
-  bar.querySelectorAll(".libtagchip").forEach(el=>{el.onclick=()=>{LIB_TAG=el.dataset.tag||"";AnimateRenderLibrary()}});
+  bar.querySelectorAll(".libtagchip").forEach(el=>{el.onclick=()=>{LIB_TAG=el.dataset.tag||"";RenderLibTagBar();AnimateRenderLibrary()}});
 }
 function SetLibFilter(sid){
-  if(!sid||sid===LIB_FILTER)return;
+  if(!sid)return;
   LIB_FILTER=sid;
+  RenderLibFilters();
   AnimateRenderLibrary();
 }
 function AnimateRenderLibrary(){
-  const grid=document.getElementById("libgrid");if(!grid){RenderLibrary();return}
+  RenderLibFilters();
+  RenderLibTagBar();
+  const grid=document.getElementById("libgrid");
+  if(!grid){RenderLibGrid();return}
   clearTimeout(_libAnimTimer);
   grid.classList.remove("lib-fade-in");
   grid.classList.add("lib-fade-out");
   _libAnimTimer=setTimeout(()=>{
-    RenderLibrary(true);
+    RenderLibGrid();
     grid.classList.remove("lib-fade-out");
     void grid.offsetWidth;
     grid.classList.add("lib-fade-in");
@@ -1477,10 +1490,10 @@ function RenderLibTabs(){
   bar.querySelectorAll(".libtab").forEach(el=>{el.onclick=()=>PickLibTopic(el.dataset.id)});
 }
 function PickLibTopic(nid){PickTopic(nid)}
-function RenderLibrary(bskipToolbar){
+function RenderLibGrid(){
   const sources=LibSources().filter(LibFilterMatch);
   const grid=document.getElementById("libgrid");
-  if(!bskipToolbar){RenderLibFilters();RenderLibTagBar()}
+  if(!grid)return;
   if(!LibSources().length){
     grid.innerHTML='<div class="libempty-wrap"><div class="libempty"><div class="hint-title">📚 论文库为空</div>点击左上角「＋ 添加文献」上传 PDF、Word 或 Markdown<br>也可拖放到上方区域开始整理</div></div>';
     return;
@@ -1499,21 +1512,28 @@ function RenderLibrary(bskipToolbar){
     const urlbtn=surl?`<button class="urlbtn" onclick="event.stopPropagation();OpenPaperUrl('${Attr(surl)}')">🔗 在线阅读</button>`:"";
     const del=(SERVERMODE&&n.rawfile)?`<span class="del" title="删除" onclick="event.stopPropagation();DeletePaper('${Attr(n.rawfile)}')">🗑</span>`:"";
     const rq=(n.research&&n.research.rq_links&&n.research.rq_links.length)?`<span class="badge soft" title="已关联研究问题">RQ</span>`:"";
-    const hasReport=!!(n.deep_done||HasDeepReport(n.id));
-    const canDeep=SERVERMODE&&n.ingested&&!!n.rawfile&&!hasReport;
-    const reportbtn=hasReport
-      ?`<button class="urlbtn" onclick="event.stopPropagation();OpenDrawer('${Attr(n.id)}-report')">📋 研究报告</button>`
-      :(canDeep?`<button class="urlbtn" id="deep_btn_${Attr(n.id)}" onclick="event.stopPropagation();DeepAnalyzeById('${Attr(n.id)}')">📋 深度分析</button>`:"");
+    let actionbtn="";
+    if(LibIsDeep(n)){
+      actionbtn=`<button class="urlbtn" onclick="event.stopPropagation();OpenDrawer('${Attr(n.id)}-report')">📋 研究报告</button>`;
+    }else if(LibIsAwaitDeep(n)&&SERVERMODE&&n.rawfile){
+      actionbtn=`<button class="urlbtn" id="deep_btn_${Attr(n.id)}" onclick="event.stopPropagation();DeepAnalyzeById('${Attr(n.id)}')">📋 深度分析</button>`;
+    }else if(LibIsPending(n)&&SERVERMODE&&n.rawfile){
+      actionbtn=`<button class="urlbtn" onclick="event.stopPropagation();Analyze('${Attr(n.rawfile)}')">✨ 纳入研究</button>`;
+    }
     const sstage=LibStageClass(n);
-    const spending=!n.ingested?" pending":"";
+    const spending=LibIsPending(n)?" pending":"";
     return `<div class="card stone3d ${sstage}${spending}" onclick="OpenDrawer('${Attr(n.id)}')">
       <span class="stagepill">${Esc(LibStageLabel(n))}</span>
       ${del}<div class="ttl">${Esc(n.title)} ${rq}</div>
       <div class="sub">${Esc(sub)||"—"}</div>
       <div class="sum">${Esc(n.summary||"")}</div>
-      <div class="tags">${tags}</div><div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px">${urlbtn}${pdfbtn}${reportbtn}</div></div>`;
+      <div class="tags">${tags}</div><div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px">${urlbtn}${pdfbtn}${actionbtn}</div></div>`;
   }).join("");
   InitUi3d();
+}
+function RenderLibrary(){
+  RenderLibToolbar();
+  RenderLibGrid();
 }
 function RenderList(){
   const v=document.getElementById("listview");
@@ -1571,15 +1591,15 @@ function OpenDrawer(id){
     h+=`<div class="field"><div class="k">论文库标签</div><div class="urledit"><input id="lib_tags_input" value="${Esc((n.lib_tags||[]).join(", "))}" placeholder="自定义标签，逗号分隔"><button class="btn ghost" onclick="SaveLibTags('${Attr(n.id)}')">保存</button></div><div style="font-size:11px;color:var(--muted);margin-top:6px">用于论文库分类筛选，与 wiki 标签独立</div></div>`;
   }
   if(neigh.length)h+=`<div class="field links"><div class="k">关联页面 (${neigh.length})</div>${neigh.map(x=>`<a onclick="OpenDrawer('${Attr(x)}')">${Esc((NODEMAP[x]||{}).title||x)}</a>`).join("")}</div>`;
-  if(!n.ingested&&n.rawfile)h+=`<div class="field"><button class="btn" onclick="Analyze('${Attr(n.rawfile)}')">✨ 纳入这篇文献</button></div>`;
-  // 深度研究报告入口
-  if(n.type==="source"&&n.ingested){
-    const hasReport=HasDeepReport(n.id);
-    if(hasReport){
-      h+=`<div class="field"><button class="btn" onclick="OpenDrawer('${Attr(n.id)}-report')">📋 查看深度研究报告</button> `+
-        (n.rawfile?`<button class="btn ghost" onclick="DeepAnalyzeById('${Attr(n.id)}')">↻ 重新分析</button>`:"")+`</div>`;
-    }else if(n.rawfile){
+  if(n.type==="source"){
+    h+=`<div class="field"><div class="k">论文库阶段</div><span class="badge soft">${Esc(LibStageLabel(n))}</span></div>`;
+    if(LibIsPending(n)&&n.rawfile&&SERVERMODE){
+      h+=`<div class="field"><button class="btn" onclick="Analyze('${Attr(n.rawfile)}')">✨ 纳入这篇文献</button></div>`;
+    }else if(LibIsAwaitDeep(n)&&SERVERMODE&&n.rawfile){
       h+=`<div class="field"><button class="btn" id="deep_drawer_btn_${Attr(n.id)}" onclick="DeepAnalyzeById('${Attr(n.id)}')">📋 深度分析这篇文献</button></div>`;
+    }else if(LibIsDeep(n)){
+      h+=`<div class="field"><button class="btn" onclick="OpenDrawer('${Attr(n.id)}-report')">📋 查看深度研究报告</button> `+
+        (n.rawfile&&SERVERMODE?`<button class="btn ghost" onclick="DeepAnalyzeById('${Attr(n.id)}')">↻ 重新分析</button>`:"")+`</div>`;
     }
   }
   document.getElementById("drawerbody").innerHTML=h;
