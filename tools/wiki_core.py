@@ -3536,6 +3536,7 @@ function InitGraph(){
   RenderLegend();BindGraph();if(rafid)cancelAnimationFrame(rafid);Simulate();
 }
 function ResizeCanvas(){const dpr=window.devicePixelRatio||1;canvas.width=canvas.clientWidth*dpr;canvas.height=canvas.clientHeight*dpr;ctx.setTransform(dpr,0,0,dpr,0,0)}
+function RedrawGraph(){if(!canvas||!ctx)return;ResizeCanvas();DrawGraph()}
 function RenderLegend(){
   const used=[...new Set(DATA.nodes.map(n=>n.type))];
   let h=used.map(t=>`<div class="row"><span class="dot" style="background:${TypeColor(t)}"></span>${TypeLabel(t)}</div>`).join("");
@@ -3574,7 +3575,7 @@ function Simulate(){
   });
   graphTick++;
   if(graphTick>GRAPH_MAX_TICKS||(nodes.length>0&&nenergy/nodes.length<0.02)){
-    graphStable=true;DrawGraph();return;
+    graphStable=true;rafid=null;DrawGraph();return;
   }
   DrawGraph();rafid=requestAnimationFrame(Simulate);
 }
@@ -3644,11 +3645,13 @@ function GraphPointerDown(e){
 }
 function GraphPointerMove(e){
   const p=ToWorld(e);
-  hover=PickNode(p);hoverLink=hover?null:PickLink(p);
+  const nhover=PickNode(p),nlink=nhover?null:PickLink(p);
+  const bchanged=nhover!==hover||nlink!==hoverLink;
+  hover=nhover;hoverLink=nlink;
   canvas.style.cursor=hover||hoverLink?"pointer":"grab";
   UpdateGraphTooltip(e);
-  if(!dragging)return;
-  if(dragnode){dragnode.x=p.x;dragnode.y=p.y;dragnode.vx=0;dragnode.vy=0}else{view.x+=e.clientX-last.x;view.y+=e.clientY-last.y;last={x:e.clientX,y:e.clientY}}
+  if(!dragging){if(graphStable&&bchanged)DrawGraph();return}
+  if(dragnode){dragnode.x=p.x;dragnode.y=p.y;dragnode.vx=0;dragnode.vy=0}else{view.x+=e.clientX-last.x;view.y+=e.clientY-last.y;last={x:e.clientX,y:e.clientY};if(graphStable)DrawGraph()}
 }
 function GraphPointerUp(e){
   if(dragnode&&Math.abs(e.clientX-last.x)<4&&Math.abs(e.clientY-last.y)<4)OpenDrawer(dragnode.id);
@@ -3658,9 +3661,9 @@ function BindGraph(){
   canvas.onpointerdown=e=>{canvas.setPointerCapture(e.pointerId);GraphPointerDown(e)};
   canvas.onpointermove=GraphPointerMove;
   canvas.onpointerup=e=>{try{canvas.releasePointerCapture(e.pointerId)}catch(x){}GraphPointerUp(e)};
-  canvas.onpointerleave=()=>{hover=null;hoverLink=null;UpdateGraphTooltip()};
-  canvas.onwheel=e=>{e.preventDefault();const f=e.deltaY<0?1.1:0.9;const r=canvas.getBoundingClientRect();const mx=e.clientX-r.left,my=e.clientY-r.top;view.x=mx-(mx-view.x)*f;view.y=my-(my-view.y)*f;view.scale=Math.max(0.15,Math.min(4,view.scale*f))};
-  window.onresize=()=>{if(document.getElementById("graphview").classList.contains("active"))ResizeCanvas()};
+  canvas.onpointerleave=()=>{hover=null;hoverLink=null;UpdateGraphTooltip();if(graphStable)DrawGraph()};
+  canvas.onwheel=e=>{e.preventDefault();const f=e.deltaY<0?1.1:0.9;const r=canvas.getBoundingClientRect();const mx=e.clientX-r.left,my=e.clientY-r.top;view.x=mx-(mx-view.x)*f;view.y=my-(my-view.y)*f;view.scale=Math.max(0.15,Math.min(4,view.scale*f));RedrawGraph()};
+  window.onresize=()=>{if(document.getElementById("graphview").classList.contains("active"))RedrawGraph()};
 }
 function ExportGraphPng(){
   if(!canvas){Toast("请先打开知识图谱");return}
@@ -3678,7 +3681,7 @@ function SwitchView(vid){
     void view.offsetWidth;
     view.classList.add("active");
   }
-  if(vid==="graphview"){if(!canvas)InitGraph();else ResizeCanvas()}
+  if(vid==="graphview"){if(!canvas||!nodes.length)InitGraph();else requestAnimationFrame(()=>RedrawGraph())}
   if(vid==="docview")LoadDocsList();
   if(vid==="libview")setTimeout(()=>AnimateRenderLibrary(),40);
 }
