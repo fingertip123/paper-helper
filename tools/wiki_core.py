@@ -76,22 +76,22 @@ typeconfig = {
 
 # 边类型展示（由源/目标节点 type 推断）
 edgeconfig = {
-    "引用概念": {"label": "引用概念", "color": "#7eb8d4"},
-    "提及实体": {"label": "提及实体", "color": "#b89fd8"},
-    "关联问题": {"label": "关联问题", "color": "#d4899f"},
-    "文献对照": {"label": "文献对照", "color": "#d4a87a"},
-    "纳入对比": {"label": "纳入对比", "color": "#d4a87a"},
-    "方法参考": {"label": "方法参考", "color": "#8ec9a8"},
-    "综合引用": {"label": "综合引用", "color": "#8ec4d4"},
-    "深度报告": {"label": "深度报告", "color": "#c49ad4"},
-    "支撑问题": {"label": "支撑问题", "color": "#e8b86d"},
-    "概念-实体": {"label": "概念-实体", "color": "#c4b0e0"},
-    "研究目标": {"label": "研究目标", "color": "#d49a7a"},
-    "核心概念": {"label": "核心概念", "color": "#e8b86d"},
-    "对比文献": {"label": "对比文献", "color": "#d4a87a"},
-    "综合文献": {"label": "综合文献", "color": "#8ec4d4"},
-    "探讨概念": {"label": "探讨概念", "color": "#a8c47a"},
-    "同类关联": {"label": "同类关联", "color": "#b0a4ad"},
+    "引用概念": {"label": "引用概念", "color": "#3d7dd6"},
+    "提及实体": {"label": "提及实体", "color": "#9b59d4"},
+    "关联问题": {"label": "关联问题", "color": "#e67e22"},
+    "文献对照": {"label": "文献对照", "color": "#c0392b"},
+    "纳入对比": {"label": "纳入对比", "color": "#d35400"},
+    "方法参考": {"label": "方法参考", "color": "#16a085"},
+    "综合引用": {"label": "综合引用", "color": "#2980b9"},
+    "深度报告": {"label": "深度报告", "color": "#8e44ad"},
+    "支撑问题": {"label": "支撑问题", "color": "#f1c40f"},
+    "概念-实体": {"label": "概念-实体", "color": "#6c5ce7"},
+    "研究目标": {"label": "研究目标", "color": "#e74c3c"},
+    "核心概念": {"label": "核心概念", "color": "#f39c12"},
+    "对比文献": {"label": "对比文献", "color": "#e84393"},
+    "综合文献": {"label": "综合文献", "color": "#00cec9"},
+    "探讨概念": {"label": "探讨概念", "color": "#55efc4"},
+    "同类关联": {"label": "同类关联", "color": "#95a5a6"},
     "链接": {"label": "链接", "color": "#b0a4ad"},
 }
 
@@ -227,6 +227,27 @@ def InferEdgeType(stype, ttype):
         ("analysis-report", "source"): "深度报告",
     }
     return omap.get((stype, ttype), "链接")
+
+
+def RefreshEdgeMeta(vnodes, vedges):
+    """去重/enrich 后按最终节点 type 同步边的 src_type、tgt_type 与推断 type。"""
+    onodetype = {n["id"]: n.get("type", "unknown") for n in vnodes}
+    vids = set(onodetype)
+    vout = []
+    for e in vedges:
+        srcid, tgtid = e["source"], e["target"]
+        if srcid not in vids or tgtid not in vids:
+            continue
+        stype = onodetype[srcid]
+        ttype = onodetype[tgtid]
+        vout.append({
+            "source": srcid,
+            "target": tgtid,
+            "type": InferEdgeType(stype, ttype),
+            "src_type": stype,
+            "tgt_type": ttype,
+        })
+    return vout
 
 
 def ExtractMarkdownSections(nbody):
@@ -632,6 +653,7 @@ def BuildData():
     vnodes, vedges = ScanWiki()
     vnodes = DedupeSourceNodes(vnodes)
     EnrichSourceLibraryMeta(vnodes)
+    vedges = RefreshEdgeMeta(vnodes, vedges)
     odegree = {n["id"]: 0 for n in vnodes}
     for e in vedges:
         odegree[e["source"]] += 1
@@ -785,7 +807,7 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   main{flex:1;overflow:hidden;position:relative}
   .view{position:absolute;inset:0;display:none;overflow:auto;padding:22px}
   .view.active{display:block;animation:viewIn .26s cubic-bezier(.22,1,.36,1) both}
-  #graphview.active{display:block;padding:0}
+  #graphview.active{display:block;padding:0;animation:none}
   .stats{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px}
   .statcard{padding:14px 20px;min-width:90px;border-radius:22px}
   .statcard .num{font-family:var(--font-display);font-size:24px;font-weight:var(--fw-display);letter-spacing:var(--ls-title);color:var(--accent);position:relative;z-index:2}
@@ -949,7 +971,9 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   .dropzone{border:2px dashed var(--dropzone-border);border-radius:var(--radius);padding:32px;text-align:center;color:var(--muted);font-size:13px;margin-bottom:16px;transition:.2s;background:var(--dropzone-bg)}
   .dropzone.drag{border-color:var(--accent);background:var(--dropzone-drag);color:var(--text-soft)}
   .graphfilter{position:absolute;right:18px;top:18px;background:var(--float-panel);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;font-size:12px;z-index:2;box-shadow:var(--shadow-sm);backdrop-filter:blur(10px);display:flex;flex-direction:column;gap:8px;min-width:160px}
-  .graphfilter select,.graphfilter button{padding:5px 8px;border-radius:6px;background:var(--panel2);border:1px solid var(--border);color:var(--text);font-size:12px;cursor:pointer;width:100%}
+  .graphfilter select,.graphfilter button,.graphfilter input{padding:5px 8px;border-radius:6px;background:var(--panel2);border:1px solid var(--border);color:var(--text);font-size:12px;cursor:pointer;width:100%}
+  .graphfilter input{cursor:text}
+  .graphfilter input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 2px var(--focus-shadow)}
   .graphfilter button:hover{border-color:var(--accent);color:var(--accent)}
   .graphfilter .graphrow{display:flex;gap:6px;align-items:center}
   .graphfilter .graphrow label{font-size:11px;color:var(--muted);white-space:nowrap;min-width:28px}
@@ -1177,7 +1201,7 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
 <button type="button" class="theme-fab" id="theme_fab" onclick="OpenThemePicker()" title="切换界面主题">🎨</button>
 <main>
   <section id="libview" class="view active"><div class="libtabs" id="libtabs"></div><div class="libtoolbar"><div class="libfilt" id="libfilt"></div><input type="search" class="libsearch" id="libsearch" placeholder="搜索标题、作者、标签…" autocomplete="off"></div><div class="libtagbar" id="libtagbar"></div><div class="stats" id="statsbar"></div><div class="dropzone" id="dropzone">🌷 拖放 PDF / Word / Markdown 到此处，或点击「添加文献」开始整理</div><div class="grid" id="libgrid"></div></section>
-  <section id="graphview" class="view"><canvas id="graphcanvas"></canvas><div class="legend" id="legend"></div><div class="graphegobadge" id="graphegobadge"><span id="graphego_lbl"></span><span class="x" onclick="ClearGraphFocus()" title="返回全局">×</span></div><div class="graphfilter"><div class="graphrow"><label>节点</label><select id="graph_filter" onchange="ApplyGraphFilter()"><option value="">全部类型</option></select></div><div class="graphrow"><label>关系</label><select id="graph_edge_filter" onchange="ApplyGraphFilter()"><option value="">全部关系</option></select></div><button type="button" onclick="ExportGraphPng()">📷 导出 PNG</button></div><div id="graphtooltip"></div><div class="hint">滚轮缩放 · 拖拽平移 · 拖动节点 · 点击查看详情 · 悬停边看关系</div></section>
+  <section id="graphview" class="view"><canvas id="graphcanvas"></canvas><div class="legend" id="legend"></div><div class="graphegobadge" id="graphegobadge"><span id="graphego_lbl"></span><span class="x" onclick="ClearGraphFocus()" title="返回全局">×</span></div><div class="graphfilter"><div class="graphrow"><label>搜索</label><input id="graph_search" type="search" placeholder="标题 / ID" oninput="OnGraphSearchInput()" onkeydown="if(event.key==='Enter')FocusGraphSearch()"></div><div class="graphrow"><label>节点</label><select id="graph_filter" onchange="ApplyGraphFilter()"><option value="">全部类型</option></select></div><div class="graphrow"><label>关系</label><select id="graph_edge_filter" onchange="ApplyGraphFilter()"><option value="">全部关系</option></select></div><button type="button" onclick="FocusGraphSearch()">⌖ 定位节点</button><button type="button" onclick="ExportGraphPng()">📷 导出 PNG</button></div><div id="graphtooltip"></div><div class="hint">滚轮缩放 · 拖拽平移 · 拖动节点 · 点击查看详情 · 悬停边看关系</div></section>
   <section id="listview" class="view"></section>
   <section id="docview" class="view">
     <div class="docbar">
@@ -2032,6 +2056,7 @@ function ClearTopicUiState(){
   GRAPH_FILTER="";
   GRAPH_EDGE_FILTER="";
   GRAPH_EGO=null;
+  GRAPH_SEARCH="";
   dragnode=null;
   dragging=false;
   hover=null;
@@ -2040,6 +2065,8 @@ function ClearTopicUiState(){
   if(ogf)ogf.value="";
   const ogef=document.getElementById("graph_edge_filter");
   if(ogef)ogef.value="";
+  const ogs=document.getElementById("graph_search");
+  if(ogs)ogs.value="";
 }
 async function OnTopicSwitched(soldtopic,snewid,snewname,bnewtopic){
   SaveQueryThreadForTopic(soldtopic);
@@ -3465,13 +3492,62 @@ async function ConfirmDocExport(){
 }
 /* ---------- 力导向知识图谱 ---------- */
 let canvas,ctx,nodes=[],links=[],view={x:0,y:0,scale:1},dragnode=null,dragging=false,last={x:0,y:0},hover=null,hoverLink=null,rafid=null;
-let GRAPH_FILTER="",GRAPH_EDGE_FILTER="",GRAPH_EGO=null,graphTick=0,graphStable=false;
+let GRAPH_FILTER="",GRAPH_EDGE_FILTER="",GRAPH_EGO=null,GRAPH_SEARCH="",graphTick=0,graphStable=false;
 const GRAPH_REPEL_DIST=280,GRAPH_MAX_TICKS=800;
 let EC=DATA.edgeconfig||{},GL=DATA.graphlayers||{};
 function EdgeColor(etype){return (EC[etype]||EC["链接"]||{}).color||"#b0a4ad"}
 function EdgeLabel(etype){return (EC[etype]||{}).label||etype||"链接"}
 function GraphLayerY(stype,hh){const ny=GL[stype]!=null?GL[stype]:0.5;return hh*(0.12+ny*0.76)}
-function HashOffset(sid,nspread){let h=0;for(let i=0;i<(sid||"").length;i++)h=(h*31+sid.charCodeAt(i))|0;return((h%1000)/1000-0.5)*nspread}
+function LayoutLayerPositions(vraw,w,hh){
+  const olayers={};
+  vraw.forEach(n=>{const st=n.type||"unknown";if(!olayers[st])olayers[st]=[];olayers[st].push(n);});
+  const opos={};
+  const nspread=Math.min(w,hh)*0.72;
+  Object.keys(olayers).forEach(st=>{
+    const vitems=olayers[st].slice().sort((a,b)=>(a.id||"").localeCompare(b.id||""));
+    const ncount=vitems.length,nlayer=GraphLayerY(st,hh);
+    const nslot=ncount>1?nspread/(ncount-1):0,nstart=w*0.5-nspread/2;
+    vitems.forEach((n,i)=>{
+      const nx=ncount===1?w*0.5:nstart+i*nslot;
+      opos[n.id]={x:nx,y:nlayer,targetY:nlayer,targetX:nx};
+    });
+  });
+  return opos;
+}
+function GraphNodeMatch(n,vq){
+  const sq=vq||(GRAPH_SEARCH||"").trim().toLowerCase();
+  if(!sq)return true;
+  if((n.id||"").toLowerCase().includes(sq))return true;
+  if((n.title||"").toLowerCase().includes(sq))return true;
+  return (n.aliases||[]).some(a=>(a||"").toLowerCase().includes(sq));
+}
+function OnGraphSearchInput(){
+  GRAPH_SEARCH=document.getElementById("graph_search")?.value||"";
+  RedrawGraph();
+}
+function CenterGraphOnNodes(vsubset){
+  if(!vsubset.length||!canvas)return;
+  let minx=Infinity,maxx=-Infinity,miny=Infinity,maxy=-Infinity;
+  vsubset.forEach(n=>{
+    minx=Math.min(minx,n.x-n.r);maxx=Math.max(maxx,n.x+n.r);
+    miny=Math.min(miny,n.y-n.r);maxy=Math.max(maxy,n.y+n.r+16);
+  });
+  const gw=Math.max(maxx-minx,1),gh=Math.max(maxy-miny,1);
+  const w=canvas.clientWidth,hh=canvas.clientHeight;
+  const cx=(minx+maxx)/2,cy=(miny+maxy)/2;
+  view.scale=Math.min(1.6,Math.min((w-80)/gw,(hh-80)/gh));
+  view.x=w/2-cx*view.scale;view.y=hh/2-cy*view.scale;
+}
+function FocusGraphSearch(){
+  const vq=(GRAPH_SEARCH||"").trim();
+  if(!vq){RedrawGraph();return}
+  const vm=nodes.filter(n=>GraphNodeMatch(n,vq.toLowerCase()));
+  if(!vm.length){Toast("未找到匹配节点");return}
+  hover=vm[0];
+  CenterGraphOnNodes(vm);
+  RedrawGraph();
+  Toast(vm.length>1?"已定位 "+vm.length+" 个匹配节点":"已定位："+(vm[0].title||vm[0].id),2200);
+}
 function BuildGraphFilter(){
   const sel=document.getElementById("graph_filter");if(!sel)return;
   const vtypes=[...new Set(DATA.nodes.map(n=>n.type))];
@@ -3512,47 +3588,49 @@ function GraphEgoIds(sid){
   });
   return vids;
 }
-function InitGraphPos(n,i,ncount,w,hh){
-  const nlayer=GraphLayerY(n.type,hh);
-  const nx=w*0.5+HashOffset(n.id,w*0.62);
-  const ny=nlayer+HashOffset(n.id+"y",hh*0.06);
-  return {x:nx,y:ny,targetY:nlayer};
-}
 function InitGraph(){
-  canvas=document.getElementById("graphcanvas");ctx=canvas.getContext("2d");ResizeCanvas();BuildGraphFilter();UpdateGraphEgoBadge();
+  canvas=document.getElementById("graphcanvas");
+  if(!canvas)return;
+  if(!canvas.clientWidth||!canvas.clientHeight){requestAnimationFrame(InitGraph);return}
+  ctx=canvas.getContext("2d");ResizeCanvas();BuildGraphFilter();UpdateGraphEgoBadge();
+  GRAPH_SEARCH=document.getElementById("graph_search")?.value||GRAPH_SEARCH||"";
+  view={x:0,y:0,scale:1};
   EC=DATA.edgeconfig||{};GL=DATA.graphlayers||{};
   const w=canvas.clientWidth,hh=canvas.clientHeight;
   let vraw=DATA.nodes;
   if(GRAPH_EGO)vraw=vraw.filter(n=>GraphEgoIds(GRAPH_EGO).has(n.id));
   else if(GRAPH_FILTER)vraw=vraw.filter(n=>n.type===GRAPH_FILTER);
-  const ncount=Math.max(vraw.length,1);
-  nodes=vraw.map((n,i)=>{const op=InitGraphPos(n,i,ncount,w,hh);return {...n,x:op.x,y:op.y,targetY:op.targetY,vx:0,vy:0,r:7+Math.min((n.degree||0)*2.5,16)};});
+  const opos=LayoutLayerPositions(vraw,w,hh);
+  nodes=vraw.map(n=>{
+    const op=opos[n.id]||{x:w*0.5,y:hh*0.5,targetY:hh*0.5,targetX:w*0.5};
+    return {...n,x:op.x,y:op.y,targetY:op.targetY,targetX:op.targetX,vx:0,vy:0,r:7+Math.min((n.degree||0)*2.5,16)};
+  });
   const nm={};nodes.forEach(n=>nm[n.id]=n);
   const vids=new Set(nodes.map(n=>n.id));
   let vedges=DATA.edges||[];
   if(GRAPH_EDGE_FILTER)vedges=vedges.filter(e=>e.type===GRAPH_EDGE_FILTER);
   links=vedges.map(e=>({s:nm[e.source],t:nm[e.target],type:e.type||"链接",src_type:e.src_type,tgt_type:e.tgt_type})).filter(l=>l.s&&l.t&&vids.has(l.s.id)&&vids.has(l.t.id));
-  graphTick=0;graphStable=false;
-  RenderLegend();BindGraph();if(rafid)cancelAnimationFrame(rafid);Simulate();
+  RenderLegend();BindGraph();SettleGraphLayout();
 }
+function CenterGraphView(){CenterGraphOnNodes(nodes)}
 function ResizeCanvas(){const dpr=window.devicePixelRatio||1;canvas.width=canvas.clientWidth*dpr;canvas.height=canvas.clientHeight*dpr;ctx.setTransform(dpr,0,0,dpr,0,0)}
 function RedrawGraph(){if(!canvas||!ctx)return;ResizeCanvas();DrawGraph()}
 function RenderLegend(){
   const used=[...new Set(DATA.nodes.map(n=>n.type))];
   let h=used.map(t=>`<div class="row"><span class="dot" style="background:${TypeColor(t)}"></span>${TypeLabel(t)}</div>`).join("");
-  const vedgeTypes=[...new Set((DATA.edges||[]).map(e=>e.type).filter(Boolean))];
+  const vedgeTypes=[...new Set((DATA.edges||[]).map(e=>e.type).filter(Boolean))].sort((a,b)=>EdgeLabel(a).localeCompare(EdgeLabel(b),"zh"));
   if(vedgeTypes.length)h+='<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:10px;color:var(--muted)">关系</div>'+
-    vedgeTypes.slice(0,8).map(t=>`<div class="row"><span class="dot" style="background:${EdgeColor(t)};border-radius:2px;width:14px;height:3px;margin-top:4px"></span>${Esc(EdgeLabel(t))}</div>`).join("");
+    vedgeTypes.map(t=>`<div class="row"><span class="dot" style="background:${EdgeColor(t)};border-radius:2px;width:14px;height:3px;margin-top:4px"></span>${Esc(EdgeLabel(t))}</div>`).join("");
   document.getElementById("legend").innerHTML=h;
 }
-function Simulate(){
-  if(!canvas||graphStable&&!dragnode){DrawGraph();return}
+function StepGraphPhysics(){
   const w=canvas.clientWidth,hh=canvas.clientHeight,cx=w/2,cy=hh/2;
   const nrepel=GRAPH_REPEL_DIST;
   for(let i=0;i<nodes.length;i++){
     const a=nodes[i];
     a.vx+=(cx-a.x)*0.0006;a.vy+=(cy-a.y)*0.0004;
     if(a.targetY!=null)a.vy+=(a.targetY-a.y)*0.004;
+    if(a.targetX!=null)a.vx+=(a.targetX-a.x)*0.004;
     for(let j=i+1;j<nodes.length;j++){
       const b=nodes[j];
       const dx=a.x-b.x,dy=a.y-b.y;
@@ -3573,6 +3651,21 @@ function Simulate(){
     n.vx*=0.85;n.vy*=0.85;n.x+=n.vx;n.y+=n.vy;
     nenergy+=n.vx*n.vx+n.vy*n.vy;
   });
+  return nenergy;
+}
+function SettleGraphLayout(){
+  graphTick=0;graphStable=false;
+  if(rafid){cancelAnimationFrame(rafid);rafid=null;}
+  for(let t=0;t<GRAPH_MAX_TICKS;t++){
+    const nenergy=StepGraphPhysics();
+    graphTick++;
+    if(nodes.length>0&&nenergy/nodes.length<0.02)break;
+  }
+  graphStable=true;CenterGraphView();DrawGraph();
+}
+function Simulate(){
+  if(!canvas||graphStable&&!dragnode){DrawGraph();return}
+  const nenergy=StepGraphPhysics();
   graphTick++;
   if(graphTick>GRAPH_MAX_TICKS||(nodes.length>0&&nenergy/nodes.length<0.02)){
     graphStable=true;rafid=null;DrawGraph();return;
@@ -3596,19 +3689,23 @@ function DrawGraphArrow(sx,sy,tx,ty,sr,tr,color,nwidth){
 function DrawGraph(){
   ctx.clearRect(0,0,canvas.clientWidth,canvas.clientHeight);ctx.save();ctx.translate(view.x,view.y);ctx.scale(view.scale,view.scale);
   const hoverNeigh=hover?new Set(NeighborsOf(hover.id)):null;
+  const bsearch=!!(GRAPH_SEARCH||"").trim();
   const slinka=GetCssVar("--graph-link-active")||"rgba(201,120,154,.75)";
   const slabel=GetCssVar("--graph-label")||"#4a3f47";
   const sring=GetCssVar("--graph-ring")||"rgba(74,63,71,.35)";
+  const ssearch=GetCssVar("--accent")||"#c9789a";
   links.forEach(l=>{
     const active=hover&&(l.s.id===hover.id||l.t.id===hover.id)||hoverLink===l;
     const sc=active?slinka:EdgeColor(l.type);
-    DrawGraphArrow(l.s.x,l.s.y,l.t.x,l.t.y,l.s.r,l.t.r,sc,active?2:1);
+    DrawGraphArrow(l.s.x,l.s.y,l.t.x,l.t.y,l.s.r,l.t.r,sc,active?2.5:1.6);
   });
   nodes.forEach(n=>{
-    const dim=hover&&n!==hover&&!(hoverNeigh&&hoverNeigh.has(n.id));
-    ctx.globalAlpha=dim?0.3:1;ctx.beginPath();ctx.arc(n.x,n.y,n.r,0,6.2832);ctx.fillStyle=TypeColor(n.type);ctx.fill();
+    const bmatch=!bsearch||GraphNodeMatch(n);
+    const dim=(hover&&n!==hover&&!(hoverNeigh&&hoverNeigh.has(n.id)))||(bsearch&&!bmatch);
+    ctx.globalAlpha=dim?0.22:1;ctx.beginPath();ctx.arc(n.x,n.y,n.r,0,6.2832);ctx.fillStyle=TypeColor(n.type);ctx.fill();
+    if(bmatch&&bsearch){ctx.lineWidth=2.5;ctx.strokeStyle=ssearch;ctx.setLineDash([]);ctx.stroke()}
     if(!n.ingested){ctx.lineWidth=1.5;ctx.strokeStyle=sring;ctx.setLineDash([3,3]);ctx.stroke();ctx.setLineDash([])}
-    if(view.scale>0.55||n.degree>1||n===hover){
+    if(view.scale>0.55||n.degree>1||n===hover||bmatch&&bsearch){
       ctx.globalAlpha=dim?0.35:1;ctx.fillStyle=slabel;ctx.font=(window.__graphFont||"500 12px sans-serif");ctx.textAlign="center";
       const lbl=n.title.length>16?n.title.slice(0,15)+"…":n.title;ctx.fillText(lbl,n.x,n.y+n.r+13);
     }
