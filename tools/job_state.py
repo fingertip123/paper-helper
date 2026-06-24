@@ -31,6 +31,7 @@ def DefaultQueryJob(nuid=0):
     return {
         "running": False, "question": "", "answer": "", "error": "",
         "finished": False, "saved": None, "status": "idle", "uid": nuid, "gen": 0,
+        "qid": "",
     }
 
 

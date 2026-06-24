@@ -2368,20 +2368,32 @@ function ApplyQueryResult(nturnid,p){
 }
 function PollQueryJob(nturnid){
   if(oquerypollers[nturnid])return;
-  oquerypollers[nturnid]=1;
-  const ftick=async()=>{
-    try{
-      const p=await Api("/api/query/progress");
-      if(p.running){setTimeout(ftick,800);return}
-      delete oquerypollers[nturnid];
-      ApplyQueryResult(nturnid,p);
-    }catch(e){
-      delete oquerypollers[nturnid];
-      const oturn=FindQueryTurn(nturnid);
-      RestoreQueryTurn(nturnid,"进度获取失败："+e.message,oturn&&oturn.dataset.prevAnswer,!!(oturn&&oturn.dataset.hadAnswer));
-    }
-  };
-  ftick();
+  const poller=CreatePoller({
+    interval:800,maxTicks:200,
+    tick:()=>QueryTick(nturnid),
+    promptMsg:"知识查询已进行约 2.5 分钟仍未返回。\n\n确定 = 继续等待\n取消 = 放弃（仅停止本页轮询，后台任务不受影响）",
+    onAbort:()=>QueryPollAbort(nturnid),
+  });
+  oquerypollers[nturnid]=poller;
+  poller.start();
+}
+async function QueryTick(nturnid){
+  let p;
+  try{p=await Api("/api/query/progress")}catch(e){
+    delete oquerypollers[nturnid];
+    const oturn=FindQueryTurn(nturnid);
+    RestoreQueryTurn(nturnid,"进度获取失败："+e.message,oturn&&oturn.dataset.prevAnswer,!!(oturn&&oturn.dataset.hadAnswer));
+    return "done";
+  }
+  if(p.running)return;
+  delete oquerypollers[nturnid];
+  ApplyQueryResult(nturnid,p);
+  return "done";
+}
+function QueryPollAbort(nturnid){
+  delete oquerypollers[nturnid];
+  const oturn=FindQueryTurn(nturnid);
+  RestoreQueryTurn(nturnid,"已放弃等待，可重新提问",oturn&&oturn.dataset.prevAnswer,!!(oturn&&oturn.dataset.hadAnswer));
 }
 function SubmitQueryTurn(nturnid){
   if(NeedServer())return;
@@ -2450,7 +2462,32 @@ async function DeletePaper(rawfile){
   try{const r=await Api("/api/delete",{rawfile,cascade:bcascade});await Refresh(true);HideOverlay();Toast("已删除 "+(r.removed?r.removed.length:0)+" 项")}
   catch(e){HideOverlay();Toast("删除失败："+e.message)}
 }
-let polltimer=null;
+let ingestPoller=null,_ingestLastDone=-1;
+/* 通用轮询器：到达最大次数 maxTicks 后弹窗询问「继续等待 / 放弃」。
+   放弃仅停止前端轮询，后台任务不受影响（完成后刷新可见）。
+   tick() 返回值：'done'=终态停止；'reset'=有进展，计数归零；其它=继续累计。 */
+function CreatePoller(opt){
+  let stopped=false,count=0,timer=null;
+  function stop(){stopped=true;if(timer){clearTimeout(timer);timer=null}}
+  function schedule(){if(!stopped)timer=setTimeout(run,opt.interval||800)}
+  async function run(){
+    if(stopped)return;
+    count++;
+    if(count>=opt.maxTicks){
+      const bcontinue=confirm(opt.promptMsg||"任务耗时较长，是否继续等待？\n\n确定 = 继续等待\n取消 = 放弃");
+      if(stopped)return;
+      if(bcontinue){count=0;schedule();return}
+      stop();if(opt.onAbort)opt.onAbort();return;
+    }
+    let r;
+    try{r=await opt.tick()}catch(e){r=null}
+    if(stopped)return;
+    if(r==="done"){stop();return}
+    if(r==="reset")count=0;
+    schedule();
+  }
+  return {start(){stopped=false;count=0;run()},stop,isStopped(){return stopped}};
+}
 function ShortName(s){return (s||"").length>34?s.slice(0,33)+"…":s}
 async function Analyze(rawfile){
   if(NeedServer())return;
@@ -2488,21 +2525,41 @@ function IngestProgressMsg(p){
   }
   return p.current?("正在编译："+ShortName(p.current)):"正在研究化编译…";
 }
-async function PollProgress(){
-  try{
-    const p=await Api("/api/ingest/progress");
-    const total=p.total||1,done=p.done||0;
-    const cbtn=document.getElementById("ingest_cancel_btn");
-    document.getElementById("progbar").style.width=Math.round(done/total*100)+"%";
-    document.getElementById("progtext").textContent=`${done} / ${total}`+(p.current?(" · "+ShortName(p.current)):"");
-    document.getElementById("overlaymsg").textContent=IngestProgressMsg(p);
-    if(p.cancelled){cbtn.disabled=true;cbtn.textContent="取消中…"}
-    if(p.running){polltimer=setTimeout(PollProgress,800);return}
-    FinishProgress(p);
-  }catch(e){FinishProgress(null);Toast("进度获取失败："+e.message,4000)}
+function PollProgress(){
+  if(ingestPoller&&!ingestPoller.isStopped())return;
+  _ingestLastDone=-1;
+  ingestPoller=CreatePoller({
+    interval:800,maxTicks:200,
+    tick:IngestTick,
+    promptMsg:"纳入研究已较长时间没有进展（约 2 分钟）。\n\n确定 = 继续等待\n取消 = 放弃（仅停止本页进度轮询，后台任务不受影响，稍后可刷新查看结果）",
+    onAbort:IngestPollAbort,
+  });
+  ingestPoller.start();
+}
+async function IngestTick(){
+  let p;
+  try{p=await Api("/api/ingest/progress")}catch(e){await FinishProgress(null);Toast("进度获取失败："+e.message,4000);return "done"}
+  const total=p.total||1,done=p.done||0;
+  const cbtn=document.getElementById("ingest_cancel_btn");
+  document.getElementById("progbar").style.width=Math.round(done/total*100)+"%";
+  document.getElementById("progtext").textContent=`${done} / ${total}`+(p.current?(" · "+ShortName(p.current)):"");
+  document.getElementById("overlaymsg").textContent=IngestProgressMsg(p);
+  if(p.cancelled){cbtn.disabled=true;cbtn.textContent="取消中…"}
+  if(p.running){
+    if(done!==_ingestLastDone){_ingestLastDone=done;return "reset"}
+    return;
+  }
+  await FinishProgress(p);
+  return "done";
+}
+function IngestPollAbort(){
+  document.getElementById("progwrap").classList.remove("show");
+  document.getElementById("ingest_cancel_btn").style.display="none";
+  HideOverlay();
+  Toast("已停止查看纳入进度，后台仍在继续，稍后可刷新查看结果",6000);
 }
 async function FinishProgress(p){
-  if(polltimer){clearTimeout(polltimer);polltimer=null}
+  if(ingestPoller)ingestPoller.stop();
   document.getElementById("progwrap").classList.remove("show");
   document.getElementById("ingest_cancel_btn").style.display="none";
   const pf=document.getElementById("progfail");
@@ -3323,26 +3380,35 @@ async function DeepAnalyze(rawfile,skey){
   }
 }
 function StartDeepPolling(skey){
-  if(_deepPoll)clearInterval(_deepPoll);
-  _deepPoll=setInterval(async()=>{
-    let oresp;
-    try{oresp=await(await fetch("/api/deep/progress")).json()}catch(e){return/* 网络抖动，继续轮询 */}
-    if(oresp.error&&oresp.finished){
-      clearInterval(_deepPoll);_deepPoll=null;_deepActiveKey=null;
-      ResetDeepBtn(skey);Toast("分析失败："+oresp.error);return;
-    }
-    _deepActiveStage=oresp.stage||"分析中…";
-    SetDeepBtns(skey,true,'<span class="spin"></span> '+Esc(_deepActiveStage));
-    if(oresp.finished&&oresp.result){
-      clearInterval(_deepPoll);_deepPoll=null;_deepActiveKey=null;
-      const rkey=oresp.result.key||skey;
-      Toast("✅ 深度分析完成，正在打开报告");
-      await Refresh(true);
-      if(document.getElementById("libview").classList.contains("active"))AnimateRenderLibrary();
-      if(HasDeepReport(rkey))OpenDrawer(rkey+"-report");
-      else if(NODEMAP[rkey]){OpenDrawer(rkey);Toast("报告已生成，请在抽屉中查看「深度研究报告」")}
-    }
-  },1500);
+  if(_deepPoll)_deepPoll.stop();
+  _deepPoll=CreatePoller({
+    interval:1500,maxTicks:480,
+    tick:()=>DeepTick(skey),
+    promptMsg:"深度分析已进行约 12 分钟仍未完成。\n\n确定 = 继续等待\n取消 = 放弃（仅停止本页进度轮询，后台分析不受影响，完成后刷新可见）",
+    onAbort:()=>{_deepActiveKey=null;_deepPoll=null;ResetDeepBtn(skey);Toast("已停止查看深度分析进度，后台仍在继续，完成后可刷新查看",6000)},
+  });
+  _deepPoll.start();
+}
+async function DeepTick(skey){
+  let oresp;
+  try{oresp=await(await fetch("/api/deep/progress")).json()}catch(e){return/* 网络抖动，继续轮询 */}
+  if(oresp.error&&oresp.finished){
+    _deepPoll=null;_deepActiveKey=null;
+    ResetDeepBtn(skey);Toast("分析失败："+oresp.error);return "done";
+  }
+  _deepActiveStage=oresp.stage||"分析中…";
+  SetDeepBtns(skey,true,'<span class="spin"></span> '+Esc(_deepActiveStage));
+  if(oresp.finished&&oresp.result){
+    _deepPoll=null;_deepActiveKey=null;
+    const rkey=oresp.result.key||skey;
+    Toast("✅ 深度分析完成，正在打开报告");
+    await Refresh(true);
+    if(document.getElementById("libview").classList.contains("active"))AnimateRenderLibrary();
+    if(HasDeepReport(rkey))OpenDrawer(rkey+"-report");
+    else if(NODEMAP[rkey]){OpenDrawer(rkey);Toast("报告已生成，请在抽屉中查看「深度研究报告」")}
+    return "done";
+  }
+  return;
 }
 </script>
 </body>

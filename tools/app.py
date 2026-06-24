@@ -13,6 +13,7 @@ import os
 import sys
 import json
 import time
+import uuid
 import base64
 import logging
 import threading
@@ -1137,17 +1138,18 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"status": "error", "error": serr})
         bsave = body.get("save", True)
         ouser = getattr(self, "_user", None)
+        sqid = uuid.uuid4().hex
         _, ngen = BeginQueryJob(
             nuid,
             running=True, question=squestion, answer="", error="",
-            finished=False, saved=None, status="running",
+            finished=False, saved=None, status="running", qid=sqid,
         )
         threading.Thread(
             target=RunQueryJob,
             args=(oconfig, squestion, bsave, ouser["root"] if ouser else None, nuid, ngen),
             daemon=True,
         ).start()
-        return self._send(200, {"status": "started", "question": squestion})
+        return self._send(200, {"status": "started", "question": squestion, "qid": sqid})
 
     def _topicsnapshot(self):
         wops.Init(core.wikidir, core.rawsourcesdir, core.rootdir)
