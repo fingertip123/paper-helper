@@ -69,7 +69,7 @@ def _ReadSourcePage(skey):
 
 def _ResolvePdfPath(nfilename, skey=None):
     """解析 PDF 路径；缺失时抛出带指引的异常。"""
-    sfile = SafeName(nfilename) if nfilename else ""
+    sfile = SafeName(nfilename or "")
     if not sfile and skey:
         sfile = SafeName(core.ResolveRawfileForKey(skey))
     if not sfile:
@@ -235,12 +235,8 @@ def _AppendDeepSummaryToSource(skey, ssummary):
         f.write(ntext)
 
 
-def DeepAnalyzePaper(oconfig, nfilename, sroot=None, skey=None):
+def DeepAnalyzePaper(oconfig, nfilename, skey=None):
     """五阶段深度分析主流程。"""
-    if sroot:
-        core.SetDataRoot(sroot)
-        topics.Init(sroot)
-
     fullpath, sfile = _ResolvePdfPath(nfilename, skey)
     meta = core.ParseSourceFilename(sfile)
     skey = skey or meta["key"]
@@ -335,9 +331,13 @@ def GetDeepJobStatus():
 
 
 def _RunDeepJob(oconfig, nfilename, sroot=None, skey=None):
+    import app as appmod  # noqa: E402 — 绑定多用户数据根与 config 路径
     global update_callback
     update_callback = _DefaultUpdateCb
+    appmod.datalock.acquire()
     try:
+        if sroot and appmod.multiuser:
+            appmod.BindDataRoot(sroot)
         with deeplock:
             deepjob["running"] = True
             deepjob["finished"] = False
@@ -347,7 +347,7 @@ def _RunDeepJob(oconfig, nfilename, sroot=None, skey=None):
             deepjob["error"] = ""
             deepjob["result"] = None
 
-        oresult = DeepAnalyzePaper(oconfig, nfilename, sroot, skey=skey)
+        oresult = DeepAnalyzePaper(oconfig, nfilename or "", skey=skey)
 
         with deeplock:
             deepjob["result"] = oresult
@@ -360,6 +360,7 @@ def _RunDeepJob(oconfig, nfilename, sroot=None, skey=None):
             deepjob["finished"] = True
             deepjob["progress"] = -1
     finally:
+        appmod.datalock.release()
         with deeplock:
             deepjob["running"] = False
 

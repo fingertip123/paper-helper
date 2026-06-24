@@ -414,6 +414,16 @@ def EnrichSourceLibraryMeta(vnodes):
         n["lib_tags"] = GetLibTags(n.get("id", ""))
 
 
+def SetDataRoot(nroot):
+    """多用户后台任务切换数据根（与 app.BindDataRoot 的路径逻辑一致）。"""
+    if not nroot:
+        return
+    global rootdir
+    rootdir = nroot
+    topics.Init(nroot)
+    ReloadTopicPaths()
+
+
 def ScanWiki():
     """扫描 wiki 内容页与 purpose.md，返回节点与边。"""
     vnodes = []

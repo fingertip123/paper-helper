@@ -356,7 +356,7 @@ def SaveConfig(oconfig):
 
 def SafeName(nfilename):
     """只保留文件名本身，去掉路径分隔符，防止目录穿越。"""
-    return os.path.basename(nfilename).replace("\x00", "")
+    return os.path.basename(nfilename or "").replace("\x00", "")
 
 
 def SafeWikiPath(nrelpath):
@@ -1506,7 +1506,7 @@ class Handler(BaseHTTPRequestHandler):
         oconfig = LoadConfig()
         body = self._body()
         sid = (body.get("id") or body.get("key") or "").strip()
-        sfile = SafeName(body.get("rawfile", ""))
+        sfile = SafeName(body.get("rawfile") or "")
         if not sfile and sid:
             sfile = SafeName(core.ResolveRawfileForKey(sid))
         if sid and not core.FindSourcePagePath(sid):
