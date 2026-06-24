@@ -306,6 +306,25 @@ def ListSources():
             if fn.lower().endswith((".pdf", ".docx", ".md", ".txt")) and not fn.startswith(".")]
 
 
+def ResolveRawfileForKey(skey):
+    """按 source id 在 raw/sources 中查找原始文件名（wiki 页通常不存 rawfile）。"""
+    if not skey:
+        return ""
+    for fn in ListSources():
+        if ParseSourceFilename(fn)["key"] == skey:
+            return fn
+    return ""
+
+
+def EnsureNodeRawfile(onode):
+    """已纳入的 source 节点若缺 rawfile，尝试从 raw/sources 按 id 补全。"""
+    if onode.get("type") != "source" or onode.get("rawfile"):
+        return
+    sfile = ResolveRawfileForKey(onode.get("id", ""))
+    if sfile:
+        onode["rawfile"] = sfile
+
+
 def ScanWiki():
     """扫描 wiki 内容页与 purpose.md，返回节点与边。"""
     vnodes = []
@@ -356,7 +375,9 @@ def ScanWiki():
                 existing = next((n for n in vnodes if nodeid in (n.get("aliases") or [])), None)
             if existing:
                 MergeWikiIntoNode(existing, onode, ofm)
+                EnsureNodeRawfile(existing)
             else:
+                EnsureNodeRawfile(onode)
                 vnodes.append(onode)
             for t in ExtractLinks(nbody):
                 vrawlinks.append((nodeid, t))
@@ -629,6 +650,8 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   .pdfbtn,.urlbtn{margin-top:10px;margin-right:8px;font-family:var(--font-ui);font-size:11px;font-weight:var(--fw-ui);letter-spacing:var(--ls-ui);padding:5px 12px;background:linear-gradient(160deg,var(--panel),var(--panel2));color:var(--accent);border:1px solid var(--rim3d,var(--border));border-radius:10px;cursor:pointer;text-decoration:none;display:inline-block;box-shadow:0 1px 0 var(--depth3d),0 3px 8px var(--ambient3d),inset 0 1px 0 var(--surface-hi,rgba(255,255,255,.35));transition:transform .1s,box-shadow .1s}
   .pdfbtn:hover,.urlbtn:hover{border-color:var(--accent);transform:translateY(-1px)}
   .pdfbtn:active,.urlbtn:active{transform:translateY(1px);box-shadow:0 1px 0 var(--depth3d),inset 0 2px 4px var(--inset-press3d)}
+  .pdfbtn:disabled,.urlbtn:disabled{opacity:.5;cursor:not-allowed;pointer-events:none;transform:none}
+  .pdfbtn .spin,.urlbtn .spin{display:inline-block;width:12px;height:12px;border:2px solid var(--accent);border-top-color:transparent;border-radius:50%;animation:spin .7s linear infinite;vertical-align:-2px;margin-right:2px}
   .urledit{display:flex;gap:8px;align-items:center}
   .urledit input{flex:1;min-width:0;padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--panel2);color:var(--text);font-size:12px}
   #pdfmodal,#setmodal,#startmodal,#rulesmodal,#topicmodal,#querymodal,#lintmodal,#docexportmodal,#doccommitmodal,#dochistorymodal,#thememodal,#onboardmodal{position:fixed;inset:0;background:var(--modal-backdrop);backdrop-filter:blur(10px);z-index:50;display:flex;flex-direction:column;padding:24px;opacity:0;visibility:hidden;pointer-events:none;transition:opacity .24s ease,visibility .24s ease}
@@ -845,11 +868,6 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   .themeswatches{display:flex;gap:8px;margin-top:12px}
   .themeswatch{width:26px;height:26px;border-radius:50%;border:2px solid var(--rim3d,rgba(255,255,255,.35));box-shadow:0 2px 0 var(--depth3d),0 3px 6px var(--ambient3d),inset 0 -2px 5px var(--inset-edge3d),inset 0 2px 4px var(--surface-hi,rgba(255,255,255,.28))}
   .setbox,.setbox-flex{transform-style:preserve-3d}
-  /* --- 深度分析按钮 --- */
-  .deepbtn{display:inline-flex;align-items:center;gap:5px;padding:4px 14px;border-radius:999px;border:1px solid var(--border);background:var(--panel-glass);font-size:11px;font-family:inherit;color:var(--text-soft);cursor:pointer;transition:border-color .18s,color .18s,opacity .18s;line-height:1.4}
-  .deepbtn:hover{border-color:var(--accent);color:var(--accent)}
-  .deepbtn:disabled{opacity:.5;cursor:not-allowed;pointer-events:none}
-  .deepbtn .spin{display:inline-block;width:12px;height:12px;border:2px solid var(--text-soft);border-top-color:transparent;border-radius:50%;animation:spin .7s linear infinite}
   @keyframes spin{to{transform:rotate(360deg)}}
   .reportlink{display:inline-flex;align-items:center;gap:4px;padding:4px 14px;border-radius:999px;border:1px solid var(--accent);background:var(--accent);color:#fff;font-size:11px;font-weight:600;cursor:pointer;transition:opacity .18s;line-height:1.4;text-decoration:none}
   .reportlink:hover{opacity:.85}
@@ -1260,9 +1278,10 @@ function RenderLibrary(){
     const del=(SERVERMODE&&n.rawfile)?`<span class="del" title="删除" onclick="event.stopPropagation();DeletePaper('${Attr(n.rawfile)}')">🗑</span>`:"";
     const rq=(n.research&&n.research.rq_links&&n.research.rq_links.length)?`<span class="badge soft" title="已关联研究问题">RQ</span>`:"";
     const hasReport=HasDeepReport(n.id);
+    const canDeep=SERVERMODE&&n.ingested&&!!n.rawfile;
     const reportbtn=hasReport
       ?`<button class="reportlink" onclick="event.stopPropagation();OpenDrawer('${Attr(n.id)}-report')">📋 研究报告</button>`
-      :(SERVERMODE&&n.ingested?`<button class="deepbtn" id="deep_btn_${Attr(n.id)}" onclick="event.stopPropagation();DeepAnalyze('${Attr(n.rawfile)}','${Attr(n.id)}')">📋 深度分析</button>`:"");
+      :(canDeep?`<button class="urlbtn" id="deep_btn_${Attr(n.id)}" onclick="event.stopPropagation();DeepAnalyzeById('${Attr(n.id)}')">📋 深度分析</button>`:"");
     return `<div class="card ${n.ingested?'':'pending'}" onclick="OpenDrawer('${Attr(n.id)}')">
       ${del}<div class="ttl">${Esc(n.title)} ${rq}</div>
       <div class="sub">${Esc(sub)||"—"}</div>
@@ -1325,10 +1344,10 @@ function OpenDrawer(id){
   if(n.type==="source"&&n.ingested){
     const hasReport=HasDeepReport(n.id);
     if(hasReport){
-      h+=`<div class="field"><button class="reportlink" onclick="OpenDrawer('${Attr(n.id)}-report')">📋 查看深度研究报告</button> `+
-        `<button class="reportlink ghost" onclick="DeepAnalyze('${Attr(n.rawfile)}','${Attr(n.id)}')">↻ 重新分析</button></div>`;
-    }else{
-      h+=`<div class="field"><button class="deepbtn" id="deep_drawer_btn_${Attr(n.id)}" onclick="DeepAnalyze('${Attr(n.rawfile)}','${Attr(n.id)}')">📋 深度分析这篇文献</button></div>`;
+      h+=`<div class="field"><button class="btn" onclick="OpenDrawer('${Attr(n.id)}-report')">📋 查看深度研究报告</button> `+
+        (n.rawfile?`<button class="btn ghost" onclick="DeepAnalyzeById('${Attr(n.id)}')">↻ 重新分析</button>`:"")+`</div>`;
+    }else if(n.rawfile){
+      h+=`<div class="field"><button class="btn" id="deep_drawer_btn_${Attr(n.id)}" onclick="DeepAnalyzeById('${Attr(n.id)}')">📋 深度分析这篇文献</button></div>`;
     }
   }
   document.getElementById("drawerbody").innerHTML=h;
@@ -2974,15 +2993,20 @@ RenderAll();
 if(SERVERMODE){LoadTopics().then(()=>Refresh(true)).then(()=>InitOnboarding());LoadDocsList();}
 /* ---------- 深度分析 ---------- */
 function HasDeepReport(skey){return DATA.nodes.some(n=>n.id===skey+"-report"&&n.type==="analysis-report")}
+function DeepAnalyzeById(skey){
+  const n=NODEMAP[skey];
+  if(!n||!skey){Toast("参数错误");return}
+  DeepAnalyze(n.rawfile||"", skey);
+}
 let _deepPoll=null;
 async function DeepAnalyze(rawfile,skey){
-  if(!rawfile||!skey){Toast("参数错误");return}
+  if(!skey){Toast("参数错误");return}
   const btn=document.getElementById("deep_btn_"+skey)||document.getElementById("deep_drawer_btn_"+skey);
   if(btn){btn.disabled=true;btn.innerHTML='<span class="spin"></span> 分析中…'}
   try{
-    const oresp=await Api("/api/ingest/deep",{rawfile});
-    if(oresp.status==="need_key"){Toast("请先在设置中配置 API Key");if(btn)btn.disabled=false;return}
-    if(oresp.error){Toast(oresp.error);if(btn)btn.disabled=false;return}
+    const oresp=await Api("/api/ingest/deep",{rawfile:rawfile||null,id:skey});
+    if(oresp.status==="need_key"){Toast("请先在设置中配置 API Key");if(btn){btn.disabled=false;btn.innerHTML="📋 深度分析"};return}
+    if(oresp.error){Toast(oresp.error);if(btn){btn.disabled=false;btn.innerHTML="📋 深度分析"};return}
     Toast("深度分析已启动（三阶段约需 1-3 分钟）");
     StartDeepPolling(rawfile,skey);
   }catch(e){

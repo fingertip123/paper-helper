@@ -1497,7 +1497,11 @@ class Handler(BaseHTTPRequestHandler):
         body = self._body()
         sfile = SafeName(body.get("rawfile", ""))
         if not sfile:
-            return self._send(400, {"error": "missing rawfile"})
+            sid = (body.get("id") or body.get("key") or "").strip()
+            if sid:
+                sfile = SafeName(core.ResolveRawfileForKey(sid))
+        if not sfile:
+            return self._send(400, {"error": "找不到原始文献文件，请先上传 PDF"})
         noauth = "pollinations.ai" in (oconfig.get("base_url") or "")
         if not HasUsableApiKey(oconfig) and not noauth:
             return self._send(200, {"status": "need_key"})
