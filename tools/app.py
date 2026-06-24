@@ -28,7 +28,6 @@ import wiki_ops as wops
 import doc_editor as doced
 import onboarding as onboard
 import builtin_llm as bllm
-import research_deep as rdeep
 import auth
 from app_meta import APP_NAME, ResolveConfigDir
 from contextlib import contextmanager
@@ -490,6 +489,9 @@ def ParseLlmJson(ntext):
     if start >= 0 and end > start:
         s = s[start:end + 1]
     return json.loads(s)
+
+
+import research_deep as rdeep
 
 
 def BuildIngestMessages(oconfig, nfilename, npapertext):
