@@ -3355,6 +3355,9 @@ if(!SERVERMODE){
   RenderTopicSelect();
   UpdateCurrentTopicDisplay();
 }
+/* 当前正在深度分析的文献 key（用于跨页签 / 重渲染保持转圈态）。
+   必须在顶层 RenderAll() 之前声明，否则 DeepActionBtn 读取时会触发 TDZ 报错，导致论文卡片无法渲染。 */
+let _deepActiveKey=null,_deepActiveStage="分析中…",_deepPoll=null;
 LoadAllQueryHistory();
 RestoreQueryThreadForTopic(CURRENT_TOPIC);
 InitTheme();
@@ -3365,8 +3368,6 @@ RenderAll();
 if(SERVERMODE){LoadTopics().then(()=>Refresh(true)).then(()=>{InitOnboarding();ResumeDeepIfRunning()});LoadDocsList();}
 /* ---------- 深度分析 ---------- */
 function HasDeepReport(skey){return DATA.nodes.some(n=>n.id===skey+"-report"&&n.type==="analysis-report")}
-/* 当前正在深度分析的文献 key（用于跨页签 / 重渲染保持转圈态） */
-let _deepActiveKey=null,_deepActiveStage="分析中…",_deepPoll=null;
 function DeepActionBtn(sid,sklass,sidprefix,bstop,slabel){
   const sclick=(bstop?"event.stopPropagation();":"")+"DeepAnalyzeById('"+Attr(sid)+"')";
   const stext=slabel||"📋 深度分析";
