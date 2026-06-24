@@ -478,6 +478,7 @@ def ScanWiki():
                 "url": ofm.get("url", ""),
                 "rawfile": "", "ingested": True, "summary": GetSummary(nbody),
                 "research": ExtractSourceResearch(nbody) if ofm.get("type") == "source" else {},
+                "body": nbody if stype == "analysis-report" else "",
             }
             existing = next((n for n in vnodes if n["id"] == nodeid), None)
             if not existing and nodeid:
@@ -764,6 +765,18 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   .drawer-panel .field{margin:12px 0;font-size:13px}
   .drawer-panel .field .k{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px}
   .drawer-panel .links a{display:inline-block;margin:3px 6px 3px 0;padding:3px 9px;background:var(--panel2);border-radius:6px;font-size:12px;color:var(--accent);text-decoration:none;cursor:pointer}
+  .reportbody{font-size:14px;line-height:1.75;color:var(--text)}
+  .reportbody h2{font-family:var(--font-display);font-size:18px;font-weight:var(--fw-display);letter-spacing:var(--ls-title);color:var(--text);margin:22px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--border)}
+  .reportbody h3{font-size:15px;font-weight:600;color:var(--text-soft);margin:16px 0 8px}
+  .reportbody h4,.reportbody h5{font-size:14px;font-weight:600;color:var(--text-soft);margin:12px 0 6px}
+  .reportbody p{margin:8px 0;color:var(--text-soft)}
+  .reportbody ul,.reportbody ol{margin:8px 0 8px 22px;color:var(--text-soft)}
+  .reportbody li{margin:4px 0;line-height:1.7}
+  .reportbody blockquote{margin:10px 0;padding:8px 14px;border-left:3px solid var(--accent);background:var(--ghost-hover);color:var(--muted);border-radius:0 8px 8px 0}
+  .reportbody code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:12px}
+  .reportbody strong{color:var(--text)}
+  .reportbody .mdlink{color:var(--accent);cursor:pointer;text-decoration:none;border-bottom:1px dashed var(--accent)}
+  .reportbody .mdlink:hover{opacity:.8}
   .empty{color:var(--muted);text-align:center;padding:60px 20px;font-size:14px;line-height:1.8}
   .btn{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:999px;font-family:var(--font-ui);font-size:13px;font-weight:var(--fw-btn);letter-spacing:var(--ls-btn);cursor:pointer;border:1px solid transparent;background:linear-gradient(145deg,var(--accent) 0%,var(--accent2) 100%);color:#fff;text-decoration:none;white-space:nowrap;box-shadow:0 2px 0 var(--btn-depth3d),0 5px 12px var(--btn-ambient3d),inset 0 1px 0 var(--surface-hi,rgba(255,255,255,.28));transition:transform .1s ease-out,box-shadow .1s ease-out,filter .15s,font-family .25s}
   .btn:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 3px 0 var(--btn-depth3d),0 8px 16px var(--btn-ambient3d),inset 0 1px 0 var(--surface-hi,rgba(255,255,255,.32))}
@@ -1296,6 +1309,33 @@ function TypeColor(t){return (TC[t]||TC.unknown).color}
 function Esc(s){return (s||"").replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
 function Attr(s){return (s||"").replace(/\\/g,"\\\\").replace(/'/g,"\\'").replace(/"/g,"&quot;").replace(/\n/g,"\\n").replace(/\r/g,"")}
 function SafeUrl(u){return(u||"").trim().match(/^https?:\/\//i)?u.trim():""}
+function MdInline(s){
+  s=Esc(s);
+  s=s.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,(m,a,b)=>{const id=a.trim();const lbl=(b||a).trim();return `<a class="mdlink" onclick="OpenDrawer('${Attr(id)}')">${Esc(lbl)}</a>`});
+  s=s.replace(/\*\*([^*]+)\*\*/g,"<strong>$1</strong>");
+  s=s.replace(/(^|[^*])\*([^*]+)\*/g,"$1<em>$2</em>");
+  s=s.replace(/`([^`]+)`/g,"<code>$1</code>");
+  return s;
+}
+function MdToHtml(smd){
+  if(!smd)return "";
+  const vlines=String(smd).replace(/\r/g,"").split("\n");
+  let h="",vlist=null,vbuf=[];
+  const flushP=()=>{if(vbuf.length){h+=`<p>${MdInline(vbuf.join(" "))}</p>`;vbuf=[]}};
+  const flushList=()=>{if(vlist){h+=`<${vlist.tag}>`+vlist.items.map(t=>`<li>${MdInline(t)}</li>`).join("")+`</${vlist.tag}>`;vlist=null}};
+  for(let line of vlines){
+    const sraw=line.replace(/\s+$/,"");
+    if(!sraw.trim()){flushP();flushList();continue}
+    let m;
+    if((m=sraw.match(/^(#{1,6})\s+(.*)$/))){flushP();flushList();const nlv=Math.min(m[1].length+1,6);h+=`<h${nlv}>${MdInline(m[2])}</h${nlv}>`;continue}
+    if(/^\s*>\s?/.test(sraw)){flushP();flushList();h+=`<blockquote>${MdInline(sraw.replace(/^\s*>\s?/,""))}</blockquote>`;continue}
+    if(/^\s*(?:[-*+])\s+/.test(sraw)){flushP();if(!vlist||vlist.tag!=="ul"){flushList();vlist={tag:"ul",items:[]}}vlist.items.push(sraw.replace(/^\s*[-*+]\s+/,""));continue}
+    if(/^\s*\d+\.\s+/.test(sraw)){flushP();if(!vlist||vlist.tag!=="ol"){flushList();vlist={tag:"ol",items:[]}}vlist.items.push(sraw.replace(/^\s*\d+\.\s+/,""));continue}
+    flushList();vbuf.push(sraw.trim());
+  }
+  flushP();flushList();
+  return h;
+}
 const THEMES=[
   {id:"fresh",icon:"🍃",name:"青岚",desc:"远山含翠，草木蒙雾；低饱和豆沙绿，久读不累",swatches:["#7a9488","#94a89e","#f3f5f2"]},
   {id:"girly",icon:"🌸",name:"绯霞",desc:"蔷薇暮色，温婉含蓄；柔粉与薰衣草，静而不媚",swatches:["#c9789a","#d9a0b8","#faf6f4"]},
@@ -1612,6 +1652,12 @@ function OpenDrawer(id){
     const surl=SafeUrl(n.url);
     if(surl)h+=`<div class="field"><button class="btn ghost" onclick="OpenPaperUrl('${Attr(surl)}')">🔗 在线阅读 ↗</button></div>`;
     if(SERVERMODE)h+=`<div class="field"><div class="k">论文网址</div><div class="urledit"><input id="paper_url_input" value="${Esc(n.url||"")}" placeholder="https://doi.org/... 或期刊页面"><button class="btn ghost" onclick="SavePaperUrl('${Attr(n.id)}','${Attr(n.rawfile||"")}')">保存</button></div></div>`;
+  }
+  if(n.type==="analysis-report"&&n.body){
+    h+=`<div class="field reportbody">${MdToHtml(n.body)}</div>`;
+    document.getElementById("drawerbody").innerHTML=h;
+    OpenDrawerShell("drawer_shell");
+    return;
   }
   if(n.summary)h+=`<div class="field"><div class="k">一句话</div>${Esc(n.summary)}</div>`;
   if(n.type==="source"&&n.ingested&&n.research){
