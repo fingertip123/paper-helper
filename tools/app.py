@@ -495,7 +495,7 @@ import research_deep as rdeep
 
 
 def BuildIngestMessages(oconfig, nfilename, npapertext):
-    """构造研究化摄入提示词：对齐 RQ/论点，生成可研究的 wiki 页面（JSON 输出）。"""
+    """构造精简入库提示词：快速接入 wiki 网络（深度审计留给「深度研究」）。"""
     with open(topics.RulePath("purpose.md"), "r", encoding="utf-8") as f:
         spurposefull = f.read()
     purpose = spurposefull[:2800]
@@ -506,62 +506,55 @@ def BuildIngestMessages(oconfig, nfilename, npapertext):
         if sval and sval not in ("（待填写）", "（未填写）"):
             vrqlines.append(sval)
     srqctx = "\n".join(vrqlines) if vrqlines else "（尚未填写具体研究问题，请从 purpose 方向推断可能关联）"
-    sthesis = (ofields.get("thesis") or "").strip()[:1200]
     vnodes, _ = core.ScanWiki()
     existing = "\n".join(
         "- %s (%s): %s" % (n["id"], n["type"], n.get("title", "")) for n in vnodes
-    )[:3200]
-    vsources = [n for n in vnodes if n.get("type") == "source" and n.get("ingested")]
-    sprior = "\n".join("- [[%s]]: %s" % (n["id"], n.get("summary", "")[:80]) for n in vsources[:12])
+    )[:2400]
     vrqpages = [n for n in vnodes if n.get("type") == "rq"]
-    srqpages = "\n".join("- [[%s]]: %s" % (n["id"], n.get("title", "")) for n in vrqpages) or "（尚无研究问题页，可新建）"
+    srqpages = "\n".join("- [[%s]]: %s" % (n["id"], n.get("title", "")) for n in vrqpages) or "（尚无研究问题页）"
     meta = core.ParseSourceFilename(nfilename)
     lang = oconfig.get("language", "中文")
     system = (
-        "你是博士论文知识库的研究编译引擎。目标不是摘抄，而是把文献「研究化」："
-        "对齐 purpose 中的研究问题与论点，标注与已有文献的关联/张力，产出可写入综述的研究笔记。"
-        "严格遵守：(1) 每个页面以 YAML frontmatter 开头，含 type/title/aliases/sources/tags/created/updated；"
-        "source 页另含 url（优先 DOI https://doi.org/...，无法确定则省略）；"
-        "(2) 用 [[wikilink]] 交叉引用，尽量复用已存在页面 id；"
-        "(3) 文件命名 kebab-case；(4) 只输出 JSON，不要多余文字。"
-        "页面类型与目录：source→wiki/sources、concept→wiki/concepts、entity→wiki/entities、"
-        "rq→wiki/research-questions、synthesis→wiki/synthesis、comparison→wiki/comparisons。"
-        "用%s撰写正文。" % lang
+        "你是博士论文知识库的「入库编译引擎」。目标：快速把文献接入 wiki 网络，"
+        "产出精简摘要与交叉链接。"
+        "**不做**方法论审计、识别策略红队、跨文献长对比（这些留给后续的「深度研究」）。"
+        "严格遵守：(1) YAML frontmatter 含 type/title/aliases/sources/tags/created/updated；"
+        "source 页可含 url（DOI 优先）；(2) 用 [[wikilink]] 复用已有 id；"
+        "(3) kebab-case 命名；(4) 只输出 JSON。"
+        "用%s撰写。" % lang
     )
     user = (
         "## 论文目标 (purpose.md)\n%s\n\n"
-        "## 当前研究问题（请逐条对齐）\n%s\n\n"
-        "## 当前论点/假设\n%s\n\n"
-        "## 已摄入文献（对照张力/共识）\n%s\n\n"
+        "## 当前研究问题（仅做标签式关联，不做论证级分析）\n%s\n\n"
+        "## 已有 wiki 页面（复用 id）\n%s\n\n"
         "## 已有研究问题页\n%s\n\n"
-        "## 已存在的 wiki 页面（复用 id 做链接）\n%s\n\n"
-        "## 待研究化文献\n文件名：%s\n建议引用 key：%s\n正文(截断)：\n%s\n\n"
-        "## 必须输出的页面\n"
-        "1. wiki/sources/<key>.md — 含固定章节：一句话概括、解决的问题、方法/核心思路、主要结论/贡献、"
-        "数据集/实验设置、与本论文的关系（链接到具体 [[rq-...]]）、与已有文献的张力、可借鉴的研究设计、"
-        "局限与存疑、下一步阅读建议\n"
-        "2. wiki/synthesis/<key>-memo.md — 单篇研究备忘（type: synthesis），含：支撑/挑战哪些 RQ、"
-        "对当前论点的含义、写综述时可引用的 2-3 句话\n"
-        "3. 关键概念/实体页 3-6 个，相互 [[链接]]\n"
-        "4. 若与某 RQ 明显相关：更新或新建 wiki/research-questions/<rq-id>.md（补充本篇进展）\n"
-        "5. 若与已摄入文献存在方法论/结论张力：新建 wiki/comparisons/<key>-vs-<other>.md\n\n"
-        "## 输出 JSON 格式\n"
+        "## 待入库文献\n文件名：%s\n建议 key：%s\n正文(截断)：\n%s\n\n"
+        "## 必须输出（精简）\n"
+        "1. wiki/sources/<key>.md — 章节：\n"
+        "   - ## 一句话概括（1 句）\n"
+        "   - ## 研究问题（1–2 句）\n"
+        "   - ## 方法与数据（3–5 句，不展开识别策略审计）\n"
+        "   - ## 主要结论（2–3 句）\n"
+        "   - ## 关联研究问题（列出 [[rq-...]]，一句话说明关联）\n"
+        "   **禁止写**：长篇张力分析、可借鉴设计清单、方法论评级、跨文献对比表\n"
+        "2. wiki/synthesis/<key>-memo.md — type:synthesis，3–5 句综述可用备忘\n"
+        "3. wiki/concepts/ 2–3 个核心概念页（每页简短，相互链接）\n"
+        "**不要输出** comparison 页；entity 页除非关键机构/数据集\n\n"
+        "## 输出 JSON\n"
         '{\n'
         '  "key": "作者姓-年份",\n'
         '  "files": [{"path": "wiki/sources/<key>.md", "content": "..."}],\n'
         '  "log": "一句话操作摘要",\n'
-        '  "review": ["需要人工核实的点"],\n'
+        '  "review": ["需人工核实的点"],\n'
         '  "research": {\n'
         '    "rq_links": ["rq-..."],\n'
-        '    "supports_thesis": "对当前论点的一句话含义",\n'
-        '    "tensions": ["与某文献的张力描述"],\n'
-        '    "next_steps": ["建议下一步阅读或验证"],\n'
+        '    "supports_thesis": "对论点一句话（可选）",\n'
         '    "synthesis_id": "<key>-memo"\n'
         '  }\n'
         '}\n'
-        "要求：source 页 sources 写 [%s]；不臆造内容，不确定写入 review；尽量填写 url。"
-        % (purpose, srqctx, sthesis or "（未填写）", sprior or "（尚无）", srqpages,
-           existing, nfilename, meta["key"], npapertext[:14000], meta["key"])
+        "source 页 sources 写 [%s]；不确定写入 review；尽量填 url。"
+        % (purpose, srqctx, existing, srqpages, nfilename, meta["key"],
+           npapertext[:12000], meta["key"])
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
@@ -1509,16 +1502,20 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(200, {"status": "started", "total": len(targets)})
 
     def _deep_analyze(self):
-        """触发深度分析。"""
+        """触发五阶段深度分析（须已纳入且保留原始 PDF）。"""
         oconfig = LoadConfig()
         body = self._body()
+        sid = (body.get("id") or body.get("key") or "").strip()
         sfile = SafeName(body.get("rawfile", ""))
+        if not sfile and sid:
+            sfile = SafeName(core.ResolveRawfileForKey(sid))
+        if sid and not core.FindSourcePagePath(sid):
+            return self._send(400, {"error": "请先「纳入研究」后再进行深度分析"})
         if not sfile:
-            sid = (body.get("id") or body.get("key") or "").strip()
-            if sid:
-                sfile = SafeName(core.ResolveRawfileForKey(sid))
-        if not sfile:
-            return self._send(400, {"error": "找不到原始文献文件，请先上传 PDF"})
+            return self._send(400, {"error": "找不到原始 PDF，深度研究需要 PDF 原文，请重新上传后再试"})
+        spdf = os.path.join(core.rawsourcesdir, sfile)
+        if not os.path.isfile(spdf):
+            return self._send(400, {"error": "原始 PDF 不在文献库中，请重新上传后再进行深度分析"})
         noauth = "pollinations.ai" in (oconfig.get("base_url") or "")
         if not HasUsableApiKey(oconfig) and not noauth:
             return self._send(200, {"status": "need_key"})
@@ -1526,10 +1523,11 @@ class Handler(BaseHTTPRequestHandler):
         serr = self._CheckLlmQuota(3)
         if serr:
             return self._send(200, {"status": "error", "error": serr})
-        oresult = rdeep.StartDeepAnalysis(oconfig, sfile, ouser["root"] if ouser else None)
+        oresult = rdeep.StartDeepAnalysis(
+            oconfig, sfile, ouser["root"] if ouser else None, skey=sid or None)
         if "error" in oresult:
             return self._send(200, oresult)
-        return self._send(200, {"status": "started", "file": sfile})
+        return self._send(200, {"status": "started", "file": sfile, "id": sid or ""})
 
 
 def Main():

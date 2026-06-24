@@ -1515,7 +1515,7 @@ function RenderLibGrid(){
     let actionbtn="";
     if(LibIsDeep(n)){
       actionbtn=`<button class="urlbtn" onclick="event.stopPropagation();OpenDrawer('${Attr(n.id)}-report')">📋 研究报告</button>`;
-    }else if(LibIsAwaitDeep(n)&&SERVERMODE&&n.rawfile){
+    }else if(LibIsAwaitDeep(n)&&SERVERMODE){
       actionbtn=`<button class="urlbtn" id="deep_btn_${Attr(n.id)}" onclick="event.stopPropagation();DeepAnalyzeById('${Attr(n.id)}')">📋 深度分析</button>`;
     }else if(LibIsPending(n)&&SERVERMODE&&n.rawfile){
       actionbtn=`<button class="urlbtn" onclick="event.stopPropagation();Analyze('${Attr(n.rawfile)}')">✨ 纳入研究</button>`;
@@ -1595,7 +1595,10 @@ function OpenDrawer(id){
     h+=`<div class="field"><div class="k">论文库阶段</div><span class="badge soft">${Esc(LibStageLabel(n))}</span></div>`;
     if(LibIsPending(n)&&n.rawfile&&SERVERMODE){
       h+=`<div class="field"><button class="btn" onclick="Analyze('${Attr(n.rawfile)}')">✨ 纳入这篇文献</button></div>`;
-    }else if(LibIsAwaitDeep(n)&&SERVERMODE&&n.rawfile){
+    }else if(LibIsAwaitDeep(n)&&SERVERMODE){
+      if(!n.rawfile){
+        h+=`<div class="field"><div class="research-txt" style="color:var(--rose)">未检测到原始 PDF。深度研究需要 PDF 原文，请重新上传后再分析。</div></div>`;
+      }
       h+=`<div class="field"><button class="btn" id="deep_drawer_btn_${Attr(n.id)}" onclick="DeepAnalyzeById('${Attr(n.id)}')">📋 深度分析这篇文献</button></div>`;
     }else if(LibIsDeep(n)){
       h+=`<div class="field"><button class="btn" onclick="OpenDrawer('${Attr(n.id)}-report')">📋 查看深度研究报告</button> `+
@@ -3276,7 +3279,7 @@ async function DeepAnalyze(rawfile,skey){
     const oresp=await Api("/api/ingest/deep",{rawfile:rawfile||null,id:skey});
     if(oresp.status==="need_key"){Toast("请先在设置中配置 API Key");if(btn){btn.disabled=false;btn.innerHTML="📋 深度分析"};return}
     if(oresp.error){Toast(oresp.error);if(btn){btn.disabled=false;btn.innerHTML="📋 深度分析"};return}
-    Toast("深度分析已启动（三阶段约需 1-3 分钟）");
+    Toast("深度分析已启动（五阶段约需 3–6 分钟）");
     StartDeepPolling(rawfile,skey);
   }catch(e){
     Toast("启动失败："+e.message);
