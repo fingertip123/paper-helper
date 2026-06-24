@@ -74,6 +74,42 @@ typeconfig = {
     "unknown": {"label": "其他", "color": "#b0a4ad", "dir": ""},
 }
 
+# 边类型展示（由源/目标节点 type 推断）
+edgeconfig = {
+    "引用概念": {"label": "引用概念", "color": "#7eb8d4"},
+    "提及实体": {"label": "提及实体", "color": "#b89fd8"},
+    "关联问题": {"label": "关联问题", "color": "#d4899f"},
+    "文献对照": {"label": "文献对照", "color": "#d4a87a"},
+    "纳入对比": {"label": "纳入对比", "color": "#d4a87a"},
+    "方法参考": {"label": "方法参考", "color": "#8ec9a8"},
+    "综合引用": {"label": "综合引用", "color": "#8ec4d4"},
+    "深度报告": {"label": "深度报告", "color": "#c49ad4"},
+    "支撑问题": {"label": "支撑问题", "color": "#e8b86d"},
+    "概念-实体": {"label": "概念-实体", "color": "#c4b0e0"},
+    "研究目标": {"label": "研究目标", "color": "#d49a7a"},
+    "核心概念": {"label": "核心概念", "color": "#e8b86d"},
+    "对比文献": {"label": "对比文献", "color": "#d4a87a"},
+    "综合文献": {"label": "综合文献", "color": "#8ec4d4"},
+    "探讨概念": {"label": "探讨概念", "color": "#a8c47a"},
+    "同类关联": {"label": "同类关联", "color": "#b0a4ad"},
+    "链接": {"label": "链接", "color": "#b0a4ad"},
+}
+
+# 知识图谱分层 Y 锚定（0=顶，1=底）
+graphlayers = {
+    "purpose": 0.08,
+    "rq": 0.22,
+    "concept": 0.38,
+    "entity": 0.38,
+    "comparison": 0.48,
+    "synthesis": 0.48,
+    "experiment": 0.55,
+    "query": 0.62,
+    "source": 0.78,
+    "analysis-report": 0.88,
+    "unknown": 0.5,
+}
+
 wikilinkpattern = re.compile(r"\[\[([^\]|]+)(?:\|[^\]]+)?\]\]")
 frontmatterpattern = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 
@@ -155,6 +191,42 @@ def BuildNodeIndex(vnodes):
             if c:
                 omap[c.strip().lower()] = node["id"]
     return omap
+
+
+def InferEdgeType(stype, ttype):
+    """根据源/目标节点 type 推断边语义类型。"""
+    stype = stype or "unknown"
+    ttype = ttype or "unknown"
+    if stype == ttype:
+        return "同类关联"
+    omap = {
+        ("source", "concept"): "引用概念",
+        ("source", "entity"): "提及实体",
+        ("source", "rq"): "关联问题",
+        ("source", "source"): "文献对照",
+        ("source", "comparison"): "纳入对比",
+        ("source", "experiment"): "方法参考",
+        ("source", "synthesis"): "综合引用",
+        ("source", "analysis-report"): "深度报告",
+        ("source", "query"): "探讨概念",
+        ("concept", "rq"): "支撑问题",
+        ("concept", "entity"): "概念-实体",
+        ("concept", "source"): "引用概念",
+        ("entity", "source"): "提及实体",
+        ("rq", "concept"): "支撑问题",
+        ("rq", "source"): "关联问题",
+        ("purpose", "rq"): "研究目标",
+        ("purpose", "concept"): "核心概念",
+        ("comparison", "source"): "对比文献",
+        ("comparison", "concept"): "引用概念",
+        ("synthesis", "source"): "综合文献",
+        ("synthesis", "concept"): "引用概念",
+        ("query", "concept"): "探讨概念",
+        ("query", "source"): "引用概念",
+        ("experiment", "source"): "方法参考",
+        ("analysis-report", "source"): "深度报告",
+    }
+    return omap.get((stype, ttype), "链接")
 
 
 def ExtractMarkdownSections(nbody):
@@ -509,17 +581,26 @@ def ScanWiki():
             vrawlinks.append(("purpose", t))
 
     onodeindex = BuildNodeIndex(vnodes)
+    onodetype = {n["id"]: n.get("type", "unknown") for n in vnodes}
     vedges = []
     vseen = set()
     for srcid, target in vrawlinks:
         tgtid = onodeindex.get(target.strip().lower())
         if not tgtid or tgtid == srcid:
             continue
-        edgekey = tuple(sorted([srcid, tgtid]))
+        edgekey = (srcid, tgtid)
         if edgekey in vseen:
             continue
         vseen.add(edgekey)
-        vedges.append({"source": srcid, "target": tgtid})
+        stype = onodetype.get(srcid, "unknown")
+        ttype = onodetype.get(tgtid, "unknown")
+        vedges.append({
+            "source": srcid,
+            "target": tgtid,
+            "type": InferEdgeType(stype, ttype),
+            "src_type": stype,
+            "tgt_type": ttype,
+        })
     return vnodes, vedges
 
 
@@ -562,7 +643,9 @@ def BuildData():
         ostats[n["type"]] = ostats.get(n["type"], 0) + 1
     return {
         "nodes": vnodes, "edges": vedges, "stats": ostats,
-        "typeconfig": typeconfig, "generated": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "typeconfig": typeconfig, "edgeconfig": edgeconfig,
+        "graphlayers": graphlayers,
+        "generated": datetime.now().strftime("%Y-%m-%d %H:%M"),
     }
 
 
@@ -865,8 +948,17 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   #overlay .cancelbtn{margin-top:8px}
   .dropzone{border:2px dashed var(--dropzone-border);border-radius:var(--radius);padding:32px;text-align:center;color:var(--muted);font-size:13px;margin-bottom:16px;transition:.2s;background:var(--dropzone-bg)}
   .dropzone.drag{border-color:var(--accent);background:var(--dropzone-drag);color:var(--text-soft)}
-  .graphfilter{position:absolute;right:18px;top:18px;background:var(--float-panel);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;font-size:12px;z-index:2;box-shadow:var(--shadow-sm);backdrop-filter:blur(10px)}
-  .graphfilter select{padding:5px 8px;border-radius:6px;background:var(--panel2);border:1px solid var(--border);color:var(--text)}
+  .graphfilter{position:absolute;right:18px;top:18px;background:var(--float-panel);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;font-size:12px;z-index:2;box-shadow:var(--shadow-sm);backdrop-filter:blur(10px);display:flex;flex-direction:column;gap:8px;min-width:160px}
+  .graphfilter select,.graphfilter button{padding:5px 8px;border-radius:6px;background:var(--panel2);border:1px solid var(--border);color:var(--text);font-size:12px;cursor:pointer;width:100%}
+  .graphfilter button:hover{border-color:var(--accent);color:var(--accent)}
+  .graphfilter .graphrow{display:flex;gap:6px;align-items:center}
+  .graphfilter .graphrow label{font-size:11px;color:var(--muted);white-space:nowrap;min-width:28px}
+  .graphegobadge{position:absolute;left:18px;top:18px;background:var(--float-panel);border:1px solid var(--accent);border-radius:var(--radius-sm);padding:8px 14px;font-size:12px;z-index:2;box-shadow:var(--shadow-sm);backdrop-filter:blur(10px);display:none;align-items:center;gap:10px;color:var(--text-soft)}
+  .graphegobadge.show{display:flex}
+  .graphegobadge .x{cursor:pointer;color:var(--muted);font-size:16px;line-height:1}
+  .graphegobadge .x:hover{color:var(--text)}
+  #graphtooltip{position:fixed;pointer-events:none;background:var(--float-panel);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:11px;color:var(--text-soft);z-index:60;opacity:0;transition:opacity .12s;box-shadow:var(--shadow-sm);max-width:220px}
+  #graphtooltip.show{opacity:1}
   .lintlist{font-size:12px;line-height:1.7;color:var(--text)}
   .lintlist li{margin:4px 0}
   .queryans{white-space:pre-wrap;line-height:1.7;font-size:13px;max-height:min(36vh,320px);overflow:auto;padding:12px;background:var(--panel);border-radius:8px;border:1px solid var(--border)}
@@ -1085,7 +1177,7 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
 <button type="button" class="theme-fab" id="theme_fab" onclick="OpenThemePicker()" title="切换界面主题">🎨</button>
 <main>
   <section id="libview" class="view active"><div class="libtabs" id="libtabs"></div><div class="libtoolbar"><div class="libfilt" id="libfilt"></div><input type="search" class="libsearch" id="libsearch" placeholder="搜索标题、作者、标签…" autocomplete="off"></div><div class="libtagbar" id="libtagbar"></div><div class="stats" id="statsbar"></div><div class="dropzone" id="dropzone">🌷 拖放 PDF / Word / Markdown 到此处，或点击「添加文献」开始整理</div><div class="grid" id="libgrid"></div></section>
-  <section id="graphview" class="view"><canvas id="graphcanvas"></canvas><div class="legend" id="legend"></div><div class="graphfilter"><label>筛选 </label><select id="graph_filter" onchange="ApplyGraphFilter()"><option value="">全部类型</option></select></div><div class="hint">滚轮缩放 · 拖拽平移 · 拖动节点 · 点击查看详情</div></section>
+  <section id="graphview" class="view"><canvas id="graphcanvas"></canvas><div class="legend" id="legend"></div><div class="graphegobadge" id="graphegobadge"><span id="graphego_lbl"></span><span class="x" onclick="ClearGraphFocus()" title="返回全局">×</span></div><div class="graphfilter"><div class="graphrow"><label>节点</label><select id="graph_filter" onchange="ApplyGraphFilter()"><option value="">全部类型</option></select></div><div class="graphrow"><label>关系</label><select id="graph_edge_filter" onchange="ApplyGraphFilter()"><option value="">全部关系</option></select></div><button type="button" onclick="ExportGraphPng()">📷 导出 PNG</button></div><div id="graphtooltip"></div><div class="hint">滚轮缩放 · 拖拽平移 · 拖动节点 · 点击查看详情 · 悬停边看关系</div></section>
   <section id="listview" class="view"></section>
   <section id="docview" class="view">
     <div class="docbar">
@@ -1700,6 +1792,7 @@ function RenderDrawer(id){
     h+=`<div class="field"><div class="k">论文库标签</div><div class="urledit"><input id="lib_tags_input" value="${Esc((n.lib_tags||[]).join(", "))}" placeholder="自定义标签，逗号分隔"><button class="btn ghost" onclick="SaveLibTags('${Attr(n.id)}')">保存</button></div><div style="font-size:11px;color:var(--muted);margin-top:6px">用于论文库分类筛选，与 wiki 标签独立</div></div>`;
   }
   if(neigh.length)h+=`<div class="field links"><div class="k">关联页面 (${neigh.length})</div>${neigh.map(x=>`<a onclick="OpenDrawer('${Attr(x)}')">${Esc((NODEMAP[x]||{}).title||x)}</a>`).join("")}</div>`;
+  h+=`<div class="field"><button class="btn ghost" onclick="FocusGraphOn('${Attr(n.id)}')">🕸 在图谱中展开邻域</button></div>`;
   if(n.type==="source"){
     h+=`<div class="field"><div class="k">论文库阶段</div><span class="badge soft">${Esc(LibStageLabel(n))}</span></div>`;
     if(LibIsPending(n)&&n.rawfile&&SERVERMODE){
@@ -1937,12 +2030,16 @@ function ClearTopicUiState(){
   nodes=[];
   links=[];
   GRAPH_FILTER="";
+  GRAPH_EDGE_FILTER="";
+  GRAPH_EGO=null;
   dragnode=null;
   dragging=false;
   hover=null;
   ClearLibUiFilters();
   const ogf=document.getElementById("graph_filter");
   if(ogf)ogf.value="";
+  const ogef=document.getElementById("graph_edge_filter");
+  if(ogef)ogef.value="";
 }
 async function OnTopicSwitched(soldtopic,snewid,snewname,bnewtopic){
   SaveQueryThreadForTopic(soldtopic);
@@ -3367,57 +3464,211 @@ async function ConfirmDocExport(){
   }catch(e){HideOverlay();Toast("导出失败："+e.message)}
 }
 /* ---------- 力导向知识图谱 ---------- */
-let canvas,ctx,nodes=[],links=[],view={x:0,y:0,scale:1},dragnode=null,dragging=false,last={x:0,y:0},hover=null,rafid=null,GRAPH_FILTER="";
+let canvas,ctx,nodes=[],links=[],view={x:0,y:0,scale:1},dragnode=null,dragging=false,last={x:0,y:0},hover=null,hoverLink=null,rafid=null;
+let GRAPH_FILTER="",GRAPH_EDGE_FILTER="",GRAPH_EGO=null,graphTick=0,graphStable=false;
+const GRAPH_REPEL_DIST=280,GRAPH_MAX_TICKS=800;
+let EC=DATA.edgeconfig||{},GL=DATA.graphlayers||{};
+function EdgeColor(etype){return (EC[etype]||EC["链接"]||{}).color||"#b0a4ad"}
+function EdgeLabel(etype){return (EC[etype]||{}).label||etype||"链接"}
+function GraphLayerY(stype,hh){const ny=GL[stype]!=null?GL[stype]:0.5;return hh*(0.12+ny*0.76)}
+function HashOffset(sid,nspread){let h=0;for(let i=0;i<(sid||"").length;i++)h=(h*31+sid.charCodeAt(i))|0;return((h%1000)/1000-0.5)*nspread}
 function BuildGraphFilter(){
   const sel=document.getElementById("graph_filter");if(!sel)return;
   const vtypes=[...new Set(DATA.nodes.map(n=>n.type))];
   const vcur=sel.value;
   sel.innerHTML='<option value="">全部类型</option>'+vtypes.map(t=>`<option value="${t}">${TypeLabel(t)}</option>`).join("");
   if(vcur)sel.value=vcur;
+  const esel=document.getElementById("graph_edge_filter");
+  if(esel){
+    const vtypes2=[...new Set((DATA.edges||[]).map(e=>e.type).filter(Boolean))];
+    const vcur2=esel.value;
+    esel.innerHTML='<option value="">全部关系</option>'+vtypes2.map(t=>`<option value="${Attr(t)}">${Esc(EdgeLabel(t))}</option>`).join("");
+    if(vcur2)esel.value=vcur2;
+  }
 }
-function ApplyGraphFilter(){GRAPH_FILTER=document.getElementById("graph_filter").value;canvas=null;InitGraph()}
+function UpdateGraphEgoBadge(){
+  const ob=document.getElementById("graphegobadge"),ol=document.getElementById("graphego_lbl");
+  if(!ob||!ol)return;
+  if(!GRAPH_EGO||!NODEMAP[GRAPH_EGO]){ob.classList.remove("show");return}
+  ob.classList.add("show");
+  ol.textContent="邻域："+((NODEMAP[GRAPH_EGO]||{}).title||GRAPH_EGO);
+}
+function FocusGraphOn(id){
+  if(!NODEMAP[id])return;
+  GRAPH_EGO=id;canvas=null;SwitchView("graphview");
+}
+function ClearGraphFocus(){GRAPH_EGO=null;canvas=null;if(document.getElementById("graphview").classList.contains("active"))InitGraph()}
+function ApplyGraphFilter(){
+  GRAPH_FILTER=document.getElementById("graph_filter").value;
+  const esel=document.getElementById("graph_edge_filter");
+  GRAPH_EDGE_FILTER=esel?esel.value:"";
+  canvas=null;InitGraph();
+}
+function GraphEgoIds(sid){
+  const vids=new Set([sid]);
+  (DATA.edges||[]).forEach(e=>{
+    if(e.source===sid)vids.add(e.target);
+    if(e.target===sid)vids.add(e.source);
+  });
+  return vids;
+}
+function InitGraphPos(n,i,ncount,w,hh){
+  const nlayer=GraphLayerY(n.type,hh);
+  const nx=w*0.5+HashOffset(n.id,w*0.62);
+  const ny=nlayer+HashOffset(n.id+"y",hh*0.06);
+  return {x:nx,y:ny,targetY:nlayer};
+}
 function InitGraph(){
-  canvas=document.getElementById("graphcanvas");ctx=canvas.getContext("2d");ResizeCanvas();BuildGraphFilter();
+  canvas=document.getElementById("graphcanvas");ctx=canvas.getContext("2d");ResizeCanvas();BuildGraphFilter();UpdateGraphEgoBadge();
+  EC=DATA.edgeconfig||{};GL=DATA.graphlayers||{};
   const w=canvas.clientWidth,hh=canvas.clientHeight;
-  const vraw=GRAPH_FILTER?DATA.nodes.filter(n=>n.type===GRAPH_FILTER):DATA.nodes;
+  let vraw=DATA.nodes;
+  if(GRAPH_EGO)vraw=vraw.filter(n=>GraphEgoIds(GRAPH_EGO).has(n.id));
+  else if(GRAPH_FILTER)vraw=vraw.filter(n=>n.type===GRAPH_FILTER);
   const ncount=Math.max(vraw.length,1);
-  nodes=vraw.map((n,i)=>({...n,x:w/2+Math.cos(i/ncount*6.28)*150+(Math.random()-.5)*40,y:hh/2+Math.sin(i/ncount*6.28)*150+(Math.random()-.5)*40,vx:0,vy:0,r:7+Math.min(n.degree*2.5,16)}));
+  nodes=vraw.map((n,i)=>{const op=InitGraphPos(n,i,ncount,w,hh);return {...n,x:op.x,y:op.y,targetY:op.targetY,vx:0,vy:0,r:7+Math.min((n.degree||0)*2.5,16)};});
   const nm={};nodes.forEach(n=>nm[n.id]=n);
   const vids=new Set(nodes.map(n=>n.id));
-  links=DATA.edges.map(e=>({s:nm[e.source],t:nm[e.target]})).filter(l=>l.s&&l.t&&vids.has(l.s.id)&&vids.has(l.t.id));
+  let vedges=DATA.edges||[];
+  if(GRAPH_EDGE_FILTER)vedges=vedges.filter(e=>e.type===GRAPH_EDGE_FILTER);
+  links=vedges.map(e=>({s:nm[e.source],t:nm[e.target],type:e.type||"链接",src_type:e.src_type,tgt_type:e.tgt_type})).filter(l=>l.s&&l.t&&vids.has(l.s.id)&&vids.has(l.t.id));
+  graphTick=0;graphStable=false;
   RenderLegend();BindGraph();if(rafid)cancelAnimationFrame(rafid);Simulate();
 }
 function ResizeCanvas(){const dpr=window.devicePixelRatio||1;canvas.width=canvas.clientWidth*dpr;canvas.height=canvas.clientHeight*dpr;ctx.setTransform(dpr,0,0,dpr,0,0)}
-function RenderLegend(){const used=[...new Set(DATA.nodes.map(n=>n.type))];document.getElementById("legend").innerHTML=used.map(t=>`<div class="row"><span class="dot" style="background:${TypeColor(t)}"></span>${TypeLabel(t)}</div>`).join("")}
+function RenderLegend(){
+  const used=[...new Set(DATA.nodes.map(n=>n.type))];
+  let h=used.map(t=>`<div class="row"><span class="dot" style="background:${TypeColor(t)}"></span>${TypeLabel(t)}</div>`).join("");
+  const vedgeTypes=[...new Set((DATA.edges||[]).map(e=>e.type).filter(Boolean))];
+  if(vedgeTypes.length)h+='<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:10px;color:var(--muted)">关系</div>'+
+    vedgeTypes.slice(0,8).map(t=>`<div class="row"><span class="dot" style="background:${EdgeColor(t)};border-radius:2px;width:14px;height:3px;margin-top:4px"></span>${Esc(EdgeLabel(t))}</div>`).join("");
+  document.getElementById("legend").innerHTML=h;
+}
 function Simulate(){
+  if(!canvas||graphStable&&!dragnode){DrawGraph();return}
   const w=canvas.clientWidth,hh=canvas.clientHeight,cx=w/2,cy=hh/2;
-  for(let i=0;i<nodes.length;i++){const a=nodes[i];a.vx+=(cx-a.x)*0.0008;a.vy+=(cy-a.y)*0.0008;
-    for(let j=i+1;j<nodes.length;j++){const b=nodes[j];let dx=a.x-b.x,dy=a.y-b.y,d2=dx*dx+dy*dy||1,d=Math.sqrt(d2);const f=2200/d2;dx/=d;dy/=d;a.vx+=dx*f;a.vy+=dy*f;b.vx-=dx*f;b.vy-=dy*f}}
-  links.forEach(l=>{let dx=l.t.x-l.s.x,dy=l.t.y-l.s.y,d=Math.sqrt(dx*dx+dy*dy)||1;const f=(d-110)*0.01;dx/=d;dy/=d;l.s.vx+=dx*f;l.s.vy+=dy*f;l.t.vx-=dx*f;l.t.vy-=dy*f});
-  nodes.forEach(n=>{if(n===dragnode)return;n.vx*=0.85;n.vy*=0.85;n.x+=n.vx;n.y+=n.vy});
+  const nrepel=GRAPH_REPEL_DIST;
+  for(let i=0;i<nodes.length;i++){
+    const a=nodes[i];
+    a.vx+=(cx-a.x)*0.0006;a.vy+=(cy-a.y)*0.0004;
+    if(a.targetY!=null)a.vy+=(a.targetY-a.y)*0.004;
+    for(let j=i+1;j<nodes.length;j++){
+      const b=nodes[j];
+      const dx=a.x-b.x,dy=a.y-b.y;
+      if(Math.abs(dx)>nrepel&&Math.abs(dy)>nrepel)continue;
+      const d2=dx*dx+dy*dy||1,d=Math.sqrt(d2);
+      const f=2200/d2;const fx=dx/d*f,fy=dy/d*f;
+      a.vx+=fx;a.vy+=fy;b.vx-=fx;b.vy-=fy;
+    }
+  }
+  links.forEach(l=>{
+    let dx=l.t.x-l.s.x,dy=l.t.y-l.s.y,d=Math.sqrt(dx*dx+dy*dy)||1;
+    const f=(d-110)*0.01;dx/=d;dy/=d;
+    l.s.vx+=dx*f;l.s.vy+=dy*f;l.t.vx-=dx*f;l.t.vy-=dy*f;
+  });
+  let nenergy=0;
+  nodes.forEach(n=>{
+    if(n===dragnode)return;
+    n.vx*=0.85;n.vy*=0.85;n.x+=n.vx;n.y+=n.vy;
+    nenergy+=n.vx*n.vx+n.vy*n.vy;
+  });
+  graphTick++;
+  if(graphTick>GRAPH_MAX_TICKS||(nodes.length>0&&nenergy/nodes.length<0.02)){
+    graphStable=true;DrawGraph();return;
+  }
   DrawGraph();rafid=requestAnimationFrame(Simulate);
+}
+function DrawGraphArrow(sx,sy,tx,ty,sr,tr,color,nwidth){
+  const dx=tx-sx,dy=ty-sy,len=Math.sqrt(dx*dx+dy*dy)||1;
+  const ux=dx/len,uy=dy/len;
+  const fx=sx+ux*sr,fy=sy+uy*sr;
+  const ex=tx-ux*(tr+6),ey=ty-uy*(tr+6);
+  ctx.strokeStyle=color;ctx.lineWidth=nwidth;
+  ctx.beginPath();ctx.moveTo(fx,fy);ctx.lineTo(ex,ey);ctx.stroke();
+  const ang=Math.atan2(dy,dx),ah=7;
+  ctx.fillStyle=color;
+  ctx.beginPath();ctx.moveTo(ex,ey);
+  ctx.lineTo(ex-ah*Math.cos(ang-0.45),ey-ah*Math.sin(ang-0.45));
+  ctx.lineTo(ex-ah*Math.cos(ang+0.45),ey-ah*Math.sin(ang+0.45));
+  ctx.closePath();ctx.fill();
 }
 function DrawGraph(){
   ctx.clearRect(0,0,canvas.clientWidth,canvas.clientHeight);ctx.save();ctx.translate(view.x,view.y);ctx.scale(view.scale,view.scale);
   const hoverNeigh=hover?new Set(NeighborsOf(hover.id)):null;
-  const slink=GetCssVar("--graph-link")||"rgba(74,63,71,.14)";
   const slinka=GetCssVar("--graph-link-active")||"rgba(201,120,154,.75)";
   const slabel=GetCssVar("--graph-label")||"#4a3f47";
   const sring=GetCssVar("--graph-ring")||"rgba(74,63,71,.35)";
-  links.forEach(l=>{const active=hover&&(l.s.id===hover.id||l.t.id===hover.id);ctx.strokeStyle=active?slinka:slink;ctx.lineWidth=active?2:1;ctx.beginPath();ctx.moveTo(l.s.x,l.s.y);ctx.lineTo(l.t.x,l.t.y);ctx.stroke()});
-  nodes.forEach(n=>{const dim=hover&&n!==hover&&!(hoverNeigh&&hoverNeigh.has(n.id));ctx.globalAlpha=dim?0.3:1;ctx.beginPath();ctx.arc(n.x,n.y,n.r,0,6.2832);ctx.fillStyle=TypeColor(n.type);ctx.fill();
+  links.forEach(l=>{
+    const active=hover&&(l.s.id===hover.id||l.t.id===hover.id)||hoverLink===l;
+    const sc=active?slinka:EdgeColor(l.type);
+    DrawGraphArrow(l.s.x,l.s.y,l.t.x,l.t.y,l.s.r,l.t.r,sc,active?2:1);
+  });
+  nodes.forEach(n=>{
+    const dim=hover&&n!==hover&&!(hoverNeigh&&hoverNeigh.has(n.id));
+    ctx.globalAlpha=dim?0.3:1;ctx.beginPath();ctx.arc(n.x,n.y,n.r,0,6.2832);ctx.fillStyle=TypeColor(n.type);ctx.fill();
     if(!n.ingested){ctx.lineWidth=1.5;ctx.strokeStyle=sring;ctx.setLineDash([3,3]);ctx.stroke();ctx.setLineDash([])}
-    if(view.scale>0.6||n.degree>1||n===hover){ctx.globalAlpha=dim?0.35:1;ctx.fillStyle=slabel;ctx.font=(window.__graphFont||"500 12px sans-serif");ctx.textAlign="center";const lbl=n.title.length>16?n.title.slice(0,15)+"…":n.title;ctx.fillText(lbl,n.x,n.y+n.r+13)}});
+    if(view.scale>0.55||n.degree>1||n===hover){
+      ctx.globalAlpha=dim?0.35:1;ctx.fillStyle=slabel;ctx.font=(window.__graphFont||"500 12px sans-serif");ctx.textAlign="center";
+      const lbl=n.title.length>16?n.title.slice(0,15)+"…":n.title;ctx.fillText(lbl,n.x,n.y+n.r+13);
+    }
+  });
   ctx.globalAlpha=1;ctx.restore();
+  UpdateGraphTooltip();
+}
+function UpdateGraphTooltip(e){
+  const ot=document.getElementById("graphtooltip");if(!ot)return;
+  if(hoverLink){
+    ot.textContent=EdgeLabel(hoverLink.type)+"："+(hoverLink.s.title||"")+" → "+(hoverLink.t.title||"");
+    ot.classList.add("show");
+    if(e){ot.style.left=(e.clientX+14)+"px";ot.style.top=(e.clientY+14)+"px";}
+    return;
+  }
+  ot.classList.remove("show");
+}
+function PickLink(p){
+  let obest=null,bdist=999;
+  links.forEach(l=>{
+    const dx=l.t.x-l.s.x,dy=l.t.y-l.s.y,len2=dx*dx+dy*dy||1;
+    const t=Math.max(0,Math.min(1,((p.x-l.s.x)*dx+(p.y-l.s.y)*dy)/len2));
+    const px=l.s.x+t*dx,py=l.s.y+t*dy;
+    const d=Math.hypot(p.x-px,p.y-py);
+    if(d<12&&d<bdist){bdist=d;obest=l}
+  });
+  return obest;
 }
 function ToWorld(e){const r=canvas.getBoundingClientRect();return{x:(e.clientX-r.left-view.x)/view.scale,y:(e.clientY-r.top-view.y)/view.scale}}
 function PickNode(p){return nodes.find(n=>{const dx=n.x-p.x,dy=n.y-p.y;return dx*dx+dy*dy<=n.r*n.r+25})}
+function GraphPointerDown(e){
+  const p=ToWorld(e);dragnode=PickNode(p);dragging=true;last={x:e.clientX,y:e.clientY};
+  graphStable=false;if(!rafid)Simulate();
+}
+function GraphPointerMove(e){
+  const p=ToWorld(e);
+  hover=PickNode(p);hoverLink=hover?null:PickLink(p);
+  canvas.style.cursor=hover||hoverLink?"pointer":"grab";
+  UpdateGraphTooltip(e);
+  if(!dragging)return;
+  if(dragnode){dragnode.x=p.x;dragnode.y=p.y;dragnode.vx=0;dragnode.vy=0}else{view.x+=e.clientX-last.x;view.y+=e.clientY-last.y;last={x:e.clientX,y:e.clientY}}
+}
+function GraphPointerUp(e){
+  if(dragnode&&Math.abs(e.clientX-last.x)<4&&Math.abs(e.clientY-last.y)<4)OpenDrawer(dragnode.id);
+  dragging=false;dragnode=null;
+}
 function BindGraph(){
-  canvas.onmousedown=e=>{const p=ToWorld(e);dragnode=PickNode(p);dragging=true;last={x:e.clientX,y:e.clientY}};
-  canvas.onmousemove=e=>{const p=ToWorld(e);hover=PickNode(p);canvas.style.cursor=hover?"pointer":"grab";if(!dragging)return;if(dragnode){dragnode.x=p.x;dragnode.y=p.y;dragnode.vx=0;dragnode.vy=0}else{view.x+=e.clientX-last.x;view.y+=e.clientY-last.y;last={x:e.clientX,y:e.clientY}}};
-  canvas.onmouseup=e=>{if(dragnode&&Math.abs(e.clientX-last.x)<3&&Math.abs(e.clientY-last.y)<3)OpenDrawer(dragnode.id);dragging=false;dragnode=null};
-  canvas.onwheel=e=>{e.preventDefault();const f=e.deltaY<0?1.1:0.9;const r=canvas.getBoundingClientRect();const mx=e.clientX-r.left,my=e.clientY-r.top;view.x=mx-(mx-view.x)*f;view.y=my-(my-view.y)*f;view.scale*=f};
+  canvas.onpointerdown=e=>{canvas.setPointerCapture(e.pointerId);GraphPointerDown(e)};
+  canvas.onpointermove=GraphPointerMove;
+  canvas.onpointerup=e=>{try{canvas.releasePointerCapture(e.pointerId)}catch(x){}GraphPointerUp(e)};
+  canvas.onpointerleave=()=>{hover=null;hoverLink=null;UpdateGraphTooltip()};
+  canvas.onwheel=e=>{e.preventDefault();const f=e.deltaY<0?1.1:0.9;const r=canvas.getBoundingClientRect();const mx=e.clientX-r.left,my=e.clientY-r.top;view.x=mx-(mx-view.x)*f;view.y=my-(my-view.y)*f;view.scale=Math.max(0.15,Math.min(4,view.scale*f))};
   window.onresize=()=>{if(document.getElementById("graphview").classList.contains("active"))ResizeCanvas()};
+}
+function ExportGraphPng(){
+  if(!canvas){Toast("请先打开知识图谱");return}
+  DrawGraph();
+  const link=document.createElement("a");
+  link.download="wiki-graph-"+new Date().toISOString().slice(0,10)+".png";
+  link.href=canvas.toDataURL("image/png");
+  link.click();Toast("图谱已导出");
 }
 function SwitchView(vid){
   document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active",t.dataset.view===vid));
