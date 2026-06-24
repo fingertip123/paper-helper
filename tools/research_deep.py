@@ -9,13 +9,6 @@
 import os
 import re
 import json
-import threading
-
-import wiki_core as core
-import topic_manager as topics
-import os
-import re
-import json
 import time
 import logging
 import threading
@@ -294,6 +287,71 @@ def _AppendDeepSummaryToSource(skey, ssummary):
         f.write(ntext)
 
 
+def _WriteComparisonPage(rkey, stitle, ocross):
+    """阶段④ 产出：写入 comparison 页与显式 typed 关系行。"""
+    comp_id = "%s-cross" % rkey
+    comp_dir = os.path.join(core.wikidir, "comparisons")
+    os.makedirs(comp_dir, exist_ok=True)
+    spath = os.path.join(comp_dir, comp_id + ".md")
+    stamp = _Now()
+    vlines = [
+        "---",
+        "type: comparison",
+        "title: 跨文献对撞 — %s" % stitle,
+        "sources: [%s]" % rkey,
+        "tags: [深度研究, 跨文献]",
+        "created: %s" % stamp,
+        "updated: %s" % stamp,
+        "---",
+        "",
+        "# 跨文献对撞：%s" % stitle,
+        "",
+        "> 由深度分析阶段④自动生成。原始文献：[[%s]]" % rkey,
+        "",
+        "## 谱系定位",
+        "",
+        (ocross.get("synthesis_position") or "（待补充）").strip(),
+        "",
+        "## 显式关系",
+        "",
+    ]
+    for item in (ocross.get("tensions_with") or [])[:6]:
+        sother = (item.get("source") or "").strip()
+        if not sother:
+            continue
+        spoint = (item.get("point") or "").strip()[:120]
+        vlines.append("- tension | [[%s]] | [[%s]] | %s" % (rkey, sother, spoint))
+    for item in (ocross.get("consensus_with") or [])[:6]:
+        sother = (item.get("source") or "").strip()
+        if not sother:
+            continue
+        spoint = (item.get("point") or "").strip()[:120]
+        vlines.append("- consensus | [[%s]] | [[%s]] | %s" % (rkey, sother, spoint))
+    for item in (ocross.get("method_contrasts") or [])[:6]:
+        sother = (item.get("source") or "").strip()
+        if not sother:
+            continue
+        vlines.append("- comparable | [[%s]] | [[%s]]" % (rkey, sother))
+    for item in (ocross.get("complementary_sources") or [])[:4]:
+        sother = (item.get("source") or "").strip()
+        if not sother:
+            continue
+        show = (item.get("how") or "").strip()[:120]
+        vlines.append("- complements | [[%s]] | [[%s]] | %s" % (rkey, sother, show))
+    if vlines[-1] == "":
+        vlines.append("- （暂无结构化对撞，见深度报告）")
+    vlines += ["", "## 方法对照", ""]
+    for item in (ocross.get("method_contrasts") or [])[:8]:
+        sother = item.get("source") or "?"
+        vlines.append(
+            "- **[[%s]]**：本篇 `%s` vs 他篇 `%s`"
+            % (sother, (item.get("this_method") or "")[:60], (item.get("other_method") or "")[:60])
+        )
+    with open(spath, "w", encoding="utf-8") as f:
+        f.write("\n".join(vlines) + "\n")
+    return os.path.relpath(spath, core.rootdir)
+
+
 def DeepAnalyzePaper(oconfig, nfilename, sroot=None, skey=None):
     """五阶段深度分析主流程。
 
@@ -360,8 +418,9 @@ def DeepAnalyzePaper(oconfig, nfilename, sroot=None, skey=None):
         with open(report_path, "w", encoding="utf-8") as f:
             f.write(full_report)
         _AppendDeepSummaryToSource(rkey, sbrief)
+        scomp = _WriteComparisonPage(rkey, stitle, ocross)
         srel = os.path.relpath(report_path, core.rootdir)
-        core.AppendLog("[deep] %s：深度研究报告已生成（%s）" % (rkey, srel))
+        core.AppendLog("[deep] %s：深度研究报告已生成（%s）；对撞页 %s" % (rkey, srel, scomp))
         core.GenerateIndex()
 
     update_callback(100, "完成")

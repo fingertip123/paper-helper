@@ -93,7 +93,24 @@ edgeconfig = {
     "探讨概念": {"label": "探讨概念", "color": "#55efc4"},
     "同类关联": {"label": "同类关联", "color": "#95a5a6"},
     "链接": {"label": "链接", "color": "#b0a4ad"},
+    "跨文献可比": {"label": "跨文献可比", "color": "#e67e22"},
+    "实证支持": {"label": "实证支持", "color": "#27ae60"},
+    "方法张力": {"label": "方法张力", "color": "#c0392b"},
+    "互补证据": {"label": "互补证据", "color": "#16a085"},
 }
+
+# comparison/synthesis 页「显式关系」行 → 边类型
+explicitrelmap = {
+    "comparable": "跨文献可比",
+    "supports": "实证支持",
+    "tension": "方法张力",
+    "complements": "互补证据",
+    "consensus": "同类关联",
+}
+explicitrelpattern = re.compile(
+    r"^-\s*(comparable|supports|tension|complements|consensus)\s*\|\s*(.+?)\s*\|\s*(.+?)(?:\s*\|\s*(.*))?$",
+    re.M | re.I,
+)
 
 # 知识图谱分层 Y 锚定（0=顶，1=底）
 graphlayers = {
@@ -229,6 +246,33 @@ def InferEdgeType(stype, ttype):
     return omap.get((stype, ttype), "链接")
 
 
+def ParseRelEndpoint(spart):
+    """解析显式关系行中的节点端点（wikilink 或 plain id）。"""
+    spart = (spart or "").strip()
+    omatch = re.match(r"\[\[([^\]|]+)", spart)
+    if omatch:
+        return omatch.group(1).strip()
+    return spart.strip()
+
+
+def ExtractExplicitRelations(nbody):
+    """从 comparison/synthesis 等页正文提取显式 typed 关系行。"""
+    vout = []
+    for omatch in explicitrelpattern.finditer(nbody or ""):
+        srel = omatch.group(1).lower()
+        ssrc = ParseRelEndpoint(omatch.group(2))
+        stgt = ParseRelEndpoint(omatch.group(3))
+        if not ssrc or not stgt:
+            continue
+        vout.append({
+            "source": ssrc,
+            "target": stgt,
+            "type": explicitrelmap.get(srel, "链接"),
+            "note": (omatch.group(4) or "").strip(),
+        })
+    return vout
+
+
 def RefreshEdgeMeta(vnodes, vedges):
     """去重/enrich 后按最终节点 type 同步边的 src_type、tgt_type 与推断 type。"""
     onodetype = {n["id"]: n.get("type", "unknown") for n in vnodes}
@@ -240,14 +284,48 @@ def RefreshEdgeMeta(vnodes, vedges):
             continue
         stype = onodetype[srcid]
         ttype = onodetype[tgtid]
+        if e.get("explicit"):
+            vetype = e.get("type") or InferEdgeType(stype, ttype)
+        else:
+            vetype = InferEdgeType(stype, ttype)
         vout.append({
             "source": srcid,
             "target": tgtid,
-            "type": InferEdgeType(stype, ttype),
+            "type": vetype,
             "src_type": stype,
             "tgt_type": ttype,
+            "explicit": bool(e.get("explicit")),
         })
     return vout
+
+
+def ComputePageRank(vnodes, vedges, ndamp=0.85, niters=40):
+    """轻量 PageRank，用于图谱节点重要度着色/半径。"""
+    vids = [n["id"] for n in vnodes if n.get("type") != "purpose"]
+    if not vids:
+        return {}
+    ncount = len(vids)
+    oidx = {sid: i for i, sid in enumerate(vids)}
+    oout = {i: [] for i in range(ncount)}
+    for e in vedges:
+        si, ti = oidx.get(e["source"]), oidx.get(e["target"])
+        if si is None or ti is None or si == ti:
+            continue
+        oout[si].append(ti)
+        oout[ti].append(si)
+    vr = [1.0 / ncount] * ncount
+    nbase = (1.0 - ndamp) / ncount
+    for _ in range(niters):
+        vnew = [nbase] * ncount
+        for i in range(ncount):
+            if not oout[i]:
+                continue
+            nshare = ndamp * vr[i] / len(oout[i])
+            for j in oout[i]:
+                vnew[j] += nshare
+        vr = vnew
+    nmax = max(vr) if vr else 1.0
+    return {vids[i]: (vr[i] / nmax if nmax else 0.0) for i in range(ncount)}
 
 
 def ExtractMarkdownSections(nbody):
@@ -531,6 +609,7 @@ def ScanWiki():
     """扫描 wiki 内容页与 purpose.md，返回节点与边。"""
     vnodes = []
     vrawlinks = []
+    vexplicitrels = []
 
     ousedids = set()
     for fn in ListSources():
@@ -588,6 +667,8 @@ def ScanWiki():
                 vnodes.append(onode)
             for t in ExtractLinks(nbody):
                 vrawlinks.append((nodeid, t))
+            if stype in ("comparison", "synthesis", "analysis-report", "query"):
+                vexplicitrels.extend(ExtractExplicitRelations(nbody))
 
     purposepath = topics.RulePath("purpose.md")
     if os.path.isfile(purposepath):
@@ -603,6 +684,13 @@ def ScanWiki():
 
     onodeindex = BuildNodeIndex(vnodes)
     onodetype = {n["id"]: n.get("type", "unknown") for n in vnodes}
+    oexplicit = {}
+    for ex in vexplicitrels:
+        srcid = onodeindex.get(ex["source"].strip().lower())
+        tgtid = onodeindex.get(ex["target"].strip().lower())
+        if not srcid or not tgtid or srcid == tgtid:
+            continue
+        oexplicit[(srcid, tgtid)] = ex["type"]
     vedges = []
     vseen = set()
     for srcid, target in vrawlinks:
@@ -615,12 +703,28 @@ def ScanWiki():
         vseen.add(edgekey)
         stype = onodetype.get(srcid, "unknown")
         ttype = onodetype.get(tgtid, "unknown")
+        vetype = oexplicit.pop(edgekey, None)
         vedges.append({
             "source": srcid,
             "target": tgtid,
-            "type": InferEdgeType(stype, ttype),
+            "type": vetype or InferEdgeType(stype, ttype),
             "src_type": stype,
             "tgt_type": ttype,
+            "explicit": bool(vetype),
+        })
+    for (srcid, tgtid), vetype in oexplicit.items():
+        if (srcid, tgtid) in vseen:
+            continue
+        vseen.add((srcid, tgtid))
+        stype = onodetype.get(srcid, "unknown")
+        ttype = onodetype.get(tgtid, "unknown")
+        vedges.append({
+            "source": srcid,
+            "target": tgtid,
+            "type": vetype,
+            "src_type": stype,
+            "tgt_type": ttype,
+            "explicit": True,
         })
     return vnodes, vedges
 
@@ -650,23 +754,29 @@ def TopicsWithCounts():
 
 
 def BuildData():
+    import wiki_ops as wops
     vnodes, vedges = ScanWiki()
     vnodes = DedupeSourceNodes(vnodes)
     EnrichSourceLibraryMeta(vnodes)
     vedges = RefreshEdgeMeta(vnodes, vedges)
+    wops.Init(wikidir, rawsourcesdir, rootdir)
     odegree = {n["id"]: 0 for n in vnodes}
     for e in vedges:
         odegree[e["source"]] += 1
         odegree[e["target"]] += 1
+    opagerank = ComputePageRank(vnodes, vedges)
     for n in vnodes:
         n["degree"] = odegree.get(n["id"], 0)
+        n["pagerank"] = round(opagerank.get(n["id"], 0.0), 4)
     ostats = {}
     for n in vnodes:
         ostats[n["type"]] = ostats.get(n["type"], 0) + 1
+    olint = wops.RunLintQuick(vnodes, vedges)
     return {
         "nodes": vnodes, "edges": vedges, "stats": ostats,
         "typeconfig": typeconfig, "edgeconfig": edgeconfig,
         "graphlayers": graphlayers,
+        "lint": olint,
         "generated": datetime.now().strftime("%Y-%m-%d %H:%M"),
     }
 
@@ -985,6 +1095,8 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   #graphtooltip.show{opacity:1}
   .lintlist{font-size:12px;line-height:1.7;color:var(--text)}
   .lintlist li{margin:4px 0}
+  .lint-badge{display:none;min-width:16px;height:16px;padding:0 5px;margin-left:4px;border-radius:999px;background:var(--rose,#d4899f);color:#fff;font-size:10px;line-height:16px;text-align:center;vertical-align:middle}
+  .lint-badge.show{display:inline-block}
   .queryans{white-space:pre-wrap;line-height:1.7;font-size:13px;max-height:min(36vh,320px);overflow:auto;padding:12px;background:var(--panel);border-radius:8px;border:1px solid var(--border)}
   #querymodal .query-panel{width:min(720px,96vw);max-height:min(90vh,860px);display:flex;flex-direction:column;padding:0;overflow:hidden}
   .query-search-bar{display:flex;align-items:center;gap:8px;padding:10px 22px 12px;border-bottom:1px solid var(--border);flex-shrink:0}
@@ -1182,7 +1294,7 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
     <button class="btn" onclick="AddPaper()">🌷 添加文献</button>
     <button class="btn sec" onclick="Analyze()">✨ 纳入研究</button>
     <button class="btn sec" onclick="OpenQuery()">💭 知识查询</button>
-    <button class="btn sec" onclick="RunLint()">🌿 健康巡检</button>
+    <button class="btn sec" onclick="RunLint()" id="lint_btn">🌿 健康巡检<span class="lint-badge" id="lint_badge"></span></button>
     <button class="btn sec" onclick="Refresh()">↻ 刷新</button>
     <button class="btn sec" onclick="OpenSettings()">🎀 偏好设置</button>
     <button class="btn sec" onclick="ExportBib()">📎 导出 BibTeX</button>
@@ -1201,7 +1313,7 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
 <button type="button" class="theme-fab" id="theme_fab" onclick="OpenThemePicker()" title="切换界面主题">🎨</button>
 <main>
   <section id="libview" class="view active"><div class="libtabs" id="libtabs"></div><div class="libtoolbar"><div class="libfilt" id="libfilt"></div><input type="search" class="libsearch" id="libsearch" placeholder="搜索标题、作者、标签…" autocomplete="off"></div><div class="libtagbar" id="libtagbar"></div><div class="stats" id="statsbar"></div><div class="dropzone" id="dropzone">🌷 拖放 PDF / Word / Markdown 到此处，或点击「添加文献」开始整理</div><div class="grid" id="libgrid"></div></section>
-  <section id="graphview" class="view"><canvas id="graphcanvas"></canvas><div class="legend" id="legend"></div><div class="graphegobadge" id="graphegobadge"><span id="graphego_lbl"></span><span class="x" onclick="ClearGraphFocus()" title="返回全局">×</span></div><div class="graphfilter"><div class="graphrow"><label>搜索</label><input id="graph_search" type="search" placeholder="标题 / ID" oninput="OnGraphSearchInput()" onkeydown="if(event.key==='Enter')FocusGraphSearch()"></div><div class="graphrow"><label>节点</label><select id="graph_filter" onchange="ApplyGraphFilter()"><option value="">全部类型</option></select></div><div class="graphrow"><label>关系</label><select id="graph_edge_filter" onchange="ApplyGraphFilter()"><option value="">全部关系</option></select></div><button type="button" onclick="FocusGraphSearch()">⌖ 定位节点</button><button type="button" onclick="ExportGraphPng()">📷 导出 PNG</button></div><div id="graphtooltip"></div><div class="hint">滚轮缩放 · 拖拽平移 · 拖动节点 · 点击查看详情 · 悬停边看关系</div></section>
+  <section id="graphview" class="view"><canvas id="graphcanvas"></canvas><div class="legend" id="legend"></div><div class="graphegobadge" id="graphegobadge"><span id="graphego_lbl"></span><span class="x" onclick="ClearGraphFocus()" title="返回全局">×</span></div><div class="graphfilter"><div class="graphrow"><label>搜索</label><input id="graph_search" type="search" placeholder="标题 / ID" oninput="OnGraphSearchInput()" onkeydown="if(event.key==='Enter')FocusGraphSearch()"></div><div class="graphrow"><label>节点</label><select id="graph_filter" onchange="ApplyGraphFilter()"><option value="">全部类型</option></select></div><div class="graphrow"><label>关系</label><select id="graph_edge_filter" onchange="ApplyGraphFilter()"><option value="">全部关系</option></select></div><button type="button" onclick="FocusGraphSearch()">⌖ 定位节点</button><button type="button" onclick="ExportGraphPng()">📷 导出 PNG</button><button type="button" onclick="ExportGraphJson()">⬇ 导出 JSON</button></div><div id="graphtooltip"></div><div class="hint">滚轮缩放 · 拖拽平移 · 拖动节点 · 点击查看详情 · 悬停边看关系</div></section>
   <section id="listview" class="view"></section>
   <section id="docview" class="view">
     <div class="docbar">
@@ -1397,7 +1509,7 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   <div id="lintmodal" class="ph-modal"><div class="setbox" style="width:min(640px,94vw);max-height:88vh;overflow:auto">
     <h2>🌿 知识库巡检</h2>
     <div id="lint_body" class="lintlist">加载中…</div>
-    <div class="row"><button class="btn ghost" onclick="CloseLint()">关闭</button><button class="btn" onclick="RunLint()">重新巡检</button></div>
+    <div class="row"><button class="btn ghost" onclick="CloseLint()">关闭</button><button class="btn sec" onclick="FixLintIssues()">🔧 一键修复</button><button class="btn" onclick="RunLint()">重新巡检</button></div>
   </div></div>
   <div id="onboardmodal" class="ph-modal"><div class="setbox" style="width:min(520px,94vw)">
     <h2>🌱 欢迎使用研栈</h2>
@@ -1759,6 +1871,7 @@ function RenderAll(){
   TC=DATA.typeconfig;ReindexNodes();
   RenderLibTabs();RenderStats();RenderLibrary();RenderList();
   document.getElementById("metainfo").textContent=(SERVERMODE?"本地服务 · ":"")+"更新于 "+DATA.generated;
+  UpdateLintBadge(DATA.lint);
   UpdateCurrentTopicDisplay();
   InitUi3d();
   if(document.getElementById("graphview").classList.contains("active"))InitGraph();
@@ -2296,7 +2409,17 @@ async function Api(path,body){
 }
 async function Refresh(silent){
   if(!SERVERMODE){if(!silent)Toast("当前为离线只读页面，请在应用中操作以刷新");return}
-  try{DATA=await Api("/api/data");RenderAll();if(!silent)Toast("已刷新");RefreshOnboardingState()}catch(e){Toast("刷新失败："+e.message)}
+  try{
+    DATA=await Api("/api/data");RenderAll();UpdateLintBadge(DATA.lint);
+    if(!silent)Toast("已刷新");
+    if(!silent&&DATA.lint&&DATA.lint.orphans>0)Toast("巡检："+DATA.lint.orphans+" 个孤立页面，可点「健康巡检」修复",4500);
+    RefreshOnboardingState();
+  }catch(e){Toast("刷新失败："+e.message)}
+}
+function UpdateLintBadge(olint){
+  const ob=document.getElementById("lint_badge");if(!ob)return;
+  const n=(olint&&olint.orphans)||0;
+  if(n>0){ob.textContent=n;ob.classList.add("show")}else{ob.classList.remove("show");ob.textContent=""}
 }
 function AddPaper(){if(NeedServer())return;document.getElementById("fileinput").click()}
 document.getElementById("fileinput").onchange=async function(){
@@ -2670,7 +2793,20 @@ function RenderLintReport(r){
   if(r.dead_links&&r.dead_links.length)h+="<br>"+r.dead_links.slice(0,6).map(x=>Esc(x.page)+"→"+Esc(x.link)).join("<br>");
   h+="</li><li>页面信息（标题/标签等）缺失："+(r.frontmatter_issues?r.frontmatter_issues.length:0)+"</li>";
   h+="<li>知识空白："+(r.knowledge_gaps?r.knowledge_gaps.length:0)+"</li></ul>";
+  if(r.orphans&&r.orphans.length)h+='<p class="note" style="margin-top:10px;font-size:12px">孤立 query 页可点「一键修复」自动补全关联 wikilink。</p>';
   document.getElementById("lint_body").innerHTML=h;
+  UpdateLintBadge({orphans:r.orphans?r.orphans.length:0});
+}
+async function FixLintIssues(){
+  if(NeedServer())return;
+  document.getElementById("lint_body").textContent="修复中…";
+  try{
+    const r=await Api("/api/lint/fix",{});
+    RenderLintReport(r.lint||{});
+    const n=(r.repaired_queries||[]).length;
+    Toast(n?"已修复 "+n+" 个 query 页":"暂无可自动修复项");
+    await Refresh(true);
+  }catch(e){document.getElementById("lint_body").textContent="修复失败："+e.message}
 }
 async function RunLint(){
   if(NeedServer())return;
@@ -3622,15 +3758,33 @@ function InitGraph(){
   const opos=LayoutLayerPositions(vraw,w,hh);
   nodes=vraw.map(n=>{
     const op=opos[n.id]||{x:w*0.5,y:hh*0.5,targetY:hh*0.5,targetX:w*0.5};
-    return {...n,x:op.x,y:op.y,targetY:op.targetY,targetX:op.targetX,vx:0,vy:0,r:7+Math.min((n.degree||0)*2.5,16)};
+    const npr=n.pagerank||0;
+    return {...n,x:op.x,y:op.y,targetY:op.targetY,targetX:op.targetX,vx:0,vy:0,r:6+Math.min((n.degree||0)*2,10)+Math.min(npr*14,12)};
   });
   const nm={};nodes.forEach(n=>nm[n.id]=n);
   const vids=new Set(nodes.map(n=>n.id));
   let vedges=DATA.edges||[];
   if(GRAPH_EDGE_FILTER)vedges=vedges.filter(e=>e.type===GRAPH_EDGE_FILTER);
-  links=vedges.map(e=>({s:nm[e.source],t:nm[e.target],type:e.type||"链接",src_type:e.src_type,tgt_type:e.tgt_type})).filter(l=>l.s&&l.t&&vids.has(l.s.id)&&vids.has(l.t.id));
+  links=vedges.map(e=>({s:nm[e.source],t:nm[e.target],type:e.type||"链接",src_type:e.src_type,tgt_type:e.tgt_type,explicit:!!e.explicit})).filter(l=>l.s&&l.t&&vids.has(l.s.id)&&vids.has(l.t.id));
   SyncGraphTheme();BuildGraphNeighbors();
-  RenderLegend();BindGraph();SettleGraphLayout();
+  RenderLegend();BindGraph();SettleGraphLayoutAsync();
+}
+function SettleGraphLayoutAsync(onDone){
+  graphTick=0;graphStable=false;
+  if(rafid){cancelAnimationFrame(rafid);rafid=null;}
+  const ntickBatch=48;
+  function step(){
+    for(let i=0;i<ntickBatch;i++){
+      const nenergy=StepGraphPhysics();
+      graphTick++;
+      if(nodes.length>0&&nenergy/nodes.length<0.02){finish();return}
+      if(graphTick>=GRAPH_MAX_TICKS){finish();return}
+    }
+    DrawGraph();
+    requestAnimationFrame(step);
+  }
+  function finish(){graphStable=true;CenterGraphView();DrawGraph();if(onDone)onDone()}
+  requestAnimationFrame(step);
 }
 function CenterGraphView(){CenterGraphOnNodes(nodes)}
 function ResizeCanvas(){const dpr=window.devicePixelRatio||1;canvas.width=canvas.clientWidth*dpr;canvas.height=canvas.clientHeight*dpr;ctx.setTransform(dpr,0,0,dpr,0,0)}
@@ -3716,7 +3870,7 @@ function DrawGraph(){
   links.forEach(l=>{
     const active=hover&&(l.s.id===hover.id||l.t.id===hover.id)||hoverLink===l;
     const sc=active?slinka:EdgeColor(l.type);
-    DrawGraphArrow(l.s.x,l.s.y,l.t.x,l.t.y,l.s.r,l.t.r,sc,active?2.5:1.6);
+    DrawGraphArrow(l.s.x,l.s.y,l.t.x,l.t.y,l.s.r,l.t.r,sc,active?2.5:(l.explicit?2.2:1.6));
   });
   const sfont=window.__graphFont||"500 12px sans-serif";
   let bfont=false;
@@ -3738,7 +3892,9 @@ function DrawGraph(){
 function UpdateGraphTooltip(e){
   const ot=document.getElementById("graphtooltip");if(!ot)return;
   if(hoverLink){
-    ot.textContent=EdgeLabel(hoverLink.type)+"："+(hoverLink.s.title||"")+" → "+(hoverLink.t.title||"");
+    let stxt=EdgeLabel(hoverLink.type)+"："+(hoverLink.s.title||"")+" → "+(hoverLink.t.title||"");
+    if(hoverLink.explicit)stxt+=" [显式]";
+    ot.textContent=stxt;
     ot.classList.add("show");
     if(e){ot.style.left=(e.clientX+14)+"px";ot.style.top=(e.clientY+14)+"px";}
     return;
@@ -3801,6 +3957,20 @@ function ExportGraphPng(){
   link.download="wiki-graph-"+new Date().toISOString().slice(0,10)+".png";
   link.href=canvas.toDataURL("image/png");
   link.click();Toast("图谱已导出");
+}
+function ExportGraphJson(){
+  if(!nodes.length){Toast("请先打开知识图谱");return}
+  const payload={
+    generated:DATA.generated||"",
+    view:{...view},
+    nodes:nodes.map(n=>({id:n.id,title:n.title,type:n.type,x:n.x,y:n.y,degree:n.degree,pagerank:n.pagerank})),
+    edges:links.map(l=>({source:l.s.id,target:l.t.id,type:l.type,explicit:!!l.explicit})),
+  };
+  const blob=new Blob([JSON.stringify(payload,null,2)],{type:"application/json"});
+  const link=document.createElement("a");
+  link.download="wiki-graph-"+new Date().toISOString().slice(0,10)+".json";
+  link.href=URL.createObjectURL(blob);
+  link.click();Toast("图谱 JSON 已导出");
 }
 function SwitchView(vid){
   document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active",t.dataset.view===vid));

@@ -55,6 +55,19 @@ def ListWikiPages():
     return vpages
 
 
+def RunLintQuick(vnodes, vedges):
+    """轻量巡检摘要（供 BuildData /api/data 附带，避免重复全量扫描）。"""
+    olinked = {n["id"]: 0 for n in vnodes}
+    for e in vedges:
+        olinked[e["source"]] = olinked.get(e["source"], 0) + 1
+        olinked[e["target"]] = olinked.get(e["target"], 0) + 1
+    norphans = sum(
+        1 for n in vnodes
+        if n["type"] not in ("purpose", "unknown") and olinked.get(n["id"], 0) == 0
+    )
+    return {"orphans": norphans, "dead_links": 0, "knowledge_gaps": 0}
+
+
 def RunLint():
     core = _ImportCore()
     odata = core.BuildData()
@@ -157,6 +170,12 @@ def GenerateOverview():
         lines += ["", "## 关联枢纽", ""]
         for n in vhub:
             lines.append("- [[%s]]（关联 %d）" % (n["id"], n.get("degree", 0)))
+
+    vqueries = [n for n in vnodes if n["type"] == "query"]
+    if vqueries:
+        lines += ["", "## 问答沉淀", ""]
+        for n in sorted(vqueries, key=lambda x: x["id"])[-8:]:
+            lines.append("- [[%s]]" % n["id"])
 
     olint = RunLint()
     if olint["orphans"] or olint["dead_links"] or olint["knowledge_gaps"]:
@@ -279,19 +298,89 @@ def CollectQueryContext(squestion, nmaxchars=12000):
     return "\n\n".join(vchunks)
 
 
+def InferQueryLinks(squestion, sanswer, sexclude_id=None):
+    """从问答文本推断关联 wiki 页面（wikilink + 标题/id 模糊匹配）。"""
+    core = _ImportCore()
+    vcited = []
+    for stext in (squestion, sanswer):
+        for starget in core.ExtractLinks(stext):
+            if starget not in vcited and starget != sexclude_id:
+                vcited.append(starget)
+    odata = core.BuildData()
+    stlower = ((squestion or "") + "\n" + (sanswer or "")).lower()
+    for n in odata["nodes"]:
+        if n["id"] == sexclude_id or n["type"] in ("purpose", "unknown", "query"):
+            continue
+        for c in [n["id"], n.get("title", "")] + (n.get("aliases") or []):
+            sc = (c or "").strip()
+            if len(sc) < 4:
+                continue
+            if sc.lower() in stlower and n["id"] not in vcited:
+                vcited.append(n["id"])
+                break
+    return vcited
+
+
 def SaveQueryPage(squestion, sanswer):
     os.makedirs(os.path.join(wikidir, "queries"), exist_ok=True)
     sid = "q-" + datetime.now().strftime("%Y%m%d-%H%M%S")
     spath = os.path.join(wikidir, "queries", sid + ".md")
     stamp = datetime.now().strftime("%Y-%m-%d")
-    scontent = (
-        "---\ntype: query\ntitle: %s\nsources: []\ntags: [问答]\n"
+    vcited = InferQueryLinks(squestion, sanswer)
+    slinkblock = "\n".join("- [[%s]]" % c for c in vcited) if vcited else "- （未引用 wiki 页面，可在回答中补充 [[wikilink]]）"
+    ssources = ", ".join(vcited[:8]) if vcited else ""
+    sfront = (
+        "---\ntype: query\ntitle: %s\nsources: [%s]\ntags: [问答]\n"
         "created: %s\nupdated: %s\n---\n\n"
-        "# %s\n\n## 问题\n\n%s\n\n## 回答\n\n%s\n"
-    ) % (squestion[:80], stamp, stamp, squestion[:80], squestion, sanswer)
+        "# %s\n\n## 问题\n\n%s\n\n## 回答\n\n%s\n\n## 关联页面\n\n%s\n"
+    ) % (
+        squestion[:80], ssources, stamp, stamp,
+        squestion[:80], squestion, sanswer, slinkblock,
+    )
     with open(spath, "w", encoding="utf-8") as f:
-        f.write(scontent)
-    return {"id": sid, "path": os.path.relpath(spath, rootdir)}
+        f.write(sfront)
+    return {"id": sid, "path": os.path.relpath(spath, rootdir), "links": vcited}
+
+
+def RepairOrphanQueries():
+    """为孤立 query 页补全「关联页面」wikilink，消除无出链。"""
+    core = _ImportCore()
+    vfixed = []
+    for p in ListWikiPages():
+        if p["type"] != "query":
+            continue
+        with open(p["path"], "r", encoding="utf-8") as f:
+            nfull = f.read()
+        ofm, nbody = core.ParseFrontmatter(nfull)
+        if "## 关联页面" in nbody:
+            continue
+        osec = core.ExtractMarkdownSections(nbody)
+        vcited = InferQueryLinks(osec.get("问题", ""), osec.get("回答", ""), p["id"])
+        if not vcited:
+            continue
+        slinks = "\n".join("- [[%s]]" % c for c in vcited)
+        nbody = nbody.rstrip() + "\n\n## 关联页面\n\n" + slinks + "\n"
+        ofm["sources"] = vcited[:8]
+        ofm["updated"] = datetime.now().strftime("%Y-%m-%d")
+        vfm = []
+        for k, v in ofm.items():
+            if isinstance(v, list):
+                vfm.append("%s: [%s]" % (k, ", ".join(str(x) for x in v)))
+            else:
+                vfm.append("%s: %s" % (k, v))
+        io_utils.AtomicWriteText(p["path"], "---\n" + "\n".join(vfm) + "\n---\n\n" + nbody.lstrip())
+        vfixed.append({"id": p["id"], "links": vcited})
+    return vfixed
+
+
+def FixLintIssues():
+    """一键修复可自动处理的巡检项。"""
+    vfixed = RepairOrphanQueries()
+    GenerateOverview()
+    core = _ImportCore()
+    core.GenerateIndex()
+    olint = RunLint()
+    return {"repaired_queries": vfixed, "lint": olint}
 
 
 def ExportBibtex():

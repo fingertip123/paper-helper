@@ -905,6 +905,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._ingestcancel()
             if self.path == "/api/query":
                 return self._query()
+            if self.path == "/api/lint/fix":
+                wops.Init(core.wikidir, core.rawsourcesdir, core.rootdir)
+                return self._send(200, wops.FixLintIssues())
             if self.path == "/api/topics/snapshot":
                 return self._topicsnapshot()
             if self.path == "/api/onboarding/setup":
