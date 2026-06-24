@@ -755,13 +755,19 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   .drawer-scrim{position:absolute;inset:0;background:var(--overlay-backdrop);backdrop-filter:blur(3px);opacity:0;transition:opacity .3s ease}
   .drawer-shell.is-open .drawer-scrim{opacity:1}
   .drawer-shell.is-closing .drawer-scrim{opacity:0}
-  .drawer-panel{position:absolute;top:0;right:0;width:min(380px,92vw);height:100%;background:var(--drawer-bg);border-left:1px solid var(--border);padding:22px;overflow:auto;z-index:2;box-shadow:var(--drawer-shadow);transform:translateX(100%);will-change:transform}
+  .drawer-panel{position:absolute;top:0;right:0;width:min(380px,92vw);height:100%;background:var(--drawer-bg);border-left:1px solid var(--border);padding:0;overflow:hidden;z-index:2;box-shadow:var(--drawer-shadow);transform:translateX(100%);will-change:transform;display:flex;flex-direction:column}
   .drawer-shell.is-open .drawer-panel{animation:drawerSlideIn .44s cubic-bezier(.34,1.38,.64,1) both}
   .drawer-shell.is-closing .drawer-panel{animation:drawerSlideOut .36s cubic-bezier(.45,.05,.55,.95) both}
   @keyframes drawerSlideIn{0%{transform:translateX(100%)}78%{transform:translateX(-12px)}92%{transform:translateX(4px)}100%{transform:translateX(0)}}
   @keyframes drawerSlideOut{0%{transform:translateX(0)}22%{transform:translateX(-8px)}100%{transform:translateX(100%)}}
-  .drawer-panel .close{position:absolute;top:14px;right:16px;cursor:pointer;color:var(--muted);font-size:20px;line-height:1;z-index:3}
-  .drawer-panel h2{font-size:19px;margin:6px 40px 12px 0;line-height:1.4}
+  .drawer-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 16px;border-bottom:1px solid var(--border);flex-shrink:0;min-height:48px}
+  .drawer-back{display:none;align-items:center;gap:4px;padding:5px 12px;border-radius:999px;border:1px solid var(--border);background:var(--panel2);color:var(--text-soft);font-family:var(--font-ui);font-size:12px;cursor:pointer;transition:.18s}
+  .drawer-back:hover{border-color:var(--accent);color:var(--accent)}
+  .drawer-head.has-back .drawer-back{display:inline-flex}
+  #drawerbody{flex:1;overflow:auto;padding:18px 22px 24px}
+  .drawer-panel .close{cursor:pointer;color:var(--muted);font-size:22px;line-height:1;margin-left:auto;padding:0 4px}
+  .drawer-panel .close:hover{color:var(--text)}
+  .drawer-panel h2{font-size:19px;margin:6px 0 12px;line-height:1.4}
   .drawer-panel .field{margin:12px 0;font-size:13px}
   .drawer-panel .field .k{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px}
   .drawer-panel .links a{display:inline-block;margin:3px 6px 3px 0;padding:3px 9px;background:var(--panel2);border-radius:6px;font-size:12px;color:var(--accent);text-decoration:none;cursor:pointer}
@@ -796,14 +802,19 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   .pdfbtn .spin,.urlbtn .spin{display:inline-block;width:12px;height:12px;border:2px solid var(--accent);border-top-color:transparent;border-radius:50%;animation:spin .7s linear infinite;vertical-align:-2px;margin-right:2px}
   .urledit{display:flex;gap:8px;align-items:center}
   .urledit input{flex:1;min-width:0;padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--panel2);color:var(--text);font-size:12px}
-  #pdfmodal,#setmodal,#startmodal,#rulesmodal,#topicmodal,#querymodal,#lintmodal,#docexportmodal,#doccommitmodal,#dochistorymodal,#thememodal,#onboardmodal{position:fixed;inset:0;background:var(--modal-backdrop);backdrop-filter:blur(10px);z-index:50;display:flex;flex-direction:column;padding:24px;opacity:0;visibility:hidden;pointer-events:none;transition:opacity .24s ease,visibility .24s ease}
-  #pdfmodal.open,#setmodal.open,#startmodal.open,#rulesmodal.open,#topicmodal.open,#querymodal.open,#lintmodal.open,#docexportmodal.open,#doccommitmodal.open,#dochistorymodal.open,#thememodal.open,#onboardmodal.open{opacity:1;visibility:visible;pointer-events:auto}
-  #pdfmodal.open>.bar,#pdfmodal.open>#pdfframe,.ph-modal.open>.setbox,.ph-modal.open>.setbox-flex{animation:modalPopIn .3s cubic-bezier(.22,1,.36,1) both}
+  #pdfmodal,#reportmodal,#setmodal,#startmodal,#rulesmodal,#topicmodal,#querymodal,#lintmodal,#docexportmodal,#doccommitmodal,#dochistorymodal,#thememodal,#onboardmodal{position:fixed;inset:0;background:var(--modal-backdrop);backdrop-filter:blur(10px);z-index:50;display:flex;flex-direction:column;padding:24px;opacity:0;visibility:hidden;pointer-events:none;transition:opacity .24s ease,visibility .24s ease}
+  #pdfmodal.open,#reportmodal.open,#setmodal.open,#startmodal.open,#rulesmodal.open,#topicmodal.open,#querymodal.open,#lintmodal.open,#docexportmodal.open,#doccommitmodal.open,#dochistorymodal.open,#thememodal.open,#onboardmodal.open{opacity:1;visibility:visible;pointer-events:auto}
+  #pdfmodal.open>.bar,#pdfmodal.open>#pdfframe,#reportmodal.open>.bar,#reportmodal.open>#reportframe,.ph-modal.open>.setbox,.ph-modal.open>.setbox-flex{animation:modalPopIn .3s cubic-bezier(.22,1,.36,1) both}
   #pdfmodal.open>#pdfframe{animation-delay:.04s}
-  #pdfmodal .bar{display:flex;align-items:center;gap:14px;padding:10px 14px;background:var(--panel);border:1px solid var(--border);border-radius:10px 10px 0 0}
-  #pdfmodal .bar .name{font-size:13px;color:var(--text);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  #pdfmodal .bar .x{cursor:pointer;color:var(--muted);font-size:22px;line-height:1}
+  #reportmodal.open>#reportframe{animation-delay:.04s}
+  #pdfmodal .bar,#reportmodal .bar{display:flex;align-items:center;gap:14px;padding:10px 14px;background:var(--panel);border:1px solid var(--border);border-radius:10px 10px 0 0}
+  #pdfmodal .bar .name,#reportmodal .bar .name{font-size:13px;color:var(--text);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #pdfmodal .bar .x,#reportmodal .bar .x{cursor:pointer;color:var(--muted);font-size:22px;line-height:1}
+  #pdfmodal .bar .x:hover,#reportmodal .bar .x:hover{color:var(--text)}
   #pdfframe{flex:1;width:100%;border:1px solid var(--border);border-top:none;border-radius:0 0 10px 10px;background:#fff}
+  #reportmodal{align-items:center}
+  #reportmodal>.bar{width:min(900px,100%)}
+  #reportframe{flex:1;width:min(900px,100%);border:1px solid var(--border);border-top:none;border-radius:0 0 10px 10px;background:var(--panel);overflow:auto;padding:28px 36px}
   #setmodal,#startmodal,#rulesmodal,#topicmodal,#querymodal,#lintmodal,#docexportmodal,#doccommitmodal,#dochistorymodal,#thememodal,#onboardmodal{align-items:center;justify-content:center}
   #onboard_checklist{position:fixed;right:20px;bottom:20px;width:min(300px,calc(100vw - 40px));background:var(--float-panel);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow);z-index:40;padding:0;overflow:hidden;backdrop-filter:blur(12px)}
   #onboard_checklist .ob-hd{display:flex;align-items:center;justify-content:space-between;padding:12px 14px 8px;font-family:var(--font-display);font-size:14px;font-weight:var(--fw-display);letter-spacing:var(--ls-title);color:var(--text)}
@@ -1108,9 +1119,10 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   </section>
   <div id="drawer_shell" class="drawer-shell" data-drawer-shell>
     <div class="drawer-scrim" aria-hidden="true"></div>
-    <aside id="drawer" class="drawer-panel"><span class="close" onclick="CloseDrawer()">×</span><div id="drawerbody"></div></aside>
+    <aside id="drawer" class="drawer-panel"><div class="drawer-head"><button type="button" class="drawer-back" id="drawer_back" onclick="DrawerBack()">‹ 返回</button><span class="close" onclick="CloseDrawer()">×</span></div><div id="drawerbody"></div></aside>
   </div>
   <div id="pdfmodal"><div class="bar"><span class="name" id="pdfname"></span><a class="btn ghost" id="pdfnewtab" target="_blank">在新标签打开 ↗</a><span class="x" onclick="ClosePdf()">×</span></div><iframe id="pdfframe"></iframe></div>
+  <div id="reportmodal"><div class="bar"><span class="name" id="reportname"></span><span class="x" onclick="CloseReport()">×</span></div><div id="reportframe"></div></div>
   <div id="doccommitmodal" class="ph-modal"><div class="setbox setbox-flex" style="width:min(640px,94vw)">
     <div class="setbox-head">
       <h2>🎀 保存版本</h2>
@@ -1594,7 +1606,7 @@ function RenderLibGrid(){
     const rq=(n.research&&n.research.rq_links&&n.research.rq_links.length)?`<span class="badge soft" title="已关联研究问题">RQ</span>`:"";
     let actionbtn="";
     if(LibIsDeep(n)){
-      actionbtn=`<button class="urlbtn" onclick="event.stopPropagation();OpenDrawer('${Attr(n.id)}-report')">📋 研究报告</button>`;
+      actionbtn=`<button class="urlbtn" onclick="event.stopPropagation();OpenReport('${Attr(n.id)}-report')">📋 研究报告</button>`;
     }else if(LibIsAwaitDeep(n)&&SERVERMODE){
       actionbtn=DeepActionBtn(n.id,"urlbtn","deep_btn_",true);
     }else if(LibIsPending(n)&&SERVERMODE&&n.rawfile){
@@ -1639,7 +1651,24 @@ function RenderAll(){
 
 /* ---------- 详情抽屉 ---------- */
 function NeighborsOf(id){const ns=new Set();DATA.edges.forEach(e=>{if(e.source===id)ns.add(e.target);if(e.target===id)ns.add(e.source)});return [...ns]}
+let DRAWER_STACK=[];
+function UpdateDrawerNav(){
+  const ohead=document.querySelector("#drawer .drawer-head");
+  if(ohead)ohead.classList.toggle("has-back",DRAWER_STACK.length>1);
+}
 function OpenDrawer(id){
+  const n=NODEMAP[id];if(!n)return;
+  if(n.type==="analysis-report"){OpenReport(id);return;}
+  CloseReport();
+  if(DRAWER_STACK[DRAWER_STACK.length-1]!==id)DRAWER_STACK.push(id);
+  RenderDrawer(id);
+}
+function DrawerBack(){
+  if(DRAWER_STACK.length<=1){CloseDrawer();return;}
+  DRAWER_STACK.pop();
+  RenderDrawer(DRAWER_STACK[DRAWER_STACK.length-1]);
+}
+function RenderDrawer(id){
   const n=NODEMAP[id];if(!n)return;
   const authors=(n.authors||[]).filter(Boolean).join(", ");
   const sub=[authors,n.year,n.venue].filter(Boolean).join(" · ");
@@ -1652,12 +1681,6 @@ function OpenDrawer(id){
     const surl=SafeUrl(n.url);
     if(surl)h+=`<div class="field"><button class="btn ghost" onclick="OpenPaperUrl('${Attr(surl)}')">🔗 在线阅读 ↗</button></div>`;
     if(SERVERMODE)h+=`<div class="field"><div class="k">论文网址</div><div class="urledit"><input id="paper_url_input" value="${Esc(n.url||"")}" placeholder="https://doi.org/... 或期刊页面"><button class="btn ghost" onclick="SavePaperUrl('${Attr(n.id)}','${Attr(n.rawfile||"")}')">保存</button></div></div>`;
-  }
-  if(n.type==="analysis-report"&&n.body){
-    h+=`<div class="field reportbody">${MdToHtml(n.body)}</div>`;
-    document.getElementById("drawerbody").innerHTML=h;
-    OpenDrawerShell("drawer_shell");
-    return;
   }
   if(n.summary)h+=`<div class="field"><div class="k">一句话</div>${Esc(n.summary)}</div>`;
   if(n.type==="source"&&n.ingested&&n.research){
@@ -1687,17 +1710,30 @@ function OpenDrawer(id){
       }
       h+=`<div class="field">${DeepActionBtn(n.id,"btn","deep_drawer_btn_",false,"📋 深度分析这篇文献")}</div>`;
     }else if(LibIsDeep(n)){
-      h+=`<div class="field"><button class="btn" onclick="OpenDrawer('${Attr(n.id)}-report')">📋 查看深度研究报告</button> `+
+      h+=`<div class="field"><button class="btn" onclick="OpenReport('${Attr(n.id)}-report')">📋 查看深度研究报告</button> `+
         (n.rawfile&&SERVERMODE?`<button class="btn ghost" onclick="DeepAnalyzeById('${Attr(n.id)}')">↻ 重新分析</button>`:"")+`</div>`;
     }
   }
-  document.getElementById("drawerbody").innerHTML=h;
+  const obody=document.getElementById("drawerbody");
+  obody.innerHTML=h;
+  obody.scrollTop=0;
+  UpdateDrawerNav();
   OpenDrawerShell("drawer_shell");
 }
+function OpenReport(reportId){
+  const n=NODEMAP[reportId];
+  if(!n||n.type!=="analysis-report"||!n.body){Toast("未找到深度研究报告，请尝试刷新");return;}
+  document.getElementById("reportname").textContent=n.title||"深度研究报告";
+  const f=document.getElementById("reportframe");
+  f.innerHTML=`<div class="reportbody">${MdToHtml(n.body)}</div>`;
+  f.scrollTop=0;
+  document.getElementById("reportmodal").classList.add("open");
+}
+function CloseReport(){document.getElementById("reportmodal").classList.remove("open")}
 function InitDrawerShells(){
   document.querySelectorAll("[data-drawer-shell]").forEach(oshell=>{
     const oscrim=oshell.querySelector(".drawer-scrim");
-    if(oscrim)oscrim.onclick=()=>CloseDrawerShell(oshell.id);
+    if(oscrim)oscrim.onclick=()=>{if(oshell.id==="drawer_shell"){CloseDrawer()}else{CloseDrawerShell(oshell.id)}};
   });
 }
 function OpenDrawerShell(sshellid){
@@ -1734,7 +1770,7 @@ function CloseDrawerShell(sshellid){
   opanel.addEventListener("animationend",fend);
 }
 function IsDrawerOpen(sshellid){const s=document.getElementById(sshellid);return s&&(s.classList.contains("is-open")||s.classList.contains("is-closing"))}
-function CloseDrawer(){CloseDrawerShell("drawer_shell")}
+function CloseDrawer(){DRAWER_STACK=[];UpdateDrawerNav();CloseDrawerShell("drawer_shell")}
 async function OpenPaperUrl(surl){
   surl=SafeUrl(surl);
   if(!surl){Toast("链接无效");return}
@@ -1790,7 +1826,11 @@ async function OpenPdf(f){
   document.getElementById("pdfmodal").classList.add("open");
 }
 function ClosePdf(){document.getElementById("pdfmodal").classList.remove("open");document.getElementById("pdfframe").src=""}
-document.addEventListener("keydown",e=>{if(e.key==="Escape"){CloseTopicMenu();ClosePdf();CloseDrawer();CloseSettings();CloseStart();CloseRules();CloseNewTopic();CloseQuery();CloseLint()}});
+document.addEventListener("keydown",e=>{if(e.key==="Escape"){
+  const orep=document.getElementById("reportmodal");
+  if(orep&&orep.classList.contains("open")){CloseReport();return}
+  CloseTopicMenu();ClosePdf();CloseDrawer();CloseSettings();CloseStart();CloseRules();CloseNewTopic();CloseQuery();CloseLint();
+}});
 document.addEventListener("click",e=>{const pick=document.getElementById("topic_pick");if(pick&&!pick.contains(e.target))CloseTopicMenu()});
 
 /* ---------- 选题管理 ---------- */
@@ -3481,8 +3521,8 @@ async function DeepTick(skey){
     Toast("✅ 深度分析完成，正在打开报告");
     await Refresh(true);
     if(document.getElementById("libview").classList.contains("active"))AnimateRenderLibrary();
-    if(HasDeepReport(rkey))OpenDrawer(rkey+"-report");
-    else if(NODEMAP[rkey]){OpenDrawer(rkey);Toast("报告已生成，请在抽屉中查看「深度研究报告」")}
+    if(HasDeepReport(rkey))OpenReport(rkey+"-report");
+    else if(NODEMAP[rkey]){OpenDrawer(rkey);Toast("报告已生成，请在卡片中点「研究报告」查看")}
     return "done";
   }
   return;
