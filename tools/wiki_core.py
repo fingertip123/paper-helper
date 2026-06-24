@@ -3493,8 +3493,27 @@ async function ConfirmDocExport(){
 /* ---------- 力导向知识图谱 ---------- */
 let canvas,ctx,nodes=[],links=[],view={x:0,y:0,scale:1},dragnode=null,dragging=false,last={x:0,y:0},hover=null,hoverLink=null,rafid=null;
 let GRAPH_FILTER="",GRAPH_EDGE_FILTER="",GRAPH_EGO=null,GRAPH_SEARCH="",graphTick=0,graphStable=false;
+let GRAPH_NEIGHBORS=null,GRAPH_THEME={},graphDrawRaf=null;
 const GRAPH_REPEL_DIST=280,GRAPH_MAX_TICKS=800;
 let EC=DATA.edgeconfig||{},GL=DATA.graphlayers||{};
+function SyncGraphTheme(){
+  GRAPH_THEME={
+    slinka:GetCssVar("--graph-link-active")||"rgba(201,120,154,.75)",
+    slabel:GetCssVar("--graph-label")||"#4a3f47",
+    sring:GetCssVar("--graph-ring")||"rgba(74,63,71,.35)",
+    ssearch:GetCssVar("--accent")||"#c9789a",
+  };
+}
+function BuildGraphNeighbors(){
+  const m={};
+  nodes.forEach(n=>{m[n.id]=new Set();});
+  links.forEach(l=>{m[l.s.id].add(l.t.id);m[l.t.id].add(l.s.id);});
+  GRAPH_NEIGHBORS=m;
+}
+function ScheduleDrawGraph(){
+  if(graphDrawRaf)return;
+  graphDrawRaf=requestAnimationFrame(()=>{graphDrawRaf=null;DrawGraph();});
+}
 function EdgeColor(etype){return (EC[etype]||EC["链接"]||{}).color||"#b0a4ad"}
 function EdgeLabel(etype){return (EC[etype]||{}).label||etype||"链接"}
 function GraphLayerY(stype,hh){const ny=GL[stype]!=null?GL[stype]:0.5;return hh*(0.12+ny*0.76)}
@@ -3610,6 +3629,7 @@ function InitGraph(){
   let vedges=DATA.edges||[];
   if(GRAPH_EDGE_FILTER)vedges=vedges.filter(e=>e.type===GRAPH_EDGE_FILTER);
   links=vedges.map(e=>({s:nm[e.source],t:nm[e.target],type:e.type||"链接",src_type:e.src_type,tgt_type:e.tgt_type})).filter(l=>l.s&&l.t&&vids.has(l.s.id)&&vids.has(l.t.id));
+  SyncGraphTheme();BuildGraphNeighbors();
   RenderLegend();BindGraph();SettleGraphLayout();
 }
 function CenterGraphView(){CenterGraphOnNodes(nodes)}
@@ -3664,7 +3684,8 @@ function SettleGraphLayout(){
   graphStable=true;CenterGraphView();DrawGraph();
 }
 function Simulate(){
-  if(!canvas||graphStable&&!dragnode){DrawGraph();return}
+  if(!canvas||dragging)return;
+  if(graphStable&&!dragnode){DrawGraph();return}
   const nenergy=StepGraphPhysics();
   graphTick++;
   if(graphTick>GRAPH_MAX_TICKS||(nodes.length>0&&nenergy/nodes.length<0.02)){
@@ -3688,17 +3709,17 @@ function DrawGraphArrow(sx,sy,tx,ty,sr,tr,color,nwidth){
 }
 function DrawGraph(){
   ctx.clearRect(0,0,canvas.clientWidth,canvas.clientHeight);ctx.save();ctx.translate(view.x,view.y);ctx.scale(view.scale,view.scale);
-  const hoverNeigh=hover?new Set(NeighborsOf(hover.id)):null;
+  const ot=GRAPH_THEME;
+  const hoverNeigh=hover&&GRAPH_NEIGHBORS?GRAPH_NEIGHBORS[hover.id]:null;
   const bsearch=!!(GRAPH_SEARCH||"").trim();
-  const slinka=GetCssVar("--graph-link-active")||"rgba(201,120,154,.75)";
-  const slabel=GetCssVar("--graph-label")||"#4a3f47";
-  const sring=GetCssVar("--graph-ring")||"rgba(74,63,71,.35)";
-  const ssearch=GetCssVar("--accent")||"#c9789a";
+  const slinka=ot.slinka,slabel=ot.slabel,sring=ot.sring,ssearch=ot.ssearch;
   links.forEach(l=>{
     const active=hover&&(l.s.id===hover.id||l.t.id===hover.id)||hoverLink===l;
     const sc=active?slinka:EdgeColor(l.type);
     DrawGraphArrow(l.s.x,l.s.y,l.t.x,l.t.y,l.s.r,l.t.r,sc,active?2.5:1.6);
   });
+  const sfont=window.__graphFont||"500 12px sans-serif";
+  let bfont=false;
   nodes.forEach(n=>{
     const bmatch=!bsearch||GraphNodeMatch(n);
     const dim=(hover&&n!==hover&&!(hoverNeigh&&hoverNeigh.has(n.id)))||(bsearch&&!bmatch);
@@ -3706,7 +3727,8 @@ function DrawGraph(){
     if(bmatch&&bsearch){ctx.lineWidth=2.5;ctx.strokeStyle=ssearch;ctx.setLineDash([]);ctx.stroke()}
     if(!n.ingested){ctx.lineWidth=1.5;ctx.strokeStyle=sring;ctx.setLineDash([3,3]);ctx.stroke();ctx.setLineDash([])}
     if(view.scale>0.55||n.degree>1||n===hover||bmatch&&bsearch){
-      ctx.globalAlpha=dim?0.35:1;ctx.fillStyle=slabel;ctx.font=(window.__graphFont||"500 12px sans-serif");ctx.textAlign="center";
+      if(!bfont){ctx.font=sfont;ctx.textAlign="center";bfont=true}
+      ctx.globalAlpha=dim?0.35:1;ctx.fillStyle=slabel;
       const lbl=n.title.length>16?n.title.slice(0,15)+"…":n.title;ctx.fillText(lbl,n.x,n.y+n.r+13);
     }
   });
@@ -3738,9 +3760,17 @@ function ToWorld(e){const r=canvas.getBoundingClientRect();return{x:(e.clientX-r
 function PickNode(p){return nodes.find(n=>{const dx=n.x-p.x,dy=n.y-p.y;return dx*dx+dy*dy<=n.r*n.r+25})}
 function GraphPointerDown(e){
   const p=ToWorld(e);dragnode=PickNode(p);dragging=true;last={x:e.clientX,y:e.clientY};
-  graphStable=false;if(!rafid)Simulate();
+  if(rafid){cancelAnimationFrame(rafid);rafid=null;}
+  graphStable=true;
+  if(dragnode){hover=dragnode;DrawGraph();}
 }
 function GraphPointerMove(e){
+  if(dragging&&dragnode){
+    const p=ToWorld(e);
+    dragnode.x=p.x;dragnode.y=p.y;dragnode.vx=0;dragnode.vy=0;
+    ScheduleDrawGraph();
+    return;
+  }
   const p=ToWorld(e);
   const nhover=PickNode(p),nlink=nhover?null:PickLink(p);
   const bchanged=nhover!==hover||nlink!==hoverLink;
@@ -3748,11 +3778,13 @@ function GraphPointerMove(e){
   canvas.style.cursor=hover||hoverLink?"pointer":"grab";
   UpdateGraphTooltip(e);
   if(!dragging){if(graphStable&&bchanged)DrawGraph();return}
-  if(dragnode){dragnode.x=p.x;dragnode.y=p.y;dragnode.vx=0;dragnode.vy=0}else{view.x+=e.clientX-last.x;view.y+=e.clientY-last.y;last={x:e.clientX,y:e.clientY};if(graphStable)DrawGraph()}
+  view.x+=e.clientX-last.x;view.y+=e.clientY-last.y;last={x:e.clientX,y:e.clientY};
+  ScheduleDrawGraph();
 }
 function GraphPointerUp(e){
   if(dragnode&&Math.abs(e.clientX-last.x)<4&&Math.abs(e.clientY-last.y)<4)OpenDrawer(dragnode.id);
   dragging=false;dragnode=null;
+  DrawGraph();
 }
 function BindGraph(){
   canvas.onpointerdown=e=>{canvas.setPointerCapture(e.pointerId);GraphPointerDown(e)};
