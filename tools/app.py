@@ -1055,6 +1055,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._openurl()
             if self.path == "/api/source/url":
                 return self._sourceurl()
+            if self.path == "/api/source/tags":
+                return self._sourcetags()
             if self.path == "/api/ingest/cancel":
                 return self._ingestcancel()
             if self.path == "/api/query":
@@ -1219,6 +1221,21 @@ class Handler(BaseHTTPRequestHandler):
         core.GenerateIndex()
         core.AppendLog("[url] 更新文献链接 %s → %s" % (result.get("id") or result.get("rawfile"), result.get("url") or "（已清除）"))
         return self._send(200, result)
+
+    def _sourcetags(self):
+        body = self._body()
+        sid = (body.get("id") or body.get("key") or "").strip()
+        if not sid:
+            return self._send(400, {"error": "缺少文献 id"})
+        vtags = body.get("tags", [])
+        if not isinstance(vtags, list):
+            return self._send(400, {"error": "tags 须为数组"})
+        try:
+            vclean = core.SetLibTags(sid, vtags)
+        except ValueError as e:
+            return self._send(400, {"error": str(e)})
+        core.AppendLog("[tags] 更新论文库标签 %s → %s" % (sid, ", ".join(vclean) or "（已清除）"))
+        return self._send(200, {"id": sid, "tags": vclean})
 
     def _delete(self):
         body = self._body()

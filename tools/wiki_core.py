@@ -325,6 +325,95 @@ def EnsureNodeRawfile(onode):
         onode["rawfile"] = sfile
 
 
+LIB_TAG_PREFIX = "@id:"
+
+
+def GetLibTags(skey):
+    """读取论文库自定义标签（按 source id 存于 source_meta.json）。"""
+    oentry = ReadSourceMeta().get(LIB_TAG_PREFIX + (skey or ""), {})
+    vtags = oentry.get("lib_tags", []) if isinstance(oentry, dict) else []
+    return [str(t).strip() for t in vtags if str(t).strip()]
+
+
+def SetLibTags(skey, vtags):
+    """保存论文库自定义标签。"""
+    skey = (skey or "").strip()
+    if not skey:
+        raise ValueError("缺少文献 id")
+    vclean = []
+    vseen = set()
+    for stag in vtags or []:
+        sval = str(stag).strip()
+        if not sval or sval in vseen:
+            continue
+        vseen.add(sval)
+        vclean.append(sval)
+    ometa = ReadSourceMeta()
+    smeta = LIB_TAG_PREFIX + skey
+    if vclean:
+        ometa[smeta] = {"lib_tags": vclean}
+    elif smeta in ometa:
+        del ometa[smeta]
+    WriteSourceMeta(ometa)
+    return vclean
+
+
+def HasDeepReportFile(skey):
+    """是否已有深度研究报告文件。"""
+    if not skey:
+        return False
+    spath = os.path.join(wikidir, "analysis", skey + "-report.md")
+    return os.path.isfile(spath)
+
+
+def _SameSource(a, b):
+    """判断两个 source 节点是否指向同一篇文献。"""
+    if a.get("id") == b.get("id"):
+        return True
+    sid_a = (a.get("id") or "").lower()
+    sid_b = (b.get("id") or "").lower()
+    if sid_a and sid_a == sid_b:
+        return True
+    if a.get("id") in (b.get("aliases") or []) or b.get("id") in (a.get("aliases") or []):
+        return True
+    rfa = a.get("rawfile") or ResolveRawfileForKey(a.get("id", ""))
+    rfb = b.get("rawfile") or ResolveRawfileForKey(b.get("id", ""))
+    return bool(rfa and rfb and rfa == rfb)
+
+
+def DedupeSourceNodes(vnodes):
+    """合并重复 source 节点（如同一 PDF 的待纳入卡片 + 已纳入卡片）。"""
+    vothers = [n for n in vnodes if n.get("type") != "source"]
+    vsources = [n for n in vnodes if n.get("type") == "source"]
+    vmerged = []
+    for n in vsources:
+        EnsureNodeRawfile(n)
+        omatch = next((m for m in vmerged if _SameSource(n, m)), None)
+        if omatch:
+            MergeWikiIntoNode(omatch, n, {"type": "source"})
+            EnsureNodeRawfile(omatch)
+        else:
+            vmerged.append(n)
+    return vothers + vmerged
+
+
+def EnrichSourceLibraryMeta(vnodes):
+    """为 source 节点补充论文库分类阶段与自定义标签。"""
+    for n in vnodes:
+        if n.get("type") != "source":
+            continue
+        EnsureNodeRawfile(n)
+        bdeep = HasDeepReportFile(n.get("id", ""))
+        n["deep_done"] = bdeep
+        if bdeep:
+            n["lib_stage"] = "deep"
+        elif n.get("ingested"):
+            n["lib_stage"] = "active"
+        else:
+            n["lib_stage"] = "todo"
+        n["lib_tags"] = GetLibTags(n.get("id", ""))
+
+
 def ScanWiki():
     """扫描 wiki 内容页与 purpose.md，返回节点与边。"""
     vnodes = []
@@ -372,7 +461,11 @@ def ScanWiki():
             }
             existing = next((n for n in vnodes if n["id"] == nodeid), None)
             if not existing and nodeid:
+                existing = next((n for n in vnodes if n["id"].lower() == nodeid.lower()), None)
+            if not existing and nodeid:
                 existing = next((n for n in vnodes if nodeid in (n.get("aliases") or [])), None)
+            if not existing and nodeid:
+                existing = next((n for n in vnodes if nodeid.lower() in [a.lower() for a in (n.get("aliases") or [])]), None)
             if existing:
                 MergeWikiIntoNode(existing, onode, ofm)
                 EnsureNodeRawfile(existing)
@@ -435,6 +528,8 @@ def TopicsWithCounts():
 
 def BuildData():
     vnodes, vedges = ScanWiki()
+    vnodes = DedupeSourceNodes(vnodes)
+    EnrichSourceLibraryMeta(vnodes)
     odegree = {n["id"]: 0 for n in vnodes}
     for e in vedges:
         odegree[e["source"]] += 1
@@ -553,6 +648,10 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   [data-theme="fresh"]{--surface-hi:rgba(255,255,255,.52);--bg1:#f3f5f2;--bg2:#eceee9;--bg3:#f0f2ef;--panel:#f8f9f7;--panel2:#eef1ec;--panel-glass:rgba(248,249,247,.94);--float-panel:rgba(248,249,247,.9);--border:#d8ddd4;--text:#3f4a44;--text-soft:#5a6560;--muted:#8a9490;--badge-text:#3f4a44;--accent:#7a9488;--accent2:#94a89e;--accent3:#a8b8a4;--rose:#b88888;--sage:#7a9488;--gold:#b8a878;--shadow:0 12px 40px rgba(63,74,68,.08);--shadow-sm:0 4px 16px rgba(63,74,68,.06);--btn-shadow:0 4px 14px rgba(122,148,136,.18);--tab-shadow:0 4px 12px rgba(122,148,136,.2);--card-hover-border:rgba(122,148,136,.38);--card-hover-shadow:0 14px 32px rgba(122,148,136,.1);--focus-border:rgba(122,148,136,.42);--focus-shadow:rgba(122,148,136,.1);--scroll-thumb:rgba(122,148,136,.24);--modal-backdrop:rgba(63,74,68,.22);--overlay-backdrop:rgba(63,74,68,.2);--dropzone-border:rgba(122,148,136,.28);--dropzone-drag:rgba(122,148,136,.07);--dropzone-bg:rgba(248,249,247,.65);--doc-preview-bg:#e6ebe6;--revpick-bg:rgba(122,148,136,.08);--cmt-active-bg:rgba(122,148,136,.06);--cmt-active-border:rgba(122,148,136,.32);--ghost-hover:rgba(122,148,136,.08);--btn-sec-hover:rgba(122,148,136,.35);--ruletab-hover:rgba(122,148,136,.3);--svc-on-bg:rgba(122,148,136,.16);--toast-border:rgba(122,148,136,.28);--toast-shadow:0 10px 32px rgba(122,148,136,.12);--drawer-bg:rgba(248,249,247,.97);--drawer-shadow:-8px 0 32px rgba(63,74,68,.06);--revdiff-loading:rgba(248,249,247,.8);--graph-link:rgba(63,74,68,.12);--graph-link-active:rgba(122,148,136,.62);--graph-label:#3f4a44;--graph-ring:rgba(63,74,68,.28);  --tab-hover:rgba(255,255,255,.55);--depth3d:rgba(122,148,136,.09);--ambient3d:rgba(122,148,136,.05);--inset-edge3d:rgba(148,168,158,.08);--inset-press3d:rgba(122,148,136,.06);--rim3d:rgba(122,148,136,.16);--stone-fade3d:rgba(148,168,158,.2);--btn-depth3d:rgba(106,138,124,.11);--btn-ambient3d:rgba(122,148,136,.07);--btn-press3d:rgba(122,148,136,.08)}
   [data-theme="boyish"]{--surface-hi:rgba(255,255,255,.55);--bg1:#f0f4fa;--bg2:#e8eef8;--bg3:#eef2fa;--panel:#ffffff;--panel2:#eef3fa;--panel-glass:rgba(255,255,255,.94);--float-panel:rgba(255,255,255,.9);--border:#c8d8ec;--text:#1e3a5f;--text-soft:#3d5a80;--muted:#6a85a8;--badge-text:#1e3a5f;--accent:#3d7dd6;--accent2:#5a9de8;--accent3:#f0a050;--rose:#e06070;--sage:#4aaa78;--gold:#e8a040;--shadow:0 12px 40px rgba(30,58,95,.1);--shadow-sm:0 4px 16px rgba(30,58,95,.08);--btn-shadow:0 4px 14px rgba(61,125,214,.28);--tab-shadow:0 4px 12px rgba(61,125,214,.26);--card-hover-border:rgba(61,125,214,.5);--card-hover-shadow:0 14px 32px rgba(61,125,214,.16);--focus-border:rgba(61,125,214,.55);--focus-shadow:rgba(61,125,214,.14);--scroll-thumb:rgba(61,125,214,.3);--modal-backdrop:rgba(30,58,95,.3);--overlay-backdrop:rgba(30,58,95,.26);--dropzone-border:rgba(61,125,214,.38);--dropzone-drag:rgba(61,125,214,.1);--dropzone-bg:rgba(255,255,255,.6);--doc-preview-bg:#d0d8e4;--revpick-bg:rgba(61,125,214,.1);--cmt-active-bg:rgba(61,125,214,.07);--cmt-active-border:rgba(61,125,214,.45);--ghost-hover:rgba(61,125,214,.08);--btn-sec-hover:rgba(61,125,214,.45);--ruletab-hover:rgba(61,125,214,.4);--svc-on-bg:rgba(61,125,214,.2);--toast-border:rgba(61,125,214,.38);--toast-shadow:0 10px 32px rgba(61,125,214,.18);--drawer-bg:rgba(255,255,255,.97);--drawer-shadow:-8px 0 32px rgba(30,58,95,.1);--revdiff-loading:rgba(255,255,255,.78);--graph-link:rgba(30,58,95,.14);--graph-link-active:rgba(61,125,214,.75);--graph-label:#1e3a5f;--graph-ring:rgba(30,58,95,.35);  --tab-hover:rgba(255,255,255,.8);--depth3d:rgba(61,125,214,.1);--ambient3d:rgba(61,125,214,.06);--inset-edge3d:rgba(140,175,220,.09);--inset-press3d:rgba(61,125,214,.07);--rim3d:rgba(61,125,214,.2);--stone-fade3d:rgba(140,175,220,.22);--btn-depth3d:rgba(50,110,195,.13);--btn-ambient3d:rgba(61,125,214,.08);--btn-press3d:rgba(61,125,214,.09)}
   [data-theme="cool"]{--surface-hi:rgba(255,255,255,.1);--bg1:#0d1117;--bg2:#121820;--bg3:#0f1419;--panel:#161b22;--panel2:#1c2330;--panel-glass:rgba(22,27,34,.94);--float-panel:rgba(22,27,34,.9);--border:#30363d;--text:#e6edf3;--text-soft:#b8c4d0;--muted:#7d8a98;--badge-text:#e6edf3;--accent:#00d4ff;--accent2:#a855f7;--accent3:#22d3ee;--rose:#ff6b8a;--sage:#34d399;--gold:#fbbf24;--shadow:0 12px 40px rgba(0,0,0,.45);--shadow-sm:0 4px 16px rgba(0,0,0,.32);--btn-shadow:0 4px 18px rgba(0,212,255,.22);--tab-shadow:0 4px 14px rgba(0,212,255,.28);--card-hover-border:rgba(0,212,255,.45);--card-hover-shadow:0 14px 36px rgba(0,212,255,.12);--focus-border:rgba(0,212,255,.55);--focus-shadow:rgba(0,212,255,.16);--scroll-thumb:rgba(0,212,255,.28);--modal-backdrop:rgba(0,0,0,.55);--overlay-backdrop:rgba(0,0,0,.48);--dropzone-border:rgba(0,212,255,.32);--dropzone-drag:rgba(0,212,255,.08);--dropzone-bg:rgba(28,35,48,.55);--doc-preview-bg:#2a3038;--revpick-bg:rgba(0,212,255,.08);--cmt-active-bg:rgba(0,212,255,.06);--cmt-active-border:rgba(0,212,255,.4);--ghost-hover:rgba(0,212,255,.1);--btn-sec-hover:rgba(0,212,255,.45);--ruletab-hover:rgba(0,212,255,.35);--svc-on-bg:rgba(0,212,255,.18);--toast-border:rgba(0,212,255,.35);--toast-shadow:0 10px 32px rgba(0,212,255,.15);--drawer-bg:rgba(22,27,34,.98);--drawer-shadow:-8px 0 36px rgba(0,0,0,.35);--revdiff-loading:rgba(22,27,34,.82);--graph-link:rgba(230,237,243,.12);--graph-link-active:rgba(0,212,255,.8);--graph-label:#e6edf3;--graph-ring:rgba(230,237,243,.4);  --tab-hover:rgba(28,35,48,.9);--depth3d:rgba(0,212,255,.11);--ambient3d:rgba(168,85,247,.07);--inset-edge3d:rgba(0,212,255,.08);--inset-press3d:rgba(0,180,220,.09);--rim3d:rgba(0,212,255,.22);--stone-fade3d:rgba(168,85,247,.18);--btn-depth3d:rgba(0,160,200,.14);--btn-ambient3d:rgba(0,212,255,.09);--btn-press3d:rgba(0,212,255,.1)}
+  :root,[data-theme="girly"]{--lib-todo-bg:linear-gradient(155deg,rgba(250,246,244,.95),rgba(245,236,232,.88));--lib-todo-rim:rgba(154,138,148,.28);--lib-active-bg:linear-gradient(155deg,rgba(255,252,251,.98),rgba(246,240,248,.92));--lib-active-rim:rgba(201,120,154,.32);--lib-deep-bg:linear-gradient(155deg,rgba(255,248,252,.98),rgba(237,228,248,.9));--lib-deep-rim:rgba(184,159,216,.45)}
+  [data-theme="fresh"]{--lib-todo-bg:linear-gradient(155deg,rgba(243,245,242,.95),rgba(236,238,233,.9));--lib-todo-rim:rgba(138,148,144,.26);--lib-active-bg:linear-gradient(155deg,rgba(248,249,247,.98),rgba(238,244,238,.92));--lib-active-rim:rgba(122,148,136,.34);--lib-deep-bg:linear-gradient(155deg,rgba(245,249,246,.98),rgba(228,238,232,.9));--lib-deep-rim:rgba(122,148,136,.42)}
+  [data-theme="boyish"]{--lib-todo-bg:linear-gradient(155deg,rgba(240,244,250,.96),rgba(232,238,248,.9));--lib-todo-rim:rgba(106,133,168,.28);--lib-active-bg:linear-gradient(155deg,rgba(255,255,255,.98),rgba(238,243,250,.94));--lib-active-rim:rgba(61,125,214,.36);--lib-deep-bg:linear-gradient(155deg,rgba(248,251,255,.98),rgba(230,240,252,.92));--lib-deep-rim:rgba(61,125,214,.48)}
+  [data-theme="cool"]{--lib-todo-bg:linear-gradient(155deg,rgba(22,27,34,.96),rgba(28,35,48,.92));--lib-todo-rim:rgba(125,138,152,.35);--lib-active-bg:linear-gradient(155deg,rgba(22,27,34,.98),rgba(32,40,54,.94));--lib-active-rim:rgba(0,212,255,.32);--lib-deep-bg:linear-gradient(155deg,rgba(24,32,42,.98),rgba(36,28,52,.94));--lib-deep-rim:rgba(168,85,247,.42)}
   *{box-sizing:border-box;margin:0;padding:0}
   body{background:linear-gradient(165deg,var(--bg1) 0%,var(--bg2) 45%,var(--bg3) 100%);color:var(--text);font-family:var(--font-body);font-size:14px;font-weight:400;line-height:1.6;letter-spacing:var(--ls-ui);-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;text-rendering:optimizeLegibility;height:100vh;overflow:hidden;display:flex;flex-direction:column;transition:background .35s,color .25s,font-family .25s}
   button,input,select,textarea{font-family:inherit}
@@ -592,8 +691,20 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   .libempty-wrap{display:flex;align-items:center;justify-content:center;min-height:min(360px,calc(100vh - 340px));grid-column:1/-1;width:100%}
   .libempty{text-align:center;color:var(--muted);font-size:14px;line-height:1.9;padding:24px 20px}
   .libempty .hint-title{font-family:var(--font-display);font-size:16px;font-weight:var(--fw-display);letter-spacing:var(--ls-title);color:var(--text-soft);margin-bottom:6px}
-  .card{padding:18px;border-radius:22px;cursor:pointer;position:relative}
-  .card .ttl{font-family:var(--font-display);font-size:15px;font-weight:var(--fw-display);letter-spacing:var(--ls-title);line-height:1.45;margin-bottom:8px;padding-right:20px;color:var(--text);position:relative;z-index:2}
+  .card{padding:18px;border-radius:22px;cursor:pointer;position:relative;border:1px solid transparent;transition:border-color .2s,box-shadow .2s,transform .2s,opacity .2s}
+  .card.lib-todo{background:var(--lib-todo-bg,var(--panel));border-color:var(--lib-todo-rim,var(--border))}
+  .card.lib-active{background:var(--lib-active-bg,var(--panel));border-color:var(--lib-active-rim,var(--border))}
+  .card.lib-deep{background:var(--lib-deep-bg,var(--panel));border-color:var(--lib-deep-rim,var(--accent))}
+  .card.stone3d.lib-todo{background:var(--lib-todo-bg,var(--panel))!important;border-color:var(--lib-todo-rim,var(--border))!important}
+  .card.stone3d.lib-active{background:var(--lib-active-bg,var(--panel))!important;border-color:var(--lib-active-rim,var(--border))!important}
+  .card.stone3d.lib-deep{background:var(--lib-deep-bg,var(--panel))!important;border-color:var(--lib-deep-rim,var(--accent))!important}
+  .card .stagepill{position:absolute;top:10px;left:12px;font-size:10px;padding:2px 8px;border-radius:999px;background:var(--panel2);color:var(--muted);border:1px solid var(--border);z-index:3}
+  .card.lib-deep .stagepill{color:var(--accent);border-color:var(--lib-deep-rim,var(--accent));background:var(--ghost-hover)}
+  .card.lib-active .stagepill{color:var(--accent);border-color:var(--lib-active-rim,var(--border))}
+  .grid.lib-fade-out{opacity:0;transform:translateY(8px);transition:opacity .22s ease,transform .22s ease;pointer-events:none}
+  .grid.lib-fade-in{animation:libGridIn .3s cubic-bezier(.22,1,.36,1) both}
+  @keyframes libGridIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+  .card .ttl{font-family:var(--font-display);font-size:15px;font-weight:var(--fw-display);letter-spacing:var(--ls-title);line-height:1.45;margin-bottom:8px;padding:18px 20px 0 0;color:var(--text);position:relative;z-index:2}
   .card .sub{font-size:12px;color:var(--muted);margin-bottom:8px;position:relative;z-index:2}
   .card .sum{font-size:13px;color:var(--text-soft);line-height:1.6;position:relative;z-index:2}
   .card .tags,.card .pdfbtn,.card .urlbtn{position:relative;z-index:3}
@@ -603,8 +714,8 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   .badge{display:inline-block;font-size:11px;padding:3px 10px;border-radius:999px;color:var(--badge-text);font-weight:600;margin-right:6px;opacity:.92}
   .badge.soft{background:var(--panel2);color:var(--muted);font-weight:500}
   .tags{margin-top:10px}
-  .pending{opacity:.78}
-  .pending .ttl::after{content:" · 待纳入研究";font-size:11px;color:var(--muted);font-weight:400}
+  .pending{opacity:.92}
+  .pending.lib-todo .ttl::after{content:" · 待纳入";font-size:11px;color:var(--muted);font-weight:400}
   .field.research .k{color:var(--accent)}
   .field.research .research-txt{font-size:13px;line-height:1.65;color:var(--text-soft);margin-top:4px;white-space:pre-wrap}
   .field.research .rqchip{display:inline-block;margin:2px 6px 2px 0;padding:2px 10px;border-radius:999px;background:var(--panel2);border:1px solid var(--border);font-size:12px;cursor:pointer}
@@ -813,6 +924,18 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   .topicpick-item.active{color:var(--accent);font-weight:600}
   .topicpick-item .topicpick-text{display:inline-block;white-space:nowrap;will-change:transform}
   .libtabs{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:0 0 10px;padding:4px 2px}
+  .libtoolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:0 0 12px;padding:2px}
+  .libfilt{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+  .libfiltbtn{padding:6px 14px;border-radius:999px;border:1px solid var(--border);background:var(--panel2);color:var(--muted);font-family:var(--font-ui);font-size:12px;font-weight:var(--fw-ui);cursor:pointer;transition:background .2s,color .2s,border-color .2s,box-shadow .2s,transform .15s}
+  .libfiltbtn:hover{border-color:var(--accent);color:var(--text-soft)}
+  .libfiltbtn.active{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;border-color:transparent;box-shadow:var(--tab-shadow)}
+  .libfiltbtn .cnt{font-size:10px;margin-left:5px;padding:1px 6px;border-radius:999px;background:rgba(255,255,255,.2)}
+  .libfiltbtn:not(.active) .cnt{background:var(--panel);color:var(--muted)}
+  .libsearch{flex:1;min-width:180px;max-width:360px;padding:8px 14px;border-radius:999px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:13px;outline:none;transition:border-color .2s,box-shadow .2s}
+  .libsearch:focus{border-color:var(--focus-border);box-shadow:0 0 0 3px var(--focus-shadow)}
+  .libtagbar{display:flex;gap:6px;flex-wrap:wrap;margin:-4px 0 12px}
+  .libtagchip{padding:4px 12px;border-radius:999px;border:1px solid var(--border);background:var(--panel2);color:var(--muted);font-size:11px;cursor:pointer;transition:.18s}
+  .libtagchip:hover,.libtagchip.active{border-color:var(--accent);color:var(--accent);background:var(--ghost-hover)}
   .libtab{display:inline-flex;align-items:center;gap:6px;max-width:min(280px,100%);padding:6px 14px;border-radius:999px;cursor:pointer;font-family:var(--font-ui);font-size:13px;font-weight:var(--fw-ui);letter-spacing:var(--ls-ui);color:var(--muted);background:var(--panel2);border:1px solid var(--border);transition:background .22s ease,color .22s ease,border-color .22s ease,box-shadow .22s ease}
   .libtab:hover{border-color:var(--accent);color:var(--text-soft)}
   .libtab.active{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;border-color:transparent;box-shadow:var(--tab-shadow)}
@@ -919,7 +1042,7 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
 </header>
 <button type="button" class="theme-fab" id="theme_fab" onclick="OpenThemePicker()" title="切换界面主题">🎨</button>
 <main>
-  <section id="libview" class="view active"><div class="libtabs" id="libtabs"></div><div class="stats" id="statsbar"></div><div class="dropzone" id="dropzone">🌷 拖放 PDF / Word / Markdown 到此处，或点击「添加文献」开始整理</div><div class="grid" id="libgrid"></div></section>
+  <section id="libview" class="view active"><div class="libtabs" id="libtabs"></div><div class="libtoolbar"><div class="libfilt" id="libfilt"></div><input type="search" class="libsearch" id="libsearch" placeholder="搜索标题、作者、标签…" autocomplete="off"></div><div class="libtagbar" id="libtagbar"></div><div class="stats" id="statsbar"></div><div class="dropzone" id="dropzone">🌷 拖放 PDF / Word / Markdown 到此处，或点击「添加文献」开始整理</div><div class="grid" id="libgrid"></div></section>
   <section id="graphview" class="view"><canvas id="graphcanvas"></canvas><div class="legend" id="legend"></div><div class="graphfilter"><label>筛选 </label><select id="graph_filter" onchange="ApplyGraphFilter()"><option value="">全部类型</option></select></div><div class="hint">滚轮缩放 · 拖拽平移 · 拖动节点 · 点击查看详情</div></section>
   <section id="listview" class="view"></section>
   <section id="docview" class="view">
@@ -1249,6 +1372,99 @@ function LibTopicCount(t){
   if(t.id===CURRENT_TOPIC)return (DATA.nodes||[]).filter(n=>n.type==="source").length;
   return t.source_count!=null?t.source_count:0;
 }
+let LIB_FILTER="all";
+let LIB_TAG="";
+let LIB_SEARCH="";
+let _libAnimTimer=null;
+const LIB_FILTERS=[
+  {id:"all",label:"全部"},
+  {id:"todo",label:"待研究"},
+  {id:"deep",label:"已深度研究"},
+];
+function LibSources(){return (DATA.nodes||[]).filter(n=>n.type==="source")}
+function LibStageLabel(n){
+  if(n.lib_stage==="deep"||n.deep_done)return "已深度研究";
+  if(n.lib_stage==="active"||(n.ingested&&!n.deep_done))return "研究中";
+  return "待纳入";
+}
+function LibStageClass(n){
+  if(n.lib_stage==="deep"||n.deep_done)return "lib-deep";
+  if(n.lib_stage==="active"||(n.ingested&&!n.deep_done))return "lib-active";
+  return "lib-todo";
+}
+function LibAllTags(){
+  const vset=new Set();
+  LibSources().forEach(n=>{(n.lib_tags||[]).forEach(t=>vset.add(t));(n.tags||[]).forEach(t=>vset.add(t))});
+  return [...vset].sort((a,b)=>a.localeCompare(b,"zh"));
+}
+function LibFuzzyMatch(n,q){
+  if(!q)return true;
+  q=q.trim().toLowerCase();
+  if(!q)return true;
+  const hay=[n.title,n.summary,n.year,n.venue,n.id,(n.authors||[]).join(" "),(n.tags||[]).join(" "),(n.lib_tags||[]).join(" ")].join(" ").toLowerCase();
+  if(hay.includes(q))return true;
+  const vwords=q.split(/\s+/).filter(Boolean);
+  return vwords.every(w=>hay.includes(w));
+}
+function LibFilterMatch(n){
+  if(LIB_TAG){
+    const vtags=[...(n.lib_tags||[]),...(n.tags||[])];
+    if(!vtags.includes(LIB_TAG))return false;
+  }
+  if(!LibFuzzyMatch(n,LIB_SEARCH))return false;
+  if(LIB_FILTER==="all")return true;
+  if(LIB_FILTER==="todo")return !(n.deep_done||n.lib_stage==="deep");
+  if(LIB_FILTER==="deep")return !!(n.deep_done||n.lib_stage==="deep");
+  return true;
+}
+function LibFilterCounts(){
+  const vs=LibSources();
+  return {
+    all:vs.length,
+    todo:vs.filter(n=>!(n.deep_done||n.lib_stage==="deep")).length,
+    deep:vs.filter(n=>n.deep_done||n.lib_stage==="deep").length,
+  };
+}
+function RenderLibFilters(){
+  const bar=document.getElementById("libfilt");if(!bar)return;
+  const oc=LibFilterCounts();
+  bar.innerHTML=LIB_FILTERS.map(f=>`<button type="button" class="libfiltbtn${f.id===LIB_FILTER?" active":""}" data-id="${Attr(f.id)}">${Esc(f.label)}<span class="cnt">${oc[f.id]||0}</span></button>`).join("");
+  bar.querySelectorAll(".libfiltbtn").forEach(el=>{el.onclick=()=>SetLibFilter(el.dataset.id)});
+  const osearch=document.getElementById("libsearch");
+  if(osearch&&osearch.value!==LIB_SEARCH)osearch.value=LIB_SEARCH;
+  if(osearch&&!osearch._bound){
+    osearch._bound=true;
+    let ot=null;
+    osearch.oninput=()=>{clearTimeout(ot);ot=setTimeout(()=>{LIB_SEARCH=osearch.value;AnimateRenderLibrary()},220)};
+  }
+}
+function RenderLibTagBar(){
+  const bar=document.getElementById("libtagbar");if(!bar)return;
+  const vtags=LibAllTags();
+  if(!vtags.length){bar.style.display="none";bar.innerHTML="";return}
+  bar.style.display="";
+  bar.innerHTML=`<button type="button" class="libtagchip${!LIB_TAG?" active":""}" data-tag="">全部标签</button>`+
+    vtags.map(t=>`<button type="button" class="libtagchip${LIB_TAG===t?" active":""}" data-tag="${Attr(t)}">${Esc(t)}</button>`).join("");
+  bar.querySelectorAll(".libtagchip").forEach(el=>{el.onclick=()=>{LIB_TAG=el.dataset.tag||"";AnimateRenderLibrary()}});
+}
+function SetLibFilter(sid){
+  if(!sid||sid===LIB_FILTER)return;
+  LIB_FILTER=sid;
+  AnimateRenderLibrary();
+}
+function AnimateRenderLibrary(){
+  const grid=document.getElementById("libgrid");if(!grid){RenderLibrary();return}
+  clearTimeout(_libAnimTimer);
+  grid.classList.remove("lib-fade-in");
+  grid.classList.add("lib-fade-out");
+  _libAnimTimer=setTimeout(()=>{
+    RenderLibrary(true);
+    grid.classList.remove("lib-fade-out");
+    void grid.offsetWidth;
+    grid.classList.add("lib-fade-in");
+    setTimeout(()=>grid.classList.remove("lib-fade-in"),320);
+  },180);
+}
 function RenderLibTabs(){
   const bar=document.getElementById("libtabs");
   if(!bar)return;
@@ -1261,33 +1477,43 @@ function RenderLibTabs(){
   bar.querySelectorAll(".libtab").forEach(el=>{el.onclick=()=>PickLibTopic(el.dataset.id)});
 }
 function PickLibTopic(nid){PickTopic(nid)}
-function RenderLibrary(){
-  const sources=DATA.nodes.filter(n=>n.type==="source");
+function RenderLibrary(bskipToolbar){
+  const sources=LibSources().filter(LibFilterMatch);
   const grid=document.getElementById("libgrid");
-  if(!sources.length){
+  if(!bskipToolbar){RenderLibFilters();RenderLibTagBar()}
+  if(!LibSources().length){
     grid.innerHTML='<div class="libempty-wrap"><div class="libempty"><div class="hint-title">📚 论文库为空</div>点击左上角「＋ 添加文献」上传 PDF、Word 或 Markdown<br>也可拖放到上方区域开始整理</div></div>';
+    return;
+  }
+  if(!sources.length){
+    grid.innerHTML='<div class="libempty-wrap"><div class="libempty"><div class="hint-title">🔍 无匹配文献</div>试试切换分类、清除标签或修改搜索词</div></div>';
     return;
   }
   grid.innerHTML=sources.map(n=>{
     const authors=(n.authors||[]).filter(Boolean).join(", ");
     const sub=[authors,n.year,n.venue].filter(Boolean).join(" · ");
-    const tags=(n.tags||[]).map(t=>`<span class="badge soft">${Esc(t)}</span>`).join("");
+    const valltags=[...new Set([...(n.tags||[]),...(n.lib_tags||[])])];
+    const tags=valltags.map(t=>`<span class="badge soft">${Esc(t)}</span>`).join("");
     const pdfbtn=IsPdf(n.rawfile)?`<button class="pdfbtn" onclick="event.stopPropagation();OpenPdf('${Attr(n.rawfile)}')">${DESKTOPMODE?"📄 浏览器打开":"📄 打开 PDF"}</button>`:"";
     const surl=SafeUrl(n.url);
     const urlbtn=surl?`<button class="urlbtn" onclick="event.stopPropagation();OpenPaperUrl('${Attr(surl)}')">🔗 在线阅读</button>`:"";
     const del=(SERVERMODE&&n.rawfile)?`<span class="del" title="删除" onclick="event.stopPropagation();DeletePaper('${Attr(n.rawfile)}')">🗑</span>`:"";
     const rq=(n.research&&n.research.rq_links&&n.research.rq_links.length)?`<span class="badge soft" title="已关联研究问题">RQ</span>`:"";
-    const hasReport=HasDeepReport(n.id);
-    const canDeep=SERVERMODE&&n.ingested&&!!n.rawfile;
+    const hasReport=!!(n.deep_done||HasDeepReport(n.id));
+    const canDeep=SERVERMODE&&n.ingested&&!!n.rawfile&&!hasReport;
     const reportbtn=hasReport
-      ?`<button class="reportlink" onclick="event.stopPropagation();OpenDrawer('${Attr(n.id)}-report')">📋 研究报告</button>`
+      ?`<button class="urlbtn" onclick="event.stopPropagation();OpenDrawer('${Attr(n.id)}-report')">📋 研究报告</button>`
       :(canDeep?`<button class="urlbtn" id="deep_btn_${Attr(n.id)}" onclick="event.stopPropagation();DeepAnalyzeById('${Attr(n.id)}')">📋 深度分析</button>`:"");
-    return `<div class="card ${n.ingested?'':'pending'}" onclick="OpenDrawer('${Attr(n.id)}')">
+    const sstage=LibStageClass(n);
+    const spending=!n.ingested?" pending":"";
+    return `<div class="card stone3d ${sstage}${spending}" onclick="OpenDrawer('${Attr(n.id)}')">
+      <span class="stagepill">${Esc(LibStageLabel(n))}</span>
       ${del}<div class="ttl">${Esc(n.title)} ${rq}</div>
       <div class="sub">${Esc(sub)||"—"}</div>
       <div class="sum">${Esc(n.summary||"")}</div>
       <div class="tags">${tags}</div><div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px">${urlbtn}${pdfbtn}${reportbtn}</div></div>`;
   }).join("");
+  InitUi3d();
 }
 function RenderList(){
   const v=document.getElementById("listview");
@@ -1337,7 +1563,13 @@ function OpenDrawer(id){
     if(r.next_steps)h+=`<div class="field research"><div class="k">下一步</div><div class="research-txt">${Esc(r.next_steps)}</div></div>`;
     if(r.limits)h+=`<div class="field research"><div class="k">局限与存疑</div><div class="research-txt">${Esc(r.limits)}</div></div>`;
   }
-  if((n.tags||[]).length)h+=`<div class="field"><div class="k">标签</div>${n.tags.map(t=>`<span class="badge soft">${Esc(t)}</span>`).join("")}</div>`;
+  if((n.tags||[]).length||(n.lib_tags||[]).length){
+    const vshow=[...new Set([...(n.tags||[]),...(n.lib_tags||[])])];
+    h+=`<div class="field"><div class="k">标签</div>${vshow.map(t=>`<span class="badge soft">${Esc(t)}</span>`).join("")}</div>`;
+  }
+  if(n.type==="source"&&SERVERMODE){
+    h+=`<div class="field"><div class="k">论文库标签</div><div class="urledit"><input id="lib_tags_input" value="${Esc((n.lib_tags||[]).join(", "))}" placeholder="自定义标签，逗号分隔"><button class="btn ghost" onclick="SaveLibTags('${Attr(n.id)}')">保存</button></div><div style="font-size:11px;color:var(--muted);margin-top:6px">用于论文库分类筛选，与 wiki 标签独立</div></div>`;
+  }
   if(neigh.length)h+=`<div class="field links"><div class="k">关联页面 (${neigh.length})</div>${neigh.map(x=>`<a onclick="OpenDrawer('${Attr(x)}')">${Esc((NODEMAP[x]||{}).title||x)}</a>`).join("")}</div>`;
   if(!n.ingested&&n.rawfile)h+=`<div class="field"><button class="btn" onclick="Analyze('${Attr(n.rawfile)}')">✨ 纳入这篇文献</button></div>`;
   // 深度研究报告入口
@@ -1412,9 +1644,24 @@ async function SavePaperUrl(sid,sraw){
     const n=NODEMAP[sid];
     if(n)n.url=surl;
     DATA.nodes.filter(x=>x.id===sid).forEach(x=>{x.url=surl});
-    RenderLibrary();
+    AnimateRenderLibrary();
     OpenDrawer(sid);
     Toast(surl?"链接已保存":"链接已清除");
+  }catch(e){Toast("保存失败："+e.message)}
+}
+async function SaveLibTags(sid){
+  if(NeedServer())return;
+  const oinp=document.getElementById("lib_tags_input");
+  const vtags=(oinp?oinp.value:"").split(/[,，;；\n]+/).map(s=>s.trim()).filter(Boolean);
+  try{
+    const r=await Api("/api/source/tags",{id:sid,tags:vtags});
+    const vclean=r.tags||vtags;
+    const n=NODEMAP[sid];
+    if(n)n.lib_tags=vclean;
+    DATA.nodes.filter(x=>x.id===sid).forEach(x=>{x.lib_tags=vclean});
+    AnimateRenderLibrary();
+    OpenDrawer(sid);
+    Toast("论文库标签已保存");
   }catch(e){Toast("保存失败："+e.message)}
 }
 
@@ -1562,6 +1809,7 @@ async function OnTopicSwitched(soldtopic,snewid,snewname,bnewtopic){
   await LoadTopics();
   await LoadDocsList();
   await RefreshOnboardingState();
+  AnimateRenderLibrary();
 }
 async function PickTopic(nid){
   CloseTopicMenu();
@@ -2972,6 +3220,7 @@ function SwitchView(vid){
   }
   if(vid==="graphview"){if(!canvas)InitGraph();else ResizeCanvas()}
   if(vid==="docview")LoadDocsList();
+  if(vid==="libview")setTimeout(()=>AnimateRenderLibrary(),40);
 }
 document.querySelectorAll(".tab").forEach(tab=>{tab.onclick=()=>SwitchView(tab.dataset.view)});
 
@@ -3034,6 +3283,7 @@ function StartDeepPolling(rawfile,skey){
         clearInterval(_deepPoll);_deepPoll=null;
         Toast("✅ 深度分析完成");
         await Refresh(true);
+        AnimateRenderLibrary();
         if(oresp.result.key)OpenDrawer(oresp.result.key+"-report");
       }
     }catch(e){/* continue polling */}
