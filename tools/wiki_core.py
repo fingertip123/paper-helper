@@ -652,6 +652,13 @@ def ScanWiki():
                 "research": ExtractSourceResearch(nbody) if ofm.get("type") == "source" else {},
                 "body": nbody if stype == "analysis-report" else "",
             }
+            if stype == "analysis-report":
+                try:
+                    import research_deep as rdeep
+                    nbody = rdeep.NormalizeReportBody(nbody, onode.get("title"))
+                    onode["body"] = nbody
+                except Exception:
+                    pass
             existing = next((n for n in vnodes if n["id"] == nodeid), None)
             if not existing and nodeid:
                 existing = next((n for n in vnodes if n["id"].lower() == nodeid.lower()), None)

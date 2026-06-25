@@ -223,23 +223,109 @@ def _Stage4CrossLit(oconfig, skey, stitle, ostruct, sprior_sources, sconcepts):
 
 
 # ---- 阶段⑤ 写作素材 + 报告正文 ----
+vpreamblepatterns = (
+    r"以下(是|为)",
+    r"报告如下",
+    r"正文如下",
+    r"我将(根据|基于)",
+    r"作为.*助手",
+    r"基于(前|上述|提供|五阶段|JSON)",
+    r"不含.*frontmatter",
+    r"^\*\*说明",
+    r"深度分析报告",
+    r"生成如下",
+)
+
+
+def _IsReportPreamble(stext):
+    if not stext:
+        return False
+    if re.search(r"^>\s", stext, re.M):
+        return True
+    for spat in vpreamblepatterns:
+        if re.search(spat, stext, re.I | re.M):
+            return True
+    return len(stext) < 280 and not re.search(r"^##\s*1[\.\s]", stext, re.M)
+
+
+def _RenumberOrderedListBlock(sblock):
+    """将连续以 1. 开头的列表项改为 1. 2. 3. …"""
+    vlines = sblock.split("\n")
+    vout = []
+    nnum = 0
+    for sline in vlines:
+        omatch = re.match(r"^(\s*)1\.\s+(.+)$", sline)
+        if omatch:
+            nnum += 1
+            vout.append("%s%d. %s" % (omatch.group(1), nnum, omatch.group(2)))
+        else:
+            if sline.strip() == "" or re.match(r"^\s{2,}\S", sline):
+                vout.append(sline)
+            else:
+                nnum = 0
+                vout.append(sline)
+    return "\n".join(vout)
+
+
+def _FixSection102Numbering(smd):
+    """修正 ## 10.2 小节内 ### 1. 小标题与 1. 列表编号。"""
+    omatch = re.search(r"^###\s*10\.2[^\n]*\n", smd, re.M)
+    if not omatch:
+        return smd
+    sprefix = smd[:omatch.start()]
+    srest = smd[omatch.end():]
+    oend = re.search(r"^##\s", srest, re.M)
+    sbody = srest[:oend.start()] if oend else srest
+    ssuffix = srest[oend.start():] if oend else ""
+    nidx = 0
+
+    def replHeading(m):
+        nonlocal nidx
+        nidx += 1
+        return "### 10.2.%d %s" % (nidx, m.group(1).strip())
+
+    sbody = re.sub(r"^###\s*1\.\s*(.+)$", replHeading, sbody, flags=re.M)
+    sbody = _RenumberOrderedListBlock(sbody)
+    return sprefix + smd[omatch.start():omatch.end()] + sbody + ssuffix
+
+
+def NormalizeReportBody(smd, stitle=None):
+    """清理深度报告正文：去元提示、修正 10.2 编号。"""
+    smd = (smd or "").strip()
+    if not smd:
+        return smd
+    smd = re.sub(r"^#\s*深度研究报告[：:][^\n]*\n+", "", smd, count=1, flags=re.M)
+    smd = re.sub(r"^>\s*[^\n]*(?:Agent|阶段|分析生成|原始文献|五阶段|三阶段)[^\n]*\n+", "", smd, flags=re.M | re.I)
+    smd = re.sub(r"^>\s*[^\n]+\n+", "", smd, count=3, flags=re.M)
+    ostart = re.search(r"^##\s*1[\.\s]", smd, re.M)
+    if ostart and ostart.start() > 0:
+        spre = smd[:ostart.start()].strip()
+        if _IsReportPreamble(spre):
+            smd = smd[ostart.start():]
+    smd = _FixSection102Numbering(smd)
+    return smd.strip()
+
+
 def _Stage5Report(oconfig, skey, stitle, ostruct, ored, orq, ocross, spurpose, srqs):
     system = (
         "你是博士论文写作助手。基于前五阶段 JSON 结果，生成完整深度研究报告 Markdown 正文"
         "（不含 YAML frontmatter）。必须含 ## 1–9 章节，并额外含 ## 10. 写作素材。"
         "使用 [[wikilink]]。不臆造文献中没有的内容。"
+        "正文必须直接从 ## 1. 开始，禁止任何前言、说明、元提示或任务复述。"
+        "10.2 小节内三级标题必须用 ### 10.2.1、### 10.2.2 递增；"
+        "列表项用 1. 2. 3. 递增，禁止重复 1. 开头。"
     )
     user = (
         "## 论文：%s（%s）\n\n## 结构解剖\n%s\n\n## 方法论红队\n%s\n\n"
         "## RQ/论点对齐\n%s\n\n## 跨文献对撞\n%s\n\n## 研究目标\n%s\n\n## 已有 RQ 页\n%s\n\n"
-        "章节要求：\n"
+        "章节要求（直接从 ## 1. 开始输出，不要任何开场白）：\n"
         "## 1. 论文定位与全景\n## 2. 理论基础与假设推演\n"
         "## 3. 方法论深度评估（含 3.1–3.5 子节）\n## 4. 核心实证结果解读\n"
         "## 5. 与当前研究问题的关系\n## 6. 跨文献对比\n## 7. 可借鉴的研究设计\n"
         "## 8. 关键引用网络\n## 9. 疑点与待核实项\n"
         "## 10. 写作素材\n"
-        "- 10.1 可直接写入综述的段落（2–3 段）\n"
-        "- 10.2 可复制的研究设计清单\n"
+        "### 10.1 可直接写入综述的段落\n"
+        "### 10.2 可复制的研究设计清单（小标题用 ### 10.2.1、10.2.2…，条目用 1. 2. 3.）\n"
         % (stitle, skey,
            json.dumps(ostruct, ensure_ascii=False)[:3500],
            json.dumps(ored, ensure_ascii=False)[:3500],
@@ -247,7 +333,7 @@ def _Stage5Report(oconfig, skey, stitle, ostruct, ored, orq, ocross, spurpose, s
            json.dumps(ocross, ensure_ascii=False)[:3500],
            spurpose[:2500], srqs or "（无）")
     )
-    return _LlmText(oconfig, system, user, 14000)
+    return NormalizeReportBody(_LlmText(oconfig, system, user, 14000), stitle)
 
 
 def _BriefFromStages(skey, ostruct, ored, orq):
@@ -406,8 +492,8 @@ def DeepAnalyzePaper(oconfig, nfilename, sroot=None, skey=None):
     ) % (stitle, rkey, _Now(), _Now())
     full_report = (
         frontmatter
-        + "# 深度研究报告：%s\n\n> 五阶段分析生成。原始文献：[[%s]]\n\n"
-        % (stitle, rkey)
+        + "# 深度研究报告：%s\n\n"
+        % stitle
         + report_md
     )
     sbrief = _BriefFromStages(rkey, ostruct, ored, orq)
