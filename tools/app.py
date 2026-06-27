@@ -36,7 +36,7 @@ from app_meta import APP_NAME, ResolveConfigDir
 from contextlib import contextmanager
 from io_utils import AtomicWriteJson, AtomicWriteText, SafeName
 from llm_client import (
-    CallLlm, HasUsableApiKey, IngestCancelled, IsPlaceholderApiKey,
+    CallLlm, CallLlmStream, HasUsableApiKey, IngestCancelled, IsPlaceholderApiKey,
     ParseLlmJson, apikeymask,
 )
 from job_state import (
@@ -46,7 +46,12 @@ from job_state import (
     ingestlock, querylock,
 )
 from paper_io import ExtractPaperText
+from paper_sections import PackForIngest
 import research_deep as rdeep
+import bib_io
+import concurrent.futures
+import research_standard as rstd
+import wiki_refresh as refresh
 
 host = "127.0.0.1"
 port = 8765
@@ -73,6 +78,7 @@ def BindDataRoot(nroot):
     topics.Init(nroot)
     core.rootdir = nroot
     core.ReloadTopicPaths()
+    refresh.InvalidateWikiCache()
     configdir = ResolveConfigDir(nroot)
     configpath = os.path.join(configdir, "config.json")
     _boundroot = nroot
@@ -290,7 +296,7 @@ def BuildIngestMessages(oconfig, nfilename, npapertext):
         if sval and sval not in ("（待填写）", "（未填写）"):
             vrqlines.append(sval)
     srqctx = "\n".join(vrqlines) if vrqlines else "（尚未填写具体研究问题，请从 purpose 方向推断可能关联）"
-    vnodes, _ = core.ScanWiki()
+    vnodes = refresh.GetWikiData()["nodes"]
     existing = "\n".join(
         "- %s (%s): %s" % (n["id"], n["type"], n.get("title", "")) for n in vnodes
     )[:2400]
@@ -312,7 +318,7 @@ def BuildIngestMessages(oconfig, nfilename, npapertext):
         "## 当前研究问题（仅做标签式关联，不做论证级分析）\n%s\n\n"
         "## 已有 wiki 页面（复用 id）\n%s\n\n"
         "## 已有研究问题页\n%s\n\n"
-        "## 待入库文献\n文件名：%s\n建议 key：%s\n正文(截断)：\n%s\n\n"
+        "## 待入库文献\n文件名：%s\n建议 key：%s\n正文(智能节选)：\n%s\n\n"
         "## 必须输出（精简）\n"
         "1. wiki/sources/<key>.md — 章节：\n"
         "   - ## 一句话概括（1 句）\n"
@@ -338,7 +344,7 @@ def BuildIngestMessages(oconfig, nfilename, npapertext):
         '}\n'
         "source 页 sources 写 [%s]；不确定写入 review；尽量填 url。"
         % (purpose, srqctx, existing, srqpages, nfilename, meta["key"],
-           npapertext[:12000], meta["key"])
+           PackForIngest(npapertext), meta["key"])
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
@@ -377,6 +383,10 @@ def IngestFinalize(nfilename, content):
             srel = os.path.relpath(fp, core.wikidir)
             spart = os.path.join(sstaging, srel)
             os.makedirs(os.path.dirname(spart), exist_ok=True)
+            import analysis_version as aver
+            spipe = aver.PipelineForWikiPath(srel)
+            if spipe:
+                body = aver.StampMarkdown(body, spipe)
             with open(spart, "w", encoding="utf-8") as f:
                 f.write(body)
             vcommits.append((spart, fp))
@@ -399,12 +409,19 @@ def IngestFinalize(nfilename, content):
         oresearch["next_steps"] = review[:3]
     core.AppendLog("[ingest] %s（新增 %d 页）%s" % (
         logmsg, len(vwritten), ("；待核实：" + "；".join(review)) if review else ""))
+    import wiki_workflow as wflow
+    wflow.Init(core.wikidir)
+    sblurb = ""
+    if isinstance(oresearch, dict):
+        sblurb = (oresearch.get("supports_thesis") or "")[:120]
+    orqsync = wflow.SyncRqPages(skey, oresearch, sblurb)
     return {
         "key": skey,
         "file": nfilename,
         "written": vwritten,
         "research": oresearch,
         "review": review,
+        "rq_sync": orqsync,
     }
 
 
@@ -426,18 +443,31 @@ def RunQueryJob(oconfig, squestion, bsave, sroot=None, nuid=0, ngen=0):
         slang = oconfig.get("language", "中文")
         vmessages = [
             {"role": "system", "content": (
-                "你是研栈知识库助手。仅根据提供的 wiki 页面作答，引用页面 id 如 [[kaplaner-2025]]。"
-                "不确定处标明待核实。用%s回答。" % slang
+                "你是研栈知识库助手。仅根据提供的 wiki 页面作答；"
+                "引用时写 [[page-id]]；不确定处标明待核实。"
+                "用%s回答。" % slang
             )},
             {"role": "user", "content": "知识库摘录：\n%s\n\n问题：%s" % (scontext, squestion)},
         ]
-        sanswer = CallLlm(oconfig, vmessages, bjson=False)
+        vparts = []
+
+        def OnChunk(stext):
+            vparts.append(stext)
+            with querylock:
+                if QueryJobAlive(nuid, ngen):
+                    ojob = GetQueryJob(nuid)
+                    ojob["answer"] = "".join(vparts)
+                    ojob["status"] = "streaming"
+
+        sanswer = CallLlmStream(oconfig, vmessages, fonchunk=OnChunk)
+        if not sanswer:
+            sanswer = "".join(vparts)
         osaved = None
         if bsave:
             with UserScope(sroot):
                 wops.Init(core.wikidir, core.rawsourcesdir, core.rootdir)
                 osaved = wops.SaveQueryPage(squestion, sanswer)
-                core.GenerateIndex()
+                refresh.RefreshWiki(bwrite_files=True, bforce=True)
                 core.AppendLog("[query] %s → %s" % (squestion[:60], osaved.get("id")))
         with querylock:
             if QueryJobAlive(nuid, ngen):
@@ -480,8 +510,21 @@ def RunIngestJob(oconfig, vtargets, sroot=None, nuid=0, ngen=0):
                     "error": "知识查询进行中，请稍后再纳入研究",
                 })
         return
+    oprefetch = {}
+    oexecutor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+    def StartPrefetch(snext):
+        if not snext:
+            return
+
+        def _work():
+            with UserScope(sroot):
+                return IngestPrepare(oconfig, snext)
+
+        oprefetch[snext] = oexecutor.submit(_work)
+
     try:
-        for fn in vtargets:
+        for nidx, fn in enumerate(vtargets):
             with ingestlock:
                 if not IngestJobAlive(nuid, ngen):
                     break
@@ -491,8 +534,14 @@ def RunIngestJob(oconfig, vtargets, sroot=None, nuid=0, ngen=0):
                 ojob["current"] = fn
             bbreak = False
             try:
-                with UserScope(sroot):
-                    vmessages = IngestPrepare(oconfig, fn)
+                ofuture = oprefetch.pop(fn, None)
+                if ofuture is not None:
+                    vmessages = ofuture.result()
+                else:
+                    with UserScope(sroot):
+                        vmessages = IngestPrepare(oconfig, fn)
+                if nidx + 1 < len(vtargets):
+                    StartPrefetch(vtargets[nidx + 1])
                 content = CallLlm(oconfig, vmessages, fcancel=IsIngestCancelled)
                 with UserScope(sroot):
                     oresult = IngestFinalize(fn, content)
@@ -525,7 +574,7 @@ def RunIngestJob(oconfig, vtargets, sroot=None, nuid=0, ngen=0):
         if not IsIngestCancelled():
             try:
                 with UserScope(sroot):
-                    core.GenerateIndex()
+                    refresh.RefreshWiki(bwrite_files=True, bforce=True)
             except Exception as e:
                 logger.warning("纳入研究后刷新索引失败：%s", e)
                 with ingestlock:
@@ -538,6 +587,7 @@ def RunIngestJob(oconfig, vtargets, sroot=None, nuid=0, ngen=0):
             if IngestJobAlive(nuid, ngen):
                 GetIngestJob(nuid)["failed"].append({"file": "(任务异常)", "error": str(e)})
     finally:
+        oexecutor.shutdown(wait=False)
         ReleaseLlm("ingest")
         with ingestlock:
             if IngestJobAlive(nuid, ngen):
@@ -661,6 +711,8 @@ class Handler(BaseHTTPRequestHandler):
                 return GetQueryJob(query_active_uid).get("uid")
         if sbusy == "deep":
             return rdeep.GetDeepActiveUid()
+        if sbusy == "standard":
+            return rstd.GetStandardActiveUid()
         return None
 
     def _MaybeOtherUserBusy(self, obusy):
@@ -689,16 +741,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def _HandleGet(self, path):
         if path in ("/", "/index.html"):
-            core.GenerateIndex()
             ouser = getattr(self, "_user", None)
+            odata = refresh.RefreshWiki(bwrite_files=True)
             return self._send(200, core.Render(
-                core.BuildData(), servermode=True, desktopmode=desktopmode,
+                odata, servermode=True, desktopmode=desktopmode,
                 stheme=GetUserTheme(), susername=ouser["username"] if ouser else "",
                 bcloud=multiuser,
             ), "text/html; charset=utf-8")
         if path == "/api/data":
-            core.GenerateIndex()
-            return self._send(200, core.BuildData())
+            return self._send(200, refresh.RefreshWiki(bwrite_files=True))
         if path == "/api/config":
             return self._send(200, GetConfigForApi())
         if path == "/api/ingest/progress":
@@ -707,6 +758,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {k: v for k, v in ojob.items() if k not in ("uid", "gen")})
         if path == "/api/deep/progress":
             ostatus = rdeep.GetDeepJobStatus(self._Uid())
+            return self._send(200, {k: v for k, v in ostatus.items() if k not in ("uid", "gen", "started_at")})
+        if path == "/api/standard/progress":
+            ostatus = rstd.GetStandardJobStatus(self._Uid())
             return self._send(200, {k: v for k, v in ostatus.items() if k not in ("uid", "gen", "started_at")})
         if path == "/api/query/progress":
             with querylock:
@@ -717,9 +771,31 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/lint":
             wops.Init(core.wikidir, core.rawsourcesdir, core.rootdir)
             return self._send(200, wops.RunLint())
+        if path == "/api/chapters":
+            import wiki_workflow as wflow
+            wflow.Init(core.wikidir)
+            return self._send(200, wflow.GetChapterProgress(refresh.GetWikiData()))
+        if path == "/api/search":
+            import urllib.parse
+            import wiki_workflow as wflow
+            wflow.Init(core.wikidir)
+            oq = urllib.parse.parse_qs(self.path.split("?", 1)[-1] if "?" in self.path else "")
+            sq = (oq.get("q") or [""])[0]
+            return self._send(200, {"results": wflow.SearchWikiPages(sq)})
+        if path == "/api/page":
+            import urllib.parse
+            oq = urllib.parse.parse_qs(self.path.split("?", 1)[-1] if "?" in self.path else "")
+            sid = (oq.get("id") or [""])[0].strip()
+            opage = core.GetPageContent(sid)
+            if not opage:
+                return self._send(404, {"error": "页面不存在"})
+            return self._send(200, opage)
         if path == "/api/export/bibtex":
             wops.Init(core.wikidir, core.rawsourcesdir, core.rootdir)
             return self._send(200, {"bibtex": wops.ExportBibtex()})
+        if path == "/api/sources/citations":
+            wops.Init(core.wikidir, core.rawsourcesdir, core.rootdir)
+            return self._send(200, {"citations": bib_io.ListCitations(refresh.GetWikiData())})
         if path == "/api/topics":
             return self._send(200, {
                 "topics": core.TopicsWithCounts(),
@@ -879,6 +955,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._ingest()
             if self.path == "/api/ingest/deep":
                 return self._deep_analyze()
+            if self.path == "/api/ingest/standard":
+                return self._standard_analyze()
             if self.path == "/api/config":
                 body = self._body()
                 SaveConfig(body)
@@ -908,6 +986,8 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/lint/fix":
                 wops.Init(core.wikidir, core.rawsourcesdir, core.rootdir)
                 return self._send(200, wops.FixLintIssues())
+            if self.path == "/api/import/bibtex":
+                return self._importbibtex()
             if self.path == "/api/topics/snapshot":
                 return self._topicsnapshot()
             if self.path == "/api/onboarding/setup":
@@ -948,8 +1028,9 @@ class Handler(BaseHTTPRequestHandler):
     def _topicswitch(self):
         body = self._body()
         result = topics.SwitchTopic(body.get("id", ""))
+        refresh.InvalidateWikiCache()
         core.ReloadTopicPaths()
-        core.GenerateIndex()
+        refresh.RefreshWiki(bwrite_files=True)
         return self._send(200, result)
 
     def _topicnew(self):
@@ -960,8 +1041,9 @@ class Handler(BaseHTTPRequestHandler):
             True,
             body.get("import_from"),
         )
+        refresh.InvalidateWikiCache()
         core.ReloadTopicPaths()
-        core.GenerateIndex()
+        refresh.RefreshWiki(bwrite_files=True)
         nqc = result.get("inherited_queries") or 0
         if nqc:
             core.AppendLog("新建选题：%s（%s），继承问答库 %d 页" % (
@@ -972,8 +1054,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _topicreset(self):
         result = topics.ResetCurrentTopic()
+        refresh.InvalidateWikiCache()
         core.ReloadTopicPaths()
-        core.GenerateIndex()
+        refresh.RefreshWiki(bwrite_files=True)
         core.AppendLog("重置选题：%s" % result.get("name"))
         return self._send(200, result)
 
@@ -995,8 +1078,19 @@ class Handler(BaseHTTPRequestHandler):
     def _rulessave(self):
         body = self._body()
         skey = body.get("key", "")
+        import wiki_workflow as wflow
+        sold_fields = {}
+        if skey == "purpose":
+            sold_fields = topics.ParsePurposeFields(topics.ReadText(topics.RulePath("purpose.md")))
         topics.SaveRule(skey, content=body.get("content"), ofields=body.get("fields"))
-        return self._send(200, {"status": "ok"})
+        refresh.InvalidateWikiCache(core.wikidir)
+        oresult = {"status": "ok"}
+        if skey == "purpose" and body.get("fields"):
+            vstale = wflow.DetectStaleSources(sold_fields, body.get("fields"))
+            if vstale:
+                oresult["stale_sources"] = vstale
+                oresult["stale_hint"] = "研究问题或论点已变更，以下 %d 篇文献可能需要重新标准/深度分析" % len(vstale)
+        return self._send(200, oresult)
 
     def _openpdf(self):
         """桌面端 QWebEngine 内嵌 iframe 无法正常预览 PDF，改由系统浏览器打开。"""
@@ -1055,7 +1149,7 @@ class Handler(BaseHTTPRequestHandler):
         if surl:
             core.SetPaperUrl(surl, srawfile=name)
         try:
-            core.GenerateIndex()
+            refresh.RefreshWiki(bwrite_files=True, bforce=True)
         except Exception as e:
             logger.warning("上传后刷新索引失败：%s", e)
         ometa = core.ParseSourceFilename(name)
@@ -1066,6 +1160,34 @@ class Handler(BaseHTTPRequestHandler):
             "total": len(core.ListSources()),
         })
 
+    def _importbibtex(self):
+        body = self._body()
+        stext = (body.get("bibtex") or "").strip()
+        if body.get("data"):
+            try:
+                stext = base64.b64decode(body.get("data", "")).decode("utf-8", errors="replace").strip()
+            except Exception:
+                return self._send(400, {"error": "BibTeX 数据编码损坏"})
+        if not stext:
+            return self._send(400, {"error": "缺少 BibTeX 内容"})
+        core.ReloadTopicPaths()
+        wops.Init(core.wikidir, core.rawsourcesdir, core.rootdir)
+        oresult = bib_io.ImportBibtex(
+            stext, core.wikidir, core.rawsourcesdir,
+            bcreate_placeholder=body.get("create_placeholder", True),
+        )
+        refresh.InvalidateWikiCache()
+        try:
+            refresh.RefreshWiki(bwrite_files=True, bforce=True)
+        except Exception as e:
+            logger.warning("BibTeX 导入后刷新索引失败：%s", e)
+        core.AppendLog("[bib] 导入 %d 条：更新 %d，新建 %d" % (
+            oresult.get("total", 0),
+            len(oresult.get("updated") or []),
+            len(oresult.get("created") or []),
+        ))
+        return self._send(200, oresult)
+
     def _sourceurl(self):
         body = self._body()
         surl = wops.ResolveDoiUrl(body.get("url", ""))
@@ -1074,7 +1196,7 @@ class Handler(BaseHTTPRequestHandler):
             srawfile=body.get("rawfile") or None,
             skey=body.get("id") or None,
         )
-        core.GenerateIndex()
+        refresh.RefreshWiki(bwrite_files=True, bforce=True)
         core.AppendLog("[url] 更新文献链接 %s → %s" % (result.get("id") or result.get("rawfile"), result.get("url") or "（已清除）"))
         return self._send(200, result)
 
@@ -1091,6 +1213,7 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as e:
             return self._send(400, {"error": str(e)})
         core.AppendLog("[tags] 更新论文库标签 %s → %s" % (sid, ", ".join(vclean) or "（已清除）"))
+        refresh.InvalidateWikiCache(core.wikidir)
         return self._send(200, {"id": sid, "tags": vclean})
 
     def _delete(self):
@@ -1098,7 +1221,7 @@ class Handler(BaseHTTPRequestHandler):
         name = SafeName(body.get("rawfile", ""))
         wops.Init(core.wikidir, core.rawsourcesdir, core.rootdir)
         oresult = wops.DeleteSourceCascade(name, body.get("cascade", True))
-        core.GenerateIndex()
+        refresh.RefreshWiki(bwrite_files=True, bforce=True)
         core.AppendLog("[delete] 删除文献 %s（级联 %s，共 %d 项）" % (
             name, "是" if body.get("cascade", True) else "否", len(oresult.get("removed", []))))
         return self._send(200, {"status": "ok", **oresult})
@@ -1386,6 +1509,40 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, oresult)
         return self._send(200, {"status": "started", "file": sfile, "id": sid or ""})
 
+    def _standard_analyze(self):
+        """触发两阶段标准分析（须已纳入且保留原始 PDF）。"""
+        oconfig = LoadConfig()
+        body = self._body()
+        sid = (body.get("id") or body.get("key") or "").strip()
+        sfile = SafeName(body.get("rawfile") or "")
+        if not sfile and sid:
+            sfile = SafeName(core.ResolveRawfileForKey(sid))
+        if sid and not core.FindSourcePagePath(sid):
+            return self._send(400, {"error": "请先「纳入研究」后再进行标准分析"})
+        if not sfile:
+            return self._send(400, {"error": "找不到原始 PDF，标准分析需要 PDF 原文，请重新上传后再试"})
+        spdf = os.path.join(core.rawsourcesdir, sfile)
+        if not os.path.isfile(spdf):
+            return self._send(400, {"error": "原始 PDF 不在文献库中，请重新上传后再进行标准分析"})
+        noauth = "pollinations.ai" in (oconfig.get("base_url") or "")
+        if not HasUsableApiKey(oconfig) and not noauth:
+            return self._send(200, {"status": "need_key"})
+        nuid = self._Uid()
+        if rstd.GetStandardJobStatus(nuid).get("running"):
+            return self._send(200, {"error": "标准分析正在进行中，请等待完成"})
+        obusy = LlmBusyPayload()
+        if obusy and obusy.get("busy") != "standard":
+            return self._send(200, self._MaybeOtherUserBusy(obusy))
+        ouser = getattr(self, "_user", None)
+        serr = self._CheckLlmQuota(2)
+        if serr:
+            return self._send(200, {"status": "error", "error": serr})
+        oresult = rstd.StartStandardAnalysis(
+            oconfig, sfile, ouser["root"] if ouser else None, skey=sid or None, nuid=nuid)
+        if "error" in oresult:
+            return self._send(200, oresult)
+        return self._send(200, {"status": "started", "file": sfile, "id": sid or ""})
+
 
 def Main():
     url = "http://%s:%d" % (host, port)
@@ -1396,7 +1553,7 @@ def Main():
         print("检测到服务已在运行，正在打开网页：%s" % url)
         webbrowser.open(url)
         return
-    core.GenerateIndex()
+    refresh.RefreshWiki(bwrite_files=True)
     print("%s 已启动：%s" % (APP_NAME, url))
     print("（按 Ctrl+C 或关闭此窗口即停止）")
     threading.Timer(1.0, lambda: webbrowser.open(url)).start()

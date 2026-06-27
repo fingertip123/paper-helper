@@ -3,6 +3,7 @@
 """原子文件写入与路径安全工具（无项目内依赖，可被任意模块导入）。"""
 import json
 import os
+import re
 import tempfile
 
 
@@ -30,6 +31,38 @@ def AtomicWriteText(spath, stext, encoding="utf-8"):
 
 def AtomicWriteJson(spath, odata):
     AtomicWriteText(spath, json.dumps(odata, ensure_ascii=False, indent=2))
+
+
+def YamlScalar(sval):
+    """将标量格式化为 YAML 安全字符串。"""
+    if sval is None:
+        return ""
+    if isinstance(sval, bool):
+        return "true" if sval else "false"
+    sval = str(sval)
+    if not sval:
+        return '""'
+    if re.match(r"^[\w\-./]+$", sval):
+        return sval
+    return json.dumps(sval, ensure_ascii=False)
+
+
+def FormatFrontmatter(ofm, nbody=""):
+    """序列化 frontmatter + 正文。"""
+    vlines = ["---"]
+    for skey, sval in ofm.items():
+        if isinstance(sval, bool):
+            vlines.append("%s: %s" % (skey, "true" if sval else "false"))
+        elif isinstance(sval, list):
+            vitems = [YamlScalar(x) for x in sval]
+            vlines.append("%s: [%s]" % (skey, ", ".join(vitems)))
+        else:
+            vlines.append("%s: %s" % (skey, YamlScalar(sval)))
+    vlines.append("---")
+    vlines.append("")
+    if nbody:
+        vlines.append(nbody.lstrip())
+    return "\n".join(vlines) + ("\n" if nbody else "")
 
 
 def AtomicWriteBytes(spath, bdata):

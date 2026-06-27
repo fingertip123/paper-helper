@@ -1935,6 +1935,41 @@ function bindFmtBar(){
   ocolor.addEventListener('input',e=>applyColor(e.target.value));
   document.addEventListener('selectionchange',()=>{saveSelection();updateFmtUi()});
 }
+function insertCitationText(stext){
+  const op=ensureFmtReady();
+  if(!op){showStatus('请先点击要插入引用的段落');return false}
+  op.focus({preventScroll:true});
+  let orange=currentSelectionRange();
+  if(orange&&!orange.collapsed){
+    orange.deleteContents();
+    orange.insertNode(document.createTextNode(stext));
+    orange.collapse(false);
+  }else{
+    const osel=window.getSelection();
+    if(!osel)return false;
+    orange=osel.rangeCount?osel.getRangeAt(0):null;
+    if(!orange||!op.contains(orange.commonAncestorContainer)){
+      orange=document.createRange();
+      orange.selectNodeContents(op);
+      orange.collapse(false);
+    }
+    orange.insertNode(document.createTextNode(stext));
+    orange.collapse(false);
+    osel.removeAllRanges();
+    osel.addRange(orange);
+  }
+  saveSelection();
+  scheduleTypingSnap(op);
+  savePara(op);
+  showStatus('已插入引用');
+  return true;
+}
+window.insertCitationText=insertCitationText;
+window.addEventListener('message',e=>{
+  const d=e.data;
+  if(!d||d.source!=='paper-helper')return;
+  if(d.type==='insert-citation'&&d.text)insertCitationText(d.text);
+});
 window.focusPara=function(npara,scid){
   selectedComment=scid||null;
   const el=document.getElementById('para-'+npara);
@@ -1987,7 +2022,7 @@ def _EditorCacheKey(sdocid, stheme):
         os.path.getsize(scurrent),
         int(os.path.getmtime(scomments) * 1000) if os.path.isfile(scomments) else 0,
     )
-    return "%s:%s:%s:fmt5" % (sdocid, stheme, nver)
+    return "%s:%s:%s:fmt6" % (sdocid, stheme, nver)
 
 
 def _TouchEditorCache(skey, shtml):

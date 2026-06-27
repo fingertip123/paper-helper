@@ -17,6 +17,7 @@ import wiki_core as core
 import topic_manager as topics
 from io_utils import SafeName
 from paper_io import ExtractPaperText
+from paper_sections import PackForDeep
 from llm_client import CallLlm, ParseLlmJson, IngestCancelled
 from job_state import ResetJobDict
 
@@ -81,7 +82,8 @@ def _Now():
 
 def _LoadExistingWikiContext():
     """收集已有 wiki 页面作为跨文献分析上下文。"""
-    vnodes, _ = core.ScanWiki()
+    import wiki_refresh as refresh
+    vnodes = refresh.GetWikiData()["nodes"]
     vsources = [n for n in vnodes if n.get("type") == "source" and n.get("ingested")]
     vconcepts = [n for n in vnodes if n.get("type") == "concept"]
     vrqs = [n for n in vnodes if n.get("type") == "rq"]
@@ -163,7 +165,7 @@ def _Stage1Structure(oconfig, npapertext, skey, stitle, ssourcepage):
         "main_results[{estimate,se,significance}], robustness_checks[], "
         "internal_validity[], external_validity, key_references[], limitations[]。"
         "找不到的字段留空，不要臆造。"
-        % (stitle, skey, (ssourcepage or "（无）")[:3000], npapertext[:24000])
+        % (stitle, skey, (ssourcepage or "（无）")[:3000], PackForDeep(npapertext))
     )
     return _LlmJson(oconfig, system, user, 28000)
 
@@ -375,20 +377,24 @@ def _AppendDeepSummaryToSource(skey, ssummary):
 
 def _WriteComparisonPage(rkey, stitle, ocross):
     """阶段④ 产出：写入 comparison 页与显式 typed 关系行。"""
+    import analysis_version as aver
     comp_id = "%s-cross" % rkey
     comp_dir = os.path.join(core.wikidir, "comparisons")
     os.makedirs(comp_dir, exist_ok=True)
     spath = os.path.join(comp_dir, comp_id + ".md")
     stamp = _Now()
-    vlines = [
-        "---",
-        "type: comparison",
-        "title: 跨文献对撞 — %s" % stitle,
-        "sources: [%s]" % rkey,
-        "tags: [深度研究, 跨文献]",
-        "created: %s" % stamp,
-        "updated: %s" % stamp,
-        "---",
+    vlines = ["---"]
+    vlines.extend(aver.FrontmatterPipelineLines(
+        "deep", aver.GetCurrentVersion("deep"),
+        type="comparison",
+        title="跨文献对撞 — %s" % stitle,
+        sources=[rkey],
+        tags=["深度研究", "跨文献"],
+        created=stamp,
+        updated=stamp,
+    ))
+    vlines.append("---")
+    vlines += [
         "",
         "# 跨文献对撞：%s" % stitle,
         "",
@@ -461,7 +467,10 @@ def DeepAnalyzePaper(oconfig, nfilename, sroot=None, skey=None):
         srqctx, sthesis = _ReadPurposeRqs()
         sprior_sources, sconcepts, srqs, _ = _LoadExistingWikiContext()
     if not text.strip():
-        raise ValueError("无法从 PDF 提取文本（可能是扫描版），请换用可搜索的 PDF 后重试")
+        raise ValueError(
+            "无法从 PDF 提取文本（可能是扫描版）。"
+            "可安装 pymupdf+pytesseract 后重试，或换可搜索 PDF。"
+        )
 
     # ---- 阶段①–⑤：纯 LLM 调用（锁外，可被进度轮询/刷新并发访问） ----
     update_callback(15, "阶段① 结构解剖")
@@ -481,15 +490,13 @@ def DeepAnalyzePaper(oconfig, nfilename, sroot=None, skey=None):
 
     # ---- 阶段 6：写入报告与摘要（持锁） ----
     update_callback(96, "写入报告")
-    frontmatter = (
-        "---\n"
-        "type: analysis-report\n"
-        "title: 深度研究报告 — %s\n"
-        "sources: [%s]\n"
-        "created: %s\n"
-        "updated: %s\n"
-        "---\n\n"
-    ) % (stitle, rkey, _Now(), _Now())
+    import analysis_version as aver
+    stamp = _Now()
+    vfm = aver.ReportFrontmatterFields(
+        "deep", aver.GetCurrentVersion("deep"),
+        "深度研究报告 — %s" % stitle, rkey, stamp,
+    )
+    frontmatter = "---\n" + "\n".join(vfm) + "\n---\n\n"
     full_report = (
         frontmatter
         + "# 深度研究报告：%s\n\n"
@@ -507,7 +514,16 @@ def DeepAnalyzePaper(oconfig, nfilename, sroot=None, skey=None):
         scomp = _WriteComparisonPage(rkey, stitle, ocross)
         srel = os.path.relpath(report_path, core.rootdir)
         core.AppendLog("[deep] %s：深度研究报告已生成（%s）；对撞页 %s" % (rkey, srel, scomp))
-        core.GenerateIndex()
+        import wiki_refresh as refresh
+        import wiki_workflow as wflow
+        wflow.Init(core.wikidir)
+        vrqids = [
+            (x.get("rq") or "").strip()
+            for x in (orq.get("rq_alignment") or [])
+            if (x.get("rq") or "").strip()
+        ]
+        wflow.SyncRqPages(rkey, {"rq_links": vrqids}, (orq.get("thesis_implication") or "")[:120])
+        refresh.RefreshWiki(bwrite_files=True, bforce=True)
 
     update_callback(100, "完成")
     return {

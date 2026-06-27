@@ -46,7 +46,8 @@ def StartServer(nport):
     """后台线程启动 HTTP 服务（复用 app.py 的 Handler）。构造完成即已监听。"""
     appmod.port = nport
     appmod.desktopmode = True
-    core.GenerateIndex()
+    import wiki_refresh as refresh
+    refresh.RefreshWiki(bwrite_files=True)
     oserver = ThreadingHTTPServer((appmod.host, nport), appmod.Handler)
     othread = threading.Thread(target=oserver.serve_forever, daemon=True)
     othread.start()

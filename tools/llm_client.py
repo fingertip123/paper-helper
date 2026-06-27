@@ -143,6 +143,65 @@ def CallLlm(oconfig, vmessages, bjson=True, fcancel=None):
     raise RuntimeError(slasterr or "调用失败")
 
 
+def CallLlmStream(oconfig, vmessages, fcancel=None, fonchunk=None):
+    """流式调用；不支持 stream 的端点回退为一次性返回。"""
+    nbaseurl = oconfig.get("base_url") or ""
+    if "pollinations.ai" in nbaseurl:
+        sfull = CallLlm(oconfig, vmessages, bjson=False, fcancel=fcancel)
+        if fonchunk and sfull:
+            fonchunk(sfull)
+        return sfull
+
+    url = oconfig["base_url"].rstrip("/") + "/chat/completions"
+    payload = {
+        "model": oconfig.get("model") or "gpt-4o-mini",
+        "messages": vmessages,
+        "temperature": 0.2,
+        "stream": True,
+    }
+    data = json.dumps(payload).encode("utf-8")
+    oheaders = {"Content-Type": "application/json", "User-Agent": browserua}
+    if HasUsableApiKey(oconfig):
+        oheaders["Authorization"] = "Bearer " + oconfig["api_key"].strip()
+    req = urllib.request.Request(url, data=data, method="POST", headers=oheaders)
+
+    vparts = []
+    try:
+        with urllib.request.urlopen(req, timeout=300, context=SslContext()) as resp:
+            while True:
+                if fcancel and fcancel():
+                    raise IngestCancelled("用户已取消")
+                sline = resp.readline()
+                if not sline:
+                    break
+                sline = sline.decode("utf-8", errors="ignore").strip()
+                if not sline.startswith("data:"):
+                    continue
+                spayload = sline[5:].strip()
+                if spayload == "[DONE]":
+                    break
+                try:
+                    oobj = json.loads(spayload)
+                    sdelta = (
+                        oobj.get("choices", [{}])[0]
+                        .get("delta", {})
+                        .get("content", "")
+                    )
+                except Exception:
+                    sdelta = ""
+                if sdelta:
+                    vparts.append(sdelta)
+                    if fonchunk:
+                        fonchunk(sdelta)
+    except IngestCancelled:
+        raise
+    except Exception:
+        if vparts:
+            return "".join(vparts)
+        return CallLlm(oconfig, vmessages, bjson=False, fcancel=fcancel)
+    return "".join(vparts)
+
+
 def ParseLlmJson(ntext):
     s = ntext.strip()
     s = re.sub(r"^```(json)?\s*|\s*```$", "", s, flags=re.IGNORECASE)

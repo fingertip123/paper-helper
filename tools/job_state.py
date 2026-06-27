@@ -133,4 +133,13 @@ def LlmBusyPayload():
             "status": "busy", "busy": "deep",
             "message": "深度分析进行中（%s），大模型暂无法同时处理其他任务，请稍后再试。" % sshort,
         }
+    if sowner == "standard":
+        import research_standard as rstd
+        ostatus = rstd.GetStandardJobStatus(rstd.GetStandardActiveUid())
+        scur = ostatus.get("key") or ostatus.get("current") or sdetail or "文献"
+        sshort = scur if len(scur) <= 34 else scur[:33] + "…"
+        return {
+            "status": "busy", "busy": "standard",
+            "message": "标准分析进行中（%s），大模型暂无法同时处理其他任务，请稍后再试。" % sshort,
+        }
     return {"status": "busy", "busy": sowner, "message": "大模型正在处理其他任务，请稍后再试。"}

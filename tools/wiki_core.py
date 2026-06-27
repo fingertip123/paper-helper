@@ -144,11 +144,49 @@ def ParseFrontmatter(ntext):
         key = key.strip()
         value = value.strip()
         if value.startswith("[") and value.endswith("]"):
-            inner = value[1:-1].strip()
-            oresult[key] = [x.strip() for x in inner.split(",") if x.strip()] if inner else []
+            try:
+                oresult[key] = json.loads(value)
+                if not isinstance(oresult[key], list):
+                    oresult[key] = [str(oresult[key])]
+                continue
+            except (json.JSONDecodeError, TypeError):
+                inner = value[1:-1].strip()
+                oresult[key] = [x.strip().strip('"').strip("'") for x in inner.split(",") if x.strip()] if inner else []
         else:
-            oresult[key] = value
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+                value = value[1:-1]
+            if value in ("true", "True"):
+                oresult[key] = True
+            elif value in ("false", "False"):
+                oresult[key] = False
+            else:
+                oresult[key] = value
     return oresult, ntext[omatch.end():]
+
+
+def SourcePageIngested(ofm, nbody=""):
+    """判断 source 页是否已完成 LLM 纳入（排除 BibTeX 占位页）。"""
+    if ofm.get("ingested") is False:
+        return False
+    vtags = ofm.get("tags") or []
+    if isinstance(vtags, str):
+        vtags = [vtags]
+    if "BibTeX导入" in vtags:
+        return False
+    if "由 BibTeX 导入，待补充 PDF 并纳入研究" in (nbody or ""):
+        return False
+    return True
+
+
+def IsSourceKeyIngested(skey):
+    """检查 source key 是否已真实纳入研究。"""
+    spath = FindSourcePagePath(skey)
+    if not spath:
+        return False
+    with open(spath, "r", encoding="utf-8") as f:
+        ntext = f.read()
+    ofm, nbody = ParseFrontmatter(ntext)
+    return SourcePageIngested(ofm, nbody)
 
 
 def ExtractLinks(nbody):
@@ -186,7 +224,7 @@ def ParseSourceFilename(nfilename):
     return {"key": skey, "author": author, "year": year, "title": title, "filename": nfilename}
 
 
-def MergeWikiIntoNode(existing, onode, ofm):
+def MergeWikiIntoNode(existing, onode, ofm, nbody=""):
     """合并 wiki 页到已有节点，避免有 raw 文件的文献被降级为 unknown 而从论文库消失。"""
     for skey, sval in onode.items():
         if not sval:
@@ -196,7 +234,7 @@ def MergeWikiIntoNode(existing, onode, ofm):
         existing[skey] = sval
     if existing.get("rawfile"):
         existing["type"] = "source"
-    if ofm.get("type") == "source":
+    if ofm.get("type") == "source" and SourcePageIngested(ofm, nbody):
         existing["ingested"] = True
 
 
@@ -359,10 +397,11 @@ def ExtractSourceResearch(nbody):
     stension = osec.get("与已有文献的张力", "") or osec.get("共识与张力", "")
     snext = osec.get("下一步阅读建议", "") or osec.get("下一步", "")
     vrq = []
-    for m in wikilinkpattern.finditer(srelation):
-        tid = m.group(1).strip()
-        if tid not in vrq:
-            vrq.append(tid)
+    for ssec in ("关联研究问题", "与本论文的关系"):
+        for m in wikilinkpattern.finditer(osec.get(ssec, "")):
+            tid = m.group(1).strip()
+            if tid not in vrq:
+                vrq.append(tid)
     return {
         "relation": StripWikiMarkup(srelation)[:420] if srelation else "",
         "tensions": StripWikiMarkup(stension)[:320] if stension else "",
@@ -541,6 +580,14 @@ def HasDeepReportFile(skey):
     return os.path.isfile(spath)
 
 
+def HasStandardReportFile(skey):
+    """是否已有标准分析报告文件。"""
+    if not skey:
+        return False
+    spath = os.path.join(wikidir, "analysis", skey + "-standard.md")
+    return os.path.isfile(spath)
+
+
 def _SameSource(a, b):
     """判断两个 source 节点是否指向同一篇文献。"""
     if a.get("id") == b.get("id"):
@@ -578,16 +625,25 @@ def EnrichSourceLibraryMeta(vnodes):
     """为 source 节点补充论文库分类阶段与自定义标签。"""
     for n in vnodes:
         EnsureNodeRawfile(n)
-        if n.get("rawfile") or FindSourcePagePath(n.get("id", "")):
+        spath = FindSourcePagePath(n.get("id", ""))
+        if n.get("rawfile") or spath:
             n["type"] = "source"
-            if FindSourcePagePath(n.get("id", "")):
-                n["ingested"] = True
+            if spath:
+                with open(spath, "r", encoding="utf-8") as f:
+                    ofm, nbody = ParseFrontmatter(f.read())
+                n["ingested"] = SourcePageIngested(ofm, nbody)
         if n.get("type") != "source":
             continue
         bdeep = HasDeepReportFile(n.get("id", ""))
+        bstandard = HasStandardReportFile(n.get("id", ""))
         n["deep_done"] = bdeep
+        n["standard_done"] = bstandard
+        import analysis_version as aver
+        aver.EnrichNodeStaleFlags(n, wikidir)
         if bdeep:
             n["lib_stage"] = "deep"
+        elif bstandard:
+            n["lib_stage"] = "standard"
         elif n.get("ingested"):
             n["lib_stage"] = "await_deep"
         else:
@@ -648,17 +704,22 @@ def ScanWiki():
                 "year": ofm.get("year", ""), "venue": ofm.get("venue", ""),
                 "tags": ofm.get("tags", []) if isinstance(ofm.get("tags", []), list) else [],
                 "url": ofm.get("url", ""),
-                "rawfile": "", "ingested": True, "summary": GetSummary(nbody),
+                "rawfile": "", "ingested": SourcePageIngested(ofm, nbody) if stype == "source" else True,
+                "summary": GetSummary(nbody),
                 "research": ExtractSourceResearch(nbody) if ofm.get("type") == "source" else {},
-                "body": nbody if stype == "analysis-report" else "",
+                "body": "",
             }
             if stype == "analysis-report":
                 try:
                     import research_deep as rdeep
                     nbody = rdeep.NormalizeReportBody(nbody, onode.get("title"))
-                    onode["body"] = nbody
                 except Exception:
                     pass
+                onode["has_body"] = bool(nbody.strip())
+                onode["body_preview"] = (GetSummary(nbody) or StripWikiMarkup(nbody))[:480]
+            else:
+                onode["has_body"] = False
+                onode["body_preview"] = ""
             existing = next((n for n in vnodes if n["id"] == nodeid), None)
             if not existing and nodeid:
                 existing = next((n for n in vnodes if n["id"].lower() == nodeid.lower()), None)
@@ -667,7 +728,7 @@ def ScanWiki():
             if not existing and nodeid:
                 existing = next((n for n in vnodes if nodeid.lower() in [a.lower() for a in (n.get("aliases") or [])]), None)
             if existing:
-                MergeWikiIntoNode(existing, onode, ofm)
+                MergeWikiIntoNode(existing, onode, ofm, nbody)
                 EnsureNodeRawfile(existing)
             else:
                 EnsureNodeRawfile(onode)
@@ -760,38 +821,15 @@ def TopicsWithCounts():
     return vtopics
 
 
-def BuildData():
-    import wiki_ops as wops
-    vnodes, vedges = ScanWiki()
-    vnodes = DedupeSourceNodes(vnodes)
-    EnrichSourceLibraryMeta(vnodes)
-    vedges = RefreshEdgeMeta(vnodes, vedges)
-    wops.Init(wikidir, rawsourcesdir, rootdir)
-    odegree = {n["id"]: 0 for n in vnodes}
-    for e in vedges:
-        odegree[e["source"]] += 1
-        odegree[e["target"]] += 1
-    opagerank = ComputePageRank(vnodes, vedges)
-    for n in vnodes:
-        n["degree"] = odegree.get(n["id"], 0)
-        n["pagerank"] = round(opagerank.get(n["id"], 0.0), 4)
-    ostats = {}
-    for n in vnodes:
-        ostats[n["type"]] = ostats.get(n["type"], 0) + 1
-    olint = wops.RunLintQuick(vnodes, vedges)
-    return {
-        "nodes": vnodes, "edges": vedges, "stats": ostats,
-        "typeconfig": typeconfig, "edgeconfig": edgeconfig,
-        "graphlayers": graphlayers,
-        "lint": olint,
-        "generated": datetime.now().strftime("%Y-%m-%d %H:%M"),
-    }
+def BuildData(bforce=False):
+    import wiki_refresh as refresh
+    return refresh.GetWikiData(bforce=bforce)
 
 
 def PendingSources():
     """返回尚未摄入（无对应 wiki/sources/<key>.md）的原始文献文件名。"""
-    vnodes, _ = ScanWiki()
-    omap = {n["id"]: n for n in vnodes}
+    import wiki_refresh as refresh
+    omap = {n["id"]: n for n in refresh.GetWikiData()["nodes"]}
     vpending = []
     for fn in ListSources():
         key = ParseSourceFilename(fn)["key"]
@@ -801,31 +839,40 @@ def PendingSources():
     return vpending
 
 
-def GenerateIndex():
-    """根据当前扫描结果自动重写 wiki/index.md（纯导航，安全覆盖）。"""
-    vnodes, _ = ScanWiki()
-    order = ["rq", "concept", "entity", "source", "experiment", "synthesis", "comparison", "query"]
-    lines = ["---", "type: index", "title: Wiki 目录导航",
-             "updated: %s" % datetime.now().strftime("%Y-%m-%d"), "---", "",
-             "# Index · 内容目录", "",
-             "> 由工具自动生成，每次添加/分析/刷新后更新。", ""]
-    for t in order:
-        items = [n for n in vnodes if n["type"] == t]
-        if not items:
+def GetPageContent(sid):
+    """按 id 读取 wiki 页面正文（供 /api/page 懒加载）。"""
+    sid = (sid or "").strip()
+    if not sid or ".." in sid or "/" in sid or "\\" in sid:
+        return None
+    import wiki_ops as wops
+    wops.Init(wikidir, rawsourcesdir, rootdir)
+    for p in wops.ListWikiPages():
+        if p["id"] != sid:
             continue
-        lines.append("## %s（%d）" % (typeconfig[t]["label"], len(items)))
-        lines.append("")
-        for n in sorted(items, key=lambda x: x["id"]):
-            tail = (" — %s" % n["title"]) if n["title"] and n["title"] != n["id"] else ""
-            mark = "" if n.get("ingested", True) else "（待纳入研究）"
-            lines.append("- [[%s]]%s%s" % (n["id"], tail, mark))
-        lines.append("")
-    io_utils.AtomicWriteText(os.path.join(wikidir, "index.md"), "\n".join(lines))
+        if p["type"] == "analysis-report":
+            try:
+                import research_deep as rdeep
+                sbody = rdeep.NormalizeReportBody(p["body"], p.get("title"))
+            except Exception:
+                sbody = p["body"]
+        else:
+            sbody = p["body"]
+        return {
+            "id": sid,
+            "title": p.get("title", sid),
+            "type": p.get("type", "unknown"),
+            "body": sbody,
+        }
+    return None
+
+
+def GenerateIndex():
+    """根据当前扫描结果自动重写 wiki/index.md 与 overview（单次 ScanWiki）。"""
+    import wiki_refresh as refresh
     try:
-        wops.Init(wikidir, rawsourcesdir, rootdir)
-        wops.GenerateOverview()
+        refresh.RefreshWiki(bwrite_files=True)
     except Exception as e:
-        logger.warning("GenerateOverview 失败：%s", e)
+        logger.warning("RefreshWiki 失败：%s", e)
 
 
 def AppendLog(nmessage):
@@ -937,14 +984,24 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   .card.lib-todo{background:var(--lib-todo-bg,var(--panel));border-color:var(--lib-todo-rim,var(--border))}
   .card.lib-active{background:var(--lib-active-bg,var(--panel));border-color:var(--lib-active-rim,var(--border))}
   .card.lib-deep{background:var(--lib-deep-bg,var(--panel));border-color:var(--lib-deep-rim,var(--accent))}
+  .card.lib-standard{background:var(--lib-standard-bg,var(--lib-active-bg,var(--panel)));border-color:var(--lib-standard-rim,var(--lib-active-rim,var(--border)))}
   .card.stone3d.lib-todo{background:var(--lib-todo-bg,var(--panel))!important;border-color:var(--lib-todo-rim,var(--border))!important}
   .card.stone3d.lib-active{background:var(--lib-active-bg,var(--panel))!important;border-color:var(--lib-active-rim,var(--border))!important}
+  .card.stone3d.lib-standard{background:var(--lib-standard-bg,var(--lib-active-bg,var(--panel)))!important;border-color:var(--lib-standard-rim,var(--lib-active-rim,var(--border)))!important}
   .card.stone3d.lib-deep{background:var(--lib-deep-bg,var(--panel))!important;border-color:var(--lib-deep-rim,var(--accent))!important}
   .card .stagepill{position:absolute;top:10px;left:12px;font-size:10px;padding:2px 8px;border-radius:999px;background:var(--panel2);color:var(--muted);border:1px solid var(--border);z-index:3}
   .card.lib-deep .stagepill{color:var(--accent);border-color:var(--lib-deep-rim,var(--accent));background:var(--ghost-hover)}
+  .card.lib-standard .stagepill{color:var(--sage,var(--accent));border-color:var(--lib-standard-rim,var(--border));background:var(--ghost-hover)}
   .card.lib-active .stagepill{color:var(--accent);border-color:var(--lib-active-rim,var(--border))}
   .grid.lib-fade-out{opacity:0;transform:translateY(8px);transition:opacity .22s ease,transform .22s ease;pointer-events:none}
   .grid.lib-fade-in{animation:libGridIn .3s cubic-bezier(.22,1,.36,1) both}
+  .listtoolbar{padding:12px 22px 0;display:flex;gap:10px;align-items:center}
+  .progress-wrap{padding:20px 24px 32px;max-width:920px}
+  .chapter-card{margin-bottom:14px;padding:16px 18px;border-radius:14px;border:1px solid var(--border);background:var(--panel)}
+  .chapter-card.done{opacity:.72}
+  .chapter-meta{font-size:12px;color:var(--muted);margin-top:8px}
+  .chapter-links{margin-top:8px;display:flex;flex-wrap:wrap;gap:6px}
+  .chapter-links a{font-size:12px;padding:3px 10px;border-radius:999px;border:1px solid var(--border);cursor:pointer;color:var(--text-soft)}
   @keyframes libGridIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
   .card .ttl{font-family:var(--font-display);font-size:15px;font-weight:var(--fw-display);letter-spacing:var(--ls-title);line-height:1.45;margin-bottom:8px;padding:18px 20px 0 0;color:var(--text);position:relative;z-index:2}
   .card .sub{font-size:12px;color:var(--muted);margin-bottom:8px;position:relative;z-index:2}
@@ -1024,8 +1081,8 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   .pdfbtn .spin,.urlbtn .spin{display:inline-block;width:12px;height:12px;border:2px solid var(--accent);border-top-color:transparent;border-radius:50%;animation:spin .7s linear infinite;vertical-align:-2px;margin-right:2px}
   .urledit{display:flex;gap:8px;align-items:center}
   .urledit input{flex:1;min-width:0;padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--panel2);color:var(--text);font-size:12px}
-  #pdfmodal,#reportmodal,#setmodal,#startmodal,#rulesmodal,#topicmodal,#querymodal,#lintmodal,#docexportmodal,#doccommitmodal,#dochistorymodal,#thememodal,#onboardmodal{position:fixed;inset:0;background:var(--modal-backdrop);backdrop-filter:blur(10px);z-index:50;display:flex;flex-direction:column;padding:24px;opacity:0;visibility:hidden;pointer-events:none;transition:opacity .24s ease,visibility .24s ease}
-  #pdfmodal.open,#reportmodal.open,#setmodal.open,#startmodal.open,#rulesmodal.open,#topicmodal.open,#querymodal.open,#lintmodal.open,#docexportmodal.open,#doccommitmodal.open,#dochistorymodal.open,#thememodal.open,#onboardmodal.open{opacity:1;visibility:visible;pointer-events:auto}
+  #pdfmodal,#reportmodal,#setmodal,#startmodal,#rulesmodal,#topicmodal,#querymodal,#lintmodal,#docexportmodal,#doccommitmodal,#dochistorymodal,#thememodal,#onboardmodal,#citemodal{position:fixed;inset:0;background:var(--modal-backdrop);backdrop-filter:blur(10px);z-index:50;display:flex;flex-direction:column;padding:24px;opacity:0;visibility:hidden;pointer-events:none;transition:opacity .24s ease,visibility .24s ease}
+  #pdfmodal.open,#reportmodal.open,#setmodal.open,#startmodal.open,#rulesmodal.open,#topicmodal.open,#querymodal.open,#lintmodal.open,#docexportmodal.open,#doccommitmodal.open,#dochistorymodal.open,#thememodal.open,#onboardmodal.open,#citemodal.open{opacity:1;visibility:visible;pointer-events:auto}
   #pdfmodal.open>.bar,#pdfmodal.open>#pdfframe,#reportmodal.open>.bar,#reportmodal.open>#reportframe,.ph-modal.open>.setbox,.ph-modal.open>.setbox-flex{animation:modalPopIn .3s cubic-bezier(.22,1,.36,1) both}
   #pdfmodal.open>#pdfframe{animation-delay:.04s}
   #reportmodal.open>#reportframe{animation-delay:.04s}
@@ -1037,7 +1094,7 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   #reportmodal{align-items:center}
   #reportmodal>.bar{width:min(900px,100%)}
   #reportframe{flex:1;width:min(900px,100%);border:1px solid var(--border);border-top:none;border-radius:0 0 10px 10px;background:var(--panel);overflow:auto;padding:28px 36px}
-  #setmodal,#startmodal,#rulesmodal,#topicmodal,#querymodal,#lintmodal,#docexportmodal,#doccommitmodal,#dochistorymodal,#thememodal,#onboardmodal{align-items:center;justify-content:center}
+  #setmodal,#startmodal,#rulesmodal,#topicmodal,#querymodal,#lintmodal,#docexportmodal,#doccommitmodal,#dochistorymodal,#thememodal,#onboardmodal,#citemodal{align-items:center;justify-content:center}
   #onboard_checklist{position:fixed;right:20px;bottom:20px;width:min(300px,calc(100vw - 40px));background:var(--float-panel);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow);z-index:40;padding:0;overflow:hidden;backdrop-filter:blur(12px)}
   #onboard_checklist .ob-hd{display:flex;align-items:center;justify-content:space-between;padding:12px 14px 8px;font-family:var(--font-display);font-size:14px;font-weight:var(--fw-display);letter-spacing:var(--ls-title);color:var(--text)}
   #onboard_checklist .ob-x{background:none;border:none;color:var(--muted);cursor:pointer;font-size:16px;padding:2px 6px;border-radius:6px}
@@ -1138,6 +1195,11 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   .docitem:hover,.docitem.active{background:var(--panel2);border-color:var(--cmt-active-border);box-shadow:var(--shadow-sm)}
   .docitem .dt{font-family:var(--font-display);font-size:13px;font-weight:var(--fw-display);letter-spacing:var(--ls-title)}
   .docitem .ds{font-size:11px;color:var(--muted);margin-top:4px}
+  .citeitem{padding:10px 12px;border-radius:var(--radius-sm);cursor:pointer;margin-bottom:6px;border:1px solid var(--border);transition:.2s}
+  .citeitem:hover{background:var(--panel2);border-color:var(--cmt-active-border)}
+  .citeitem .dt{font-size:13px;font-weight:600}
+  .citeitem .ds{font-size:12px;color:var(--text);margin-top:4px}
+  .citeitem .meta{font-size:11px;margin-top:4px}
   .docpreview-wrap{position:relative;overflow:hidden;padding:0;background:var(--doc-preview-bg);min-height:0}
   .dochint{display:none;padding:10px 18px;font-size:13px;color:var(--gold);background:var(--dropzone-drag);border-bottom:1px solid var(--dropzone-border);text-align:center;line-height:1.6}
   .dochint.show{display:block;animation:dochintIn .28s ease}
@@ -1305,8 +1367,10 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
     <button class="btn sec" onclick="Refresh()">↻ 刷新</button>
     <button class="btn sec" onclick="OpenSettings()">🎀 偏好设置</button>
     <button class="btn sec" onclick="ExportBib()">📎 导出 BibTeX</button>
+    <button class="btn sec" onclick="ImportBibtex()">📚 导入 BibTeX</button>
     <button class="btn sec" onclick="SnapshotTopic()">🫧 备份选题</button>
     <input type="file" id="fileinput" accept=".pdf,.docx,.md,.txt" multiple style="display:none">
+    <input type="file" id="bibinput" accept=".bib" style="display:none">
   </div>
   <span class="meta" id="metainfo"></span>
   <!--__USERCHIP__-->
@@ -1314,6 +1378,7 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
     <div class="tab active" data-view="libview">论文库</div>
     <div class="tab" data-view="graphview">知识图谱</div>
     <div class="tab" data-view="listview">全部页面</div>
+    <div class="tab" data-view="progressview">写作进度</div>
     <div class="tab" data-view="docview">文档编辑</div>
   </div>
 </header>
@@ -1322,10 +1387,12 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   <section id="libview" class="view active"><div class="libtabs" id="libtabs"></div><div class="libtoolbar"><div class="libfilt" id="libfilt"></div><input type="search" class="libsearch" id="libsearch" placeholder="搜索标题、作者、标签…" autocomplete="off"></div><div class="libtagbar" id="libtagbar"></div><div class="stats" id="statsbar"></div><div class="dropzone" id="dropzone">🌷 拖放 PDF / Word / Markdown 到此处，或点击「添加文献」开始整理</div><div class="grid" id="libgrid"></div></section>
   <section id="graphview" class="view"><canvas id="graphcanvas"></canvas><div class="legend" id="legend"></div><div class="graphegobadge" id="graphegobadge"><span id="graphego_lbl"></span><span class="x" onclick="ClearGraphFocus()" title="返回全局">×</span></div><div class="graphfilter"><div class="graphrow"><label>搜索</label><input id="graph_search" type="search" placeholder="标题 / ID" oninput="OnGraphSearchInput()" onkeydown="if(event.key==='Enter')FocusGraphSearch()"></div><div class="graphrow"><label>节点</label><select id="graph_filter" onchange="ApplyGraphFilter()"><option value="">全部类型</option></select></div><div class="graphrow"><label>关系</label><select id="graph_edge_filter" onchange="ApplyGraphFilter()"><option value="">全部关系</option></select></div><button type="button" onclick="FocusGraphSearch()">⌖ 定位节点</button><button type="button" onclick="ExportGraphPng()">📷 导出 PNG</button><button type="button" onclick="ExportGraphJson()">⬇ 导出 JSON</button></div><div id="graphtooltip"></div><div class="hint">滚轮缩放 · 拖拽平移 · 拖动节点 · 点击查看详情 · 悬停边看关系</div></section>
   <section id="listview" class="view"></section>
+  <section id="progressview" class="view"></section>
   <section id="docview" class="view">
     <div class="docbar">
       <button class="btn" onclick="ImportDocx()">🌸 导入 Word</button>
       <button class="btn sec" onclick="ExtractDocComments()">💌 抓取批注</button>
+      <button class="btn sec" onclick="OpenCitationPicker()">📎 插入引用</button>
       <button class="btn sec" id="doc_commit_topbtn" onclick="OpenDocCommit()">🎀 保存版本</button>
       <button class="btn sec" onclick="OpenDocHistory()">🕯 版本历史</button>
       <button class="btn sec" onclick="OpenDocExport()">🎁 导出文档</button>
@@ -1420,6 +1487,17 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
       </div>
     </div>
     <div class="setbox-foot"><button class="btn ghost" onclick="CloseDocExport()">取消</button><button class="btn" onclick="ConfirmDocExport()">导出</button></div>
+  </div></div>
+  <div id="citemodal" class="ph-modal"><div class="setbox setbox-flex" style="width:min(560px,92vw)">
+    <div class="setbox-head">
+      <h2>📎 插入引用</h2>
+      <p class="note">从知识库 source 页选取文献，插入 (作者, 年份) [[key]] 到当前光标位置。</p>
+    </div>
+    <div class="setbox-body">
+      <input type="search" id="cite_search" placeholder="搜索标题、作者、key…" oninput="RenderCiteList(this.value)" style="width:100%;margin-bottom:10px;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--panel2);color:var(--text);box-sizing:border-box">
+      <div id="cite_list" class="citelist" style="max-height:360px;overflow:auto"></div>
+    </div>
+    <div class="setbox-foot"><button class="btn ghost" onclick="CloseCitationPicker()">关闭</button></div>
   </div></div>
   <div id="thememodal" class="ph-modal"><div class="setbox setbox-flex theme-modal-box" style="width:min(580px,94vw)">
     <div class="setbox-head">
@@ -1684,20 +1762,33 @@ let _libAnimTimer=null;
 const LIB_FILTERS=[
   {id:"all",label:"全部"},
   {id:"pending",label:"待纳入"},
-  {id:"await_deep",label:"待深度研究"},
+  {id:"await_deep",label:"待进阶分析"},
+  {id:"standard",label:"已标准分析"},
   {id:"deep",label:"已深度研究"},
 ];
 function LibSources(){return (DATA.nodes||[]).filter(n=>n.type==="source")}
 function LibIsDeep(n){return !!(n.deep_done||n.lib_stage==="deep")}
+function LibIsStandard(n){return !!(n.standard_done||n.lib_stage==="standard")}
 function LibIsPending(n){return !LibIsDeep(n)&&!n.ingested}
 function LibIsAwaitDeep(n){return !LibIsDeep(n)&&!!n.ingested}
 function LibStageLabel(n){
+  if(n.pipeline_stale||n.ingest_stale||n.standard_stale||n.deep_stale){
+    if(n.deep_stale)return "可升级深度";
+    if(n.standard_stale)return "可升级标准";
+    if(n.ingest_stale)return "可升级纳入";
+  }
   if(LibIsDeep(n))return "已深度研究";
-  if(LibIsAwaitDeep(n))return "待深度研究";
+  if(LibIsStandard(n))return "已标准分析";
+  if(LibIsAwaitDeep(n))return "待进阶分析";
   return "待纳入";
+}
+function LibHasStale(n){return !!(n.pipeline_stale||n.ingest_stale||n.standard_stale||n.deep_stale)}
+function StaleKindLabel(sk){
+  return ({ingest:"纳入研究",standard:"标准分析",deep:"深度研究",query:"知识查询",comparison:"对比页"})[sk]||sk;
 }
 function LibStageClass(n){
   if(LibIsDeep(n))return "lib-deep";
+  if(LibIsStandard(n))return "lib-standard";
   if(LibIsAwaitDeep(n))return "lib-active";
   return "lib-todo";
 }
@@ -1738,7 +1829,8 @@ function LibFilterMatch(n){
   if(!LibFuzzyMatch(n,LIB_SEARCH))return false;
   if(LIB_FILTER==="all")return true;
   if(LIB_FILTER==="pending")return LibIsPending(n);
-  if(LIB_FILTER==="await_deep")return LibIsAwaitDeep(n);
+  if(LIB_FILTER==="await_deep")return LibIsAwaitDeep(n)&&!LibIsStandard(n);
+  if(LIB_FILTER==="standard")return LibIsStandard(n)&&!LibIsDeep(n);
   if(LIB_FILTER==="deep")return LibIsDeep(n);
   return true;
 }
@@ -1747,7 +1839,8 @@ function LibFilterCounts(){
   return {
     all:vs.length,
     pending:vs.filter(LibIsPending).length,
-    await_deep:vs.filter(LibIsAwaitDeep).length,
+    await_deep:vs.filter(n=>LibIsAwaitDeep(n)&&!LibIsStandard(n)).length,
+    standard:vs.filter(n=>LibIsStandard(n)&&!LibIsDeep(n)).length,
     deep:vs.filter(LibIsDeep).length,
   };
 }
@@ -1842,8 +1935,20 @@ function RenderLibGrid(){
     let actionbtn="";
     if(LibIsDeep(n)){
       actionbtn=`<button class="urlbtn" onclick="event.stopPropagation();OpenReport('${Attr(n.id)}-report')">📋 研究报告</button>`;
+      if(n.deep_stale&&SERVERMODE&&n.rawfile){
+        actionbtn+=DeepActionBtn(n.id,"urlbtn","deep_btn_",true,"↻ 升级深度");
+      }
     }else if(LibIsAwaitDeep(n)&&SERVERMODE){
-      actionbtn=DeepActionBtn(n.id,"urlbtn","deep_btn_",true);
+      const vacts=[];
+      if(n.ingest_stale&&n.rawfile){
+        vacts.push(`<button class="urlbtn" onclick="event.stopPropagation();Analyze('${Attr(n.rawfile)}')">↻ 升级纳入</button>`);
+      }else{
+        if(LibIsStandard(n))vacts.push(`<button class="urlbtn" onclick="event.stopPropagation();OpenReport('${Attr(n.id)}-standard')">📊 标准报告</button>`);
+        if(n.rawfile&&!LibIsStandard(n))vacts.push(StandardActionBtn(n.id,"urlbtn","std_btn_",true,n.standard_stale?"↻ 升级标准":null));
+        else if(n.rawfile&&n.standard_stale)vacts.push(StandardActionBtn(n.id,"urlbtn","std_btn_",true,"↻ 升级标准"));
+        if(n.rawfile)vacts.push(DeepActionBtn(n.id,"urlbtn","deep_btn_",true));
+      }
+      actionbtn=vacts.join("");
     }else if(LibIsPending(n)&&SERVERMODE&&n.rawfile){
       actionbtn=`<button class="urlbtn" onclick="event.stopPropagation();Analyze('${Attr(n.rawfile)}')">✨ 纳入研究</button>`;
     }
@@ -1864,19 +1969,70 @@ function RenderLibrary(){
 }
 function RenderList(){
   const v=document.getElementById("listview");
+  let h=`<div class="listtoolbar"><input type="search" class="libsearch" id="list_search" placeholder="全文搜索 wiki 页面…" autocomplete="off" style="max-width:100%"></div>`;
+  if(LIST_SEARCH.trim()&&LIST_SEARCH_HITS){
+    h+=`<div class="typegroup"><h3>搜索结果 (${LIST_SEARCH_HITS.length})</h3>`;
+    LIST_SEARCH_HITS.forEach(n=>{
+      h+=`<div class="listitem" onclick="OpenDrawer('${Attr(n.id)}')"><span class="dot" style="background:${TypeColor(n.type)}"></span><span>${Esc(n.title)}</span><span style="color:var(--muted);font-size:11px;margin-left:8px">${TypeLabel(n.type)}</span></div>`;
+    });
+    h+=`</div>`;
+    v.innerHTML=h;
+    const oinp=document.getElementById("list_search");
+    if(oinp){oinp.value=LIST_SEARCH;if(!oinp._bound){oinp._bound=true;let ot=null;oinp.oninput=()=>{clearTimeout(ot);ot=setTimeout(()=>RunListSearch(oinp.value),280)}}}
+    return;
+  }
   const types=[...new Set(DATA.nodes.map(n=>n.type))];
-  let h="";
   types.forEach(t=>{
-    const items=DATA.nodes.filter(n=>n.type===t);
+    const items=DATA.nodes.filter(n=>n.type===t&&(!LIST_SEARCH.trim()||LibFuzzyMatch(n,LIST_SEARCH)));
+    if(!items.length)return;
     h+=`<div class="typegroup"><h3>${TypeLabel(t)} (${items.length})</h3>`;
     items.forEach(n=>{h+=`<div class="listitem" onclick="OpenDrawer('${Attr(n.id)}')"><span class="dot" style="background:${TypeColor(t)}"></span><span>${Esc(n.title)}</span></div>`});
     h+=`</div>`;
   });
   v.innerHTML=h||'<div class="empty">暂无页面。</div>';
+  const oinp=document.getElementById("list_search");
+  if(oinp){oinp.value=LIST_SEARCH;if(!oinp._bound){oinp._bound=true;let ot=null;oinp.oninput=()=>{clearTimeout(ot);ot=setTimeout(()=>RunListSearch(oinp.value),280)}}}
+}
+let LIST_SEARCH="",LIST_SEARCH_HITS=null;
+async function RunListSearch(sq){
+  LIST_SEARCH=sq||"";
+  if(!LIST_SEARCH.trim()){LIST_SEARCH_HITS=null;RenderList();return}
+  if(LIST_SEARCH.trim().length<2){LIST_SEARCH_HITS=null;RenderList();return}
+  if(!SERVERMODE){LIST_SEARCH_HITS=null;RenderList();return}
+  try{
+    const r=await Api("/api/search?q="+encodeURIComponent(LIST_SEARCH.trim()));
+    LIST_SEARCH_HITS=r.results||[];
+  }catch(e){LIST_SEARCH_HITS=[]}
+  RenderList();
+}
+function RenderProgress(){
+  const v=document.getElementById("progressview");
+  const o=DATA.chapters||{};
+  const vch=o.chapters||[];
+  if(!vch.length){
+    v.innerHTML='<div class="empty" style="padding:32px">请在「研究规则 → 研究目标」中填写<strong>论文章节规划</strong>（`- [ ] 第 N 章 …` 格式）。</div>';
+    return;
+  }
+  let h=`<div class="progress-wrap"><h3 style="margin:0 0 6px;font-size:18px">${Esc(o.working_title||"论文写作进度")}</h3><p class="note" style="margin:0 0 18px">按 purpose 大纲聚合知识库中的文献、对比与问答（关键词启发式匹配）。</p>`;
+  vch.forEach(ch=>{
+    const c=ch.counts||{};
+    const stotal=(c.sources||0)+(c.comparisons||0)+(c.queries||0);
+    h+=`<div class="chapter-card${ch.done?" done":""}"><div style="display:flex;align-items:center;gap:10px"><span>${ch.done?"✅":"📄"}</span><strong>${Esc(ch.title)}</strong></div>`;
+    h+=`<div class="chapter-meta">文献 ${c.sources||0} · 对比 ${c.comparisons||0} · 问答 ${c.queries||0}${stotal?` · 合计 ${stotal}`:""}</div>`;
+    if((ch.sources||[]).length){
+      h+=`<div class="chapter-links">${ch.sources.map(sid=>`<a onclick="OpenDrawer('${Attr(sid)}')">${Esc((NODEMAP[sid]||{}).title||sid)}</a>`).join("")}</div>`;
+    }
+    h+=`</div>`;
+  });
+  if((o.rq_pages||[]).length){
+    h+=`<h4 style="margin:24px 0 10px">研究问题页</h4><div class="chapter-links">${o.rq_pages.map(r=>`<a onclick="OpenDrawer('${Attr(r.id)}')">${Esc(r.title||r.id)}</a>`).join("")}</div>`;
+  }
+  h+=`</div>`;
+  v.innerHTML=h;
 }
 function RenderAll(){
   TC=DATA.typeconfig;ReindexNodes();
-  RenderLibTabs();RenderStats();RenderLibrary();RenderList();
+  RenderLibTabs();RenderStats();RenderLibrary();RenderList();RenderProgress();
   document.getElementById("metainfo").textContent=(SERVERMODE?"本地服务 · ":"")+"更新于 "+DATA.generated;
   UpdateLintBadge(DATA.lint);
   UpdateCurrentTopicDisplay();
@@ -1939,16 +2095,34 @@ function RenderDrawer(id){
   h+=`<div class="field"><button class="btn ghost" onclick="FocusGraphOn('${Attr(n.id)}')">🕸 在图谱中展开邻域</button></div>`;
   if(n.type==="source"){
     h+=`<div class="field"><div class="k">论文库阶段</div><span class="badge soft">${Esc(LibStageLabel(n))}</span></div>`;
+    if(LibHasStale(n)){
+      const vsk=(n.stale_kinds||[]).map(k=>StaleKindLabel(k)).join("、");
+      h+=`<div class="field"><div class="k">版本提示</div><div class="research-txt" style="color:var(--gold)">以下流水线产物版本较旧，建议重新运行：${Esc(vsk||"—")}</div></div>`;
+    }
     if(LibIsPending(n)&&n.rawfile&&SERVERMODE){
       h+=`<div class="field"><button class="btn" onclick="Analyze('${Attr(n.rawfile)}')">✨ 纳入这篇文献</button></div>`;
     }else if(LibIsAwaitDeep(n)&&SERVERMODE){
-      if(!n.rawfile){
-        h+=`<div class="field"><div class="research-txt" style="color:var(--rose)">未检测到原始 PDF。深度研究需要 PDF 原文，请重新上传后再分析。</div></div>`;
+      if(n.ingest_stale&&n.rawfile){
+        h+=`<div class="field"><button class="btn" onclick="Analyze('${Attr(n.rawfile)}')">↻ 升级纳入</button></div>`;
+      }else{
+        if(!n.rawfile){
+          h+=`<div class="field"><div class="research-txt" style="color:var(--rose)">未检测到原始 PDF。进阶分析需要 PDF 原文，请重新上传后再试。</div></div>`;
+        }
+        if(n.rawfile&&!LibIsStandard(n)){
+          h+=`<div class="field">${StandardActionBtn(n.id,"btn","std_drawer_btn_",false,n.standard_stale?"↻ 升级标准分析":"📊 标准分析")}</div>`;
+        }else if(n.rawfile&&n.standard_stale){
+          h+=`<div class="field">${StandardActionBtn(n.id,"btn","std_drawer_btn_",false,"↻ 升级标准分析")}</div>`;
+        }
+        if(n.rawfile){
+          h+=`<div class="field">${DeepActionBtn(n.id,"btn","deep_drawer_btn_",false,"📋 深度分析")}</div>`;
+        }
+        if(LibIsStandard(n)){
+          h+=`<div class="field"><button class="btn ghost" onclick="OpenReport('${Attr(n.id)}-standard')">📊 查看标准分析报告</button></div>`;
+        }
       }
-      h+=`<div class="field">${DeepActionBtn(n.id,"btn","deep_drawer_btn_",false,"📋 深度分析这篇文献")}</div>`;
     }else if(LibIsDeep(n)){
       h+=`<div class="field"><button class="btn" onclick="OpenReport('${Attr(n.id)}-report')">📋 查看深度研究报告</button> `+
-        (n.rawfile&&SERVERMODE?`<button class="btn ghost" onclick="DeepAnalyzeById('${Attr(n.id)}')">↻ 重新分析</button>`:"")+`</div>`;
+        (n.rawfile&&SERVERMODE?DeepActionBtn(n.id,"btn","deep_drawer_btn_",false,n.deep_stale?"↻ 升级深度分析":"↻ 重新分析"):"")+`</div>`;
     }
   }
   const obody=document.getElementById("drawerbody");
@@ -1959,12 +2133,27 @@ function RenderDrawer(id){
 }
 function OpenReport(reportId){
   const n=NODEMAP[reportId];
-  if(!n||n.type!=="analysis-report"||!n.body){Toast("未找到深度研究报告，请尝试刷新");return;}
-  document.getElementById("reportname").textContent=n.title||"深度研究报告";
+  if(!n||n.type!=="analysis-report"){Toast("未找到研究报告，请尝试刷新");return;}
+  document.getElementById("reportname").textContent=n.title||"研究报告";
   const f=document.getElementById("reportframe");
-  f.innerHTML=`<div class="reportbody">${MdToHtml(n.body)}</div>`;
-  f.scrollTop=0;
+  f.innerHTML='<div class="reportbody" style="color:var(--muted)">加载中…</div>';
   document.getElementById("reportmodal").classList.add("open");
+  const sbody=n.body||"";
+  if(sbody){
+    f.innerHTML=`<div class="reportbody">${MdToHtml(sbody)}</div>`;
+    f.scrollTop=0;
+    return;
+  }
+  if(!SERVERMODE){Toast("离线模式无法加载报告正文");return}
+  Api("/api/page?id="+encodeURIComponent(reportId)).then(op=>{
+    if(op&&op.body){
+      n.body=op.body;
+      f.innerHTML=`<div class="reportbody">${MdToHtml(op.body)}</div>`;
+      f.scrollTop=0;
+    }else{f.innerHTML='<div class="reportbody">（无正文）</div>'}
+  }).catch(e=>{
+    f.innerHTML='<div class="reportbody" style="color:var(--rose)">加载失败：'+Esc(e.message)+'</div>';
+  });
 }
 function CloseReport(){document.getElementById("reportmodal").classList.remove("open")}
 function InitDrawerShells(){
@@ -2344,18 +2533,21 @@ function SwitchRuleTab(stab){
 async function SaveRules(){
   if(NeedServer())return;
   try{
+    let oresp;
     if(ACTIVE_RULE_TAB==="purpose"){
       if(!ValidatePurposeForm("rule_purpose_form"))return;
-      await Api("/api/rules/save",{key:"purpose",fields:ReadPurposeForm("rule_purpose_form")});
+      oresp=await Api("/api/rules/save",{key:"purpose",fields:ReadPurposeForm("rule_purpose_form")});
     }else if(ACTIVE_RULE_TAB==="schema"){
-      await Api("/api/rules/save",{key:"schema",content:document.getElementById("rule_schema_editor").value});
+      oresp=await Api("/api/rules/save",{key:"schema",content:document.getElementById("rule_schema_editor").value});
     }else{
-      await Api("/api/rules/save",{key:"agents",content:document.getElementById("rule_agents_editor").value});
+      oresp=await Api("/api/rules/save",{key:"agents",content:document.getElementById("rule_agents_editor").value});
     }
     CloseRules();
     await LoadTopics();
     await RefreshOnboardingState();
+    await Refresh(true);
     Toast("规则已保存");
+    if(oresp&&oresp.stale_hint){Toast(oresp.stale_hint,8000)}
   }catch(e){Toast("保存失败："+e.message)}
 }
 
@@ -2420,6 +2612,12 @@ async function Refresh(silent){
     DATA=await Api("/api/data");RenderAll();UpdateLintBadge(DATA.lint);
     if(!silent)Toast("已刷新");
     if(!silent&&DATA.lint&&DATA.lint.orphans>0)Toast("巡检："+DATA.lint.orphans+" 个孤立页面，可点「健康巡检」修复",4500);
+    if(!silent&&DATA.stale_analysis&&DATA.stale_analysis.length){
+      const ocnt={};
+      DATA.stale_analysis.forEach(x=>{ocnt[x.kind]=(ocnt[x.kind]||0)+1});
+      const sparts=Object.keys(ocnt).map(k=>StaleKindLabel(k)+" "+ocnt[k]);
+      Toast("有 "+DATA.stale_analysis.length+" 项流水线产物版本较旧（"+sparts.join("，")+"），请按需升级",8000);
+    }
     RefreshOnboardingState();
   }catch(e){Toast("刷新失败："+e.message)}
 }
@@ -2737,7 +2935,7 @@ function ApplyQueryResult(nturnid,p){
 function PollQueryJob(nturnid){
   if(oquerypollers[nturnid])return;
   const poller=CreatePoller({
-    interval:800,maxTicks:200,
+    interval:450,maxTicks:240,
     tick:()=>QueryTick(nturnid),
     promptMsg:"知识查询已进行约 2.5 分钟仍未返回。\n\n确定 = 继续等待\n取消 = 放弃（仅停止本页轮询，后台任务不受影响）",
     onAbort:()=>QueryPollAbort(nturnid),
@@ -2753,7 +2951,18 @@ async function QueryTick(nturnid){
     RestoreQueryTurn(nturnid,"进度获取失败："+e.message,oturn&&oturn.dataset.prevAnswer,!!(oturn&&oturn.dataset.hadAnswer));
     return "done";
   }
-  if(p.running)return;
+  if(p.running){
+    if(p.answer){
+      const oturn=FindQueryTurn(nturnid);
+      if(oturn){
+        oturn.querySelector(".query-ans").textContent=p.answer;
+        const ost=oturn.querySelector(".query-turn-st");
+        if(ost)ost.textContent=p.status==="streaming"?"生成中…":"后台查询中…";
+        if(IsQueryModalOpen())ScrollQueryThread();
+      }
+    }
+    return;
+  }
   delete oquerypollers[nturnid];
   ApplyQueryResult(nturnid,p);
   return "done";
@@ -2811,7 +3020,13 @@ async function FixLintIssues(){
     const r=await Api("/api/lint/fix",{});
     RenderLintReport(r.lint||{});
     const n=(r.repaired_queries||[]).length;
-    Toast(n?"已修复 "+n+" 个 query 页":"暂无可自动修复项");
+    const nd=(r.repaired_dead_links||[]).length;
+    const no=(r.repaired_orphans||[]).length;
+    const nparts=[];
+    if(n)nparts.push(n+" 个 query");
+    if(nd)nparts.push(nd+" 处死链");
+    if(no)nparts.push(no+" 个孤立页");
+    Toast(nparts.length?"已修复："+nparts.join("、"):"暂无可自动修复项");
     await Refresh(true);
   }catch(e){document.getElementById("lint_body").textContent="修复失败："+e.message}
 }
@@ -2829,6 +3044,63 @@ async function ExportBib(){
     const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="sources.bib";a.click();
     Toast("BibTeX 已导出");
   }catch(e){Toast("导出失败："+e.message)}
+}
+function ImportBibtex(){
+  const oin=document.getElementById("bibinput");
+  if(!oin)return;
+  oin.onchange=async e=>{
+    const of=e.target.files&&e.target.files[0];
+    oin.value="";
+    if(!of)return;
+    if(NeedServer())return;
+    ShowOverlay("正在导入 BibTeX…");
+    try{
+      const stext=await of.text();
+      const r=await Api("/api/import/bibtex",{bibtex:stext});
+      await Refresh(true);
+      HideOverlay();
+      Toast("已导入 "+(r.total||0)+" 条（更新 "+(r.updated||[]).length+"，新建 "+(r.created||[]).length+"）",5000);
+    }catch(err){HideOverlay();Toast("导入失败："+err.message)}
+  };
+  oin.click();
+}
+let CITE_LIST=[];
+async function OpenCitationPicker(){
+  if(NeedServer()||NeedDoc("cite"))return;
+  document.getElementById("citemodal").classList.add("open");
+  const olist=document.getElementById("cite_list");
+  olist.innerHTML='<div class="meta">加载中…</div>';
+  if(!olist._citeBound){
+    olist._citeBound=true;
+    olist.addEventListener("click",e=>{
+      const oel=e.target.closest(".citeitem");
+      if(oel&&oel.dataset.cite)InsertCitation(oel.dataset.cite);
+    });
+  }
+  const osearch=document.getElementById("cite_search");
+  if(osearch)osearch.value="";
+  try{
+    const r=await Api("/api/sources/citations");
+    CITE_LIST=r.citations||[];
+    RenderCiteList("");
+  }catch(e){olist.innerHTML='<div class="meta">加载失败：'+Esc(e.message)+'</div>'}
+}
+function CloseCitationPicker(){document.getElementById("citemodal").classList.remove("open")}
+function RenderCiteList(sq){
+  const olist=document.getElementById("cite_list");
+  if(!olist)return;
+  const sneedle=(sq||"").trim().toLowerCase();
+  const vfiltered=CITE_LIST.filter(c=>{
+    if(!sneedle)return true;
+    return (c.id+" "+(c.title||"")+" "+(c.authors||[]).join(" ")).toLowerCase().includes(sneedle);
+  });
+  olist.innerHTML=vfiltered.map(c=>'<div class="citeitem" data-cite="'+Attr(c.cite)+'"><div class="dt">'+Esc(c.id)+'</div><div class="ds">'+Esc(c.title||"")+'</div><div class="meta">'+Esc(c.cite)+'</div></div>').join("")||'<div class="meta">无匹配文献</div>';
+}
+function InsertCitation(scite){
+  CloseCitationPicker();
+  const oiframe=document.getElementById("doc_frame");
+  if(!oiframe||!oiframe.contentWindow){Toast("编辑器未就绪");return}
+  oiframe.contentWindow.postMessage({source:"paper-helper",type:"insert-citation",text:scite},"*");
 }
 async function SnapshotTopic(){
   if(NeedServer())return;
@@ -3103,7 +3375,7 @@ async function SaveSettings(){
 
 /* ---------- 文档编辑 ---------- */
 let CURRENT_DOC="",DOC_DETAIL=null,SELECTED_COMMENT=null,SELECTED_PARA=-1,DOC_MSG_BOUND=false,DOC_SELECTED_REV=null,DOC_REV_CACHE=null,DOC_SWITCH_GEN=0;
-const DOC_NEED_MSGS={commit:"请先导入 Word 文档并选择，再保存版本",history:"请先导入 Word 文档并选择，再查看版本历史",export:"请先导入 Word 文档并选择，再导出",extract:"请先导入 Word 文档并选择，再抓取批注"};
+const DOC_NEED_MSGS={commit:"请先导入 Word 文档并选择，再保存版本",history:"请先导入 Word 文档并选择，再查看版本历史",export:"请先导入 Word 文档并选择，再导出",extract:"请先导入 Word 文档并选择，再抓取批注",cite:"请先导入 Word 文档并选择，再插入引用"};
 function ShowDocHint(smsg,nms){
   const el=document.getElementById("doc_hint_bar");
   if(!el)return;
@@ -3989,6 +4261,7 @@ function SwitchView(vid){
   }
   if(vid==="graphview"){if(!canvas||!nodes.length)InitGraph();else requestAnimationFrame(()=>RedrawGraph())}
   if(vid==="docview")LoadDocsList();
+  if(vid==="progressview")RenderProgress();
   if(vid==="libview")setTimeout(()=>AnimateRenderLibrary(),40);
 }
 document.querySelectorAll(".tab").forEach(tab=>{tab.onclick=()=>SwitchView(tab.dataset.view)});
@@ -4004,6 +4277,7 @@ if(!SERVERMODE){
 /* 当前正在深度分析的文献 key（用于跨页签 / 重渲染保持转圈态）。
    必须在顶层 RenderAll() 之前声明，否则 DeepActionBtn 读取时会触发 TDZ 报错，导致论文卡片无法渲染。 */
 let _deepActiveKey=null,_deepActiveStage="分析中…",_deepPoll=null;
+let _standardActiveKey=null,_standardActiveStage="分析中…",_standardPoll=null;
 LoadAllQueryHistory();
 RestoreQueryThreadForTopic(CURRENT_TOPIC);
 InitTheme();
@@ -4011,7 +4285,83 @@ InitDrawerShells();
 InitSvcToggle();
 InitDropzone();
 RenderAll();
-if(SERVERMODE){LoadTopics().then(()=>Refresh(true)).then(()=>{InitOnboarding();ResumeDeepIfRunning()});LoadDocsList();}
+if(SERVERMODE){LoadTopics().then(()=>Refresh(true)).then(()=>{InitOnboarding();ResumeDeepIfRunning();ResumeStandardIfRunning()});LoadDocsList();}
+/* ---------- 标准分析 ---------- */
+function HasStandardReport(skey){return DATA.nodes.some(n=>n.id===skey+"-standard"&&n.type==="analysis-report")}
+function StandardActionBtn(sid,sklass,sidprefix,bstop,slabel){
+  const sclick=(bstop?"event.stopPropagation();":"")+"StandardAnalyzeById('"+Attr(sid)+"')";
+  const stext=slabel||"📊 标准分析";
+  if(_standardActiveKey===sid){
+    return `<button class="${sklass}" id="${sidprefix}${Attr(sid)}" disabled><span class="spin"></span> ${Esc(_standardActiveStage)}</button>`;
+  }
+  return `<button class="${sklass}" id="${sidprefix}${Attr(sid)}" onclick="${sclick}">${stext}</button>`;
+}
+function StandardBtnEls(skey){return [document.getElementById("std_btn_"+skey),document.getElementById("std_drawer_btn_"+skey)].filter(Boolean)}
+function SetStandardBtns(skey,bdisabled,shtml){StandardBtnEls(skey).forEach(btn=>{btn.disabled=bdisabled;btn.innerHTML=shtml})}
+function ResetStandardBtn(skey){SetStandardBtns(skey,false,"📊 标准分析")}
+function StandardAnalyzeById(skey){
+  const n=NODEMAP[skey];
+  if(!n||!skey){Toast("参数错误");return}
+  StandardAnalyze(n.rawfile||"", skey);
+}
+async function ResumeStandardIfRunning(){
+  try{
+    const oresp=await(await fetch("/api/standard/progress")).json();
+    if(oresp.running&&!oresp.finished){
+      _standardActiveKey=oresp.key||oresp.current||null;
+      _standardActiveStage=oresp.stage||"分析中…";
+      if(_standardActiveKey){RenderLibGrid();StartStandardPolling(_standardActiveKey);Toast("检测到标准分析仍在进行，已恢复进度")}
+    }
+  }catch(e){}
+}
+async function StandardAnalyze(rawfile,skey){
+  if(!skey){Toast("参数错误");return}
+  if(_standardActiveKey&&_standardActiveKey!==skey){Toast("已有文献正在标准分析中，请等待完成");return}
+  if(_deepActiveKey){Toast("深度分析进行中，请稍后再试");return}
+  _standardActiveKey=skey;_standardActiveStage="准备";
+  SetStandardBtns(skey,true,'<span class="spin"></span> 准备');
+  try{
+    const oresp=await Api("/api/ingest/standard",{rawfile:rawfile||null,id:skey});
+    if(oresp.status==="need_key"){Toast("请先在设置中配置 API Key");_standardActiveKey=null;ResetStandardBtn(skey);return}
+    if(oresp.error){Toast(oresp.error);_standardActiveKey=null;ResetStandardBtn(skey);return}
+    Toast("标准分析已启动（约 1–3 分钟）");
+    StartStandardPolling(skey);
+  }catch(e){
+    Toast("启动失败："+e.message);
+    _standardActiveKey=null;ResetStandardBtn(skey);
+  }
+}
+function StartStandardPolling(skey){
+  if(_standardPoll)_standardPoll.stop();
+  _standardPoll=CreatePoller({
+    interval:1500,maxTicks:240,
+    tick:()=>StandardTick(skey),
+    promptMsg:"标准分析已进行约 6 分钟仍未完成。\n\n确定 = 继续等待\n取消 = 放弃（仅停止本页进度轮询）",
+    onAbort:()=>{_standardActiveKey=null;_standardPoll=null;ResetStandardBtn(skey);Toast("已停止查看标准分析进度",6000)},
+  });
+  _standardPoll.start();
+}
+async function StandardTick(skey){
+  let oresp;
+  try{oresp=await(await fetch("/api/standard/progress")).json()}catch(e){return}
+  if(oresp.error&&oresp.finished){
+    _standardPoll=null;_standardActiveKey=null;
+    ResetStandardBtn(skey);Toast("分析失败："+oresp.error);return "done";
+  }
+  _standardActiveStage=oresp.stage||"分析中…";
+  SetStandardBtns(skey,true,'<span class="spin"></span> '+Esc(_standardActiveStage));
+  if(oresp.finished&&oresp.result){
+    _standardPoll=null;_standardActiveKey=null;
+    const rkey=oresp.result.key||skey;
+    Toast("✅ 标准分析完成");
+    await Refresh(true);
+    if(document.getElementById("libview").classList.contains("active"))AnimateRenderLibrary();
+    if(HasStandardReport(rkey))OpenReport(rkey+"-standard");
+    else if(NODEMAP[rkey])OpenDrawer(rkey);
+    return "done";
+  }
+  return;
+}
 /* ---------- 深度分析 ---------- */
 function HasDeepReport(skey){return DATA.nodes.some(n=>n.id===skey+"-report"&&n.type==="analysis-report")}
 function DeepActionBtn(sid,sklass,sidprefix,bstop,slabel){
@@ -4043,6 +4393,7 @@ async function ResumeDeepIfRunning(){
 async function DeepAnalyze(rawfile,skey){
   if(!skey){Toast("参数错误");return}
   if(_deepActiveKey&&_deepActiveKey!==skey){Toast("已有文献正在深度分析中，请等待完成");return}
+  if(_standardActiveKey){Toast("标准分析进行中，请稍后再试");return}
   _deepActiveKey=skey;_deepActiveStage="准备";
   SetDeepBtns(skey,true,'<span class="spin"></span> 准备');
   try{

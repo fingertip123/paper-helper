@@ -41,7 +41,8 @@ def GetChecklistProgress():
     import wiki_core as core
 
     nraw = len(core.ListSources())
-    vnodes, _ = core.ScanWiki()
+    import wiki_refresh as refresh
+    vnodes = refresh.GetWikiData()["nodes"]
     ningested = sum(
         1 for n in vnodes
         if n.get("type") == "source" and n.get("ingested")
@@ -154,7 +155,8 @@ def SetupFromTitle(stitle):
             "## 本研究的切入点\n\n（待填写）\n"
         ) % (stamp, stamp, stitle))
 
-    core.GenerateIndex()
+    import wiki_refresh as refresh
+    refresh.RefreshWiki(bwrite_files=True, bforce=True)
     core.AppendLog("[onboarding] 完成入门设置：%s" % stitle)
 
     ostate = LoadOnboarding()

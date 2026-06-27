@@ -68,11 +68,11 @@ def RunLintQuick(vnodes, vedges):
     return {"orphans": norphans, "dead_links": 0, "knowledge_gaps": 0}
 
 
-def RunLint():
+def RunLintWithOdata(odata):
+    """完整巡检，复用已有 odata（不再 ScanWiki / BuildData）。"""
     core = _ImportCore()
-    odata = core.BuildData()
     vnodes = odata["nodes"]
-    vedges = odata["edges"]
+    vedges = odata.get("edges") or []
     onodeids = {n["id"] for n in vnodes}
     olinked = {n["id"]: 0 for n in vnodes}
     for e in vedges:
@@ -121,9 +121,13 @@ def RunLint():
     }
 
 
-def GenerateOverview():
-    core = _ImportCore()
-    odata = core.BuildData()
+def RunLint():
+    import wiki_refresh as refresh
+    return RunLintWithOdata(refresh.GetWikiData())
+
+
+def WriteOverview(odata):
+    """写 wiki/overview.md（须传入已构建的 odata）。"""
     ostats = odata.get("stats", {})
     vnodes = odata["nodes"]
     vsources = [n for n in vnodes if n["type"] == "source" and n.get("ingested")]
@@ -177,7 +181,7 @@ def GenerateOverview():
         for n in sorted(vqueries, key=lambda x: x["id"])[-8:]:
             lines.append("- [[%s]]" % n["id"])
 
-    olint = RunLint()
+    olint = RunLintWithOdata(odata)
     if olint["orphans"] or olint["dead_links"] or olint["knowledge_gaps"]:
         lines += ["", "## 待关注", ""]
         if olint["orphans"]:
@@ -190,6 +194,12 @@ def GenerateOverview():
     lines += ["", "## 当前论点速览", "", "见 [[purpose]]。", ""]
     opath = os.path.join(wikidir, "overview.md")
     io_utils.AtomicWriteText(opath, "\n".join(lines))
+
+
+def GenerateOverview():
+    """兼容旧调用：内部走 RefreshWiki 缓存。"""
+    import wiki_refresh as refresh
+    WriteOverview(refresh.GetWikiData())
 
 
 def FindPagesBySource(skey):
@@ -245,57 +255,9 @@ def ResolveDoiUrl(surl):
     return surl
 
 
-def CollectQueryContext(squestion, nmaxchars=12000):
-    core = _ImportCore()
-    odata = core.BuildData()
-    vnodes = odata["nodes"]
-    sq = squestion.lower()
-    vwords = [w for w in re.split(r"\W+", sq) if len(w) > 1]
-
-    def ScoreNode(n):
-        nscore = 0
-        stext = (n.get("title", "") + " " + n.get("summary", "") + " " + n["id"]).lower()
-        for w in vwords:
-            if w in stext:
-                nscore += 2
-        if n["type"] == "source":
-            nscore += 1
-        if n["type"] == "rq":
-            nscore += 1
-        return nscore
-
-    vranked = sorted(
-        [n for n in vnodes if n["type"] not in ("purpose",)],
-        key=ScoreNode,
-        reverse=True,
-    )
-    vchunks = []
-    nlen = 0
-    spurpose = topics.ReadText(topics.RulePath("purpose.md"))[:2000]
-    vchunks.append("## purpose.md\n" + spurpose)
-    nlen += len(vchunks[-1])
-
-    for n in vranked[:20]:
-        if ScoreNode(n) <= 0 and len(vchunks) > 1:
-            continue
-        spath = os.path.join(wikidir, core.typeconfig.get(n["type"], {}).get("dir", ""), n["id"] + ".md")
-        if n["type"] == "source":
-            spath = os.path.join(wikidir, "sources", n["id"] + ".md")
-        elif n["type"] == "purpose":
-            spath = topics.RulePath("purpose.md")
-        elif n["type"] == "rq":
-            spath = os.path.join(wikidir, "research-questions", n["id"] + ".md")
-        if not os.path.isfile(spath):
-            continue
-        with open(spath, "r", encoding="utf-8") as f:
-            stext = f.read()[:2500]
-        schunk = "## [[%s]]\n%s" % (n["id"], stext)
-        if nlen + len(schunk) > nmaxchars:
-            break
-        vchunks.append(schunk)
-        nlen += len(schunk)
-
-    return "\n\n".join(vchunks)
+def CollectQueryContext(squestion, nmaxchars=16000):
+    import wiki_query as wquery
+    return wquery.CollectQueryContext(squestion, nmaxchars=nmaxchars)
 
 
 def InferQueryLinks(squestion, sanswer, sexclude_id=None):
@@ -306,7 +268,8 @@ def InferQueryLinks(squestion, sanswer, sexclude_id=None):
         for starget in core.ExtractLinks(stext):
             if starget not in vcited and starget != sexclude_id:
                 vcited.append(starget)
-    odata = core.BuildData()
+    import wiki_refresh as refresh
+    odata = refresh.GetWikiData()
     stlower = ((squestion or "") + "\n" + (sanswer or "")).lower()
     for n in odata["nodes"]:
         if n["id"] == sexclude_id or n["type"] in ("purpose", "unknown", "query"):
@@ -322,23 +285,28 @@ def InferQueryLinks(squestion, sanswer, sexclude_id=None):
 
 
 def SaveQueryPage(squestion, sanswer):
+    import analysis_version as aver
     os.makedirs(os.path.join(wikidir, "queries"), exist_ok=True)
     sid = "q-" + datetime.now().strftime("%Y%m%d-%H%M%S")
     spath = os.path.join(wikidir, "queries", sid + ".md")
     stamp = datetime.now().strftime("%Y-%m-%d")
     vcited = InferQueryLinks(squestion, sanswer)
     slinkblock = "\n".join("- [[%s]]" % c for c in vcited) if vcited else "- （未引用 wiki 页面，可在回答中补充 [[wikilink]]）"
-    ssources = ", ".join(vcited[:8]) if vcited else ""
-    sfront = (
-        "---\ntype: query\ntitle: %s\nsources: [%s]\ntags: [问答]\n"
-        "created: %s\nupdated: %s\n---\n\n"
+    ofm = {
+        "type": "query",
+        "title": squestion[:80],
+        "sources": vcited[:8],
+        "tags": ["问答"],
+        "created": stamp,
+        "updated": stamp,
+        "pipeline": "query",
+        "pipeline_version": aver.GetCurrentVersion("query"),
+    }
+    nbody = (
         "# %s\n\n## 问题\n\n%s\n\n## 回答\n\n%s\n\n## 关联页面\n\n%s\n"
-    ) % (
-        squestion[:80], ssources, stamp, stamp,
-        squestion[:80], squestion, sanswer, slinkblock,
+        % (squestion[:80], squestion, sanswer, slinkblock)
     )
-    with open(spath, "w", encoding="utf-8") as f:
-        f.write(sfront)
+    io_utils.AtomicWriteText(spath, io_utils.FormatFrontmatter(ofm, nbody))
     return {"id": sid, "path": os.path.relpath(spath, rootdir), "links": vcited}
 
 
@@ -375,12 +343,9 @@ def RepairOrphanQueries():
 
 def FixLintIssues():
     """一键修复可自动处理的巡检项。"""
-    vfixed = RepairOrphanQueries()
-    GenerateOverview()
-    core = _ImportCore()
-    core.GenerateIndex()
-    olint = RunLint()
-    return {"repaired_queries": vfixed, "lint": olint}
+    import wiki_workflow as wflow
+    wflow.Init(wikidir)
+    return wflow.FixLintExtended()
 
 
 def ExportBibtex():
