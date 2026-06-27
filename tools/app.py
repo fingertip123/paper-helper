@@ -946,6 +946,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(bchunk)
 
     def _HandlePost(self):
+        self.path = self.path.split("?", 1)[0]
         try:
             if self.path == "/api/upload":
                 return self._upload()
@@ -1338,14 +1339,21 @@ class Handler(BaseHTTPRequestHandler):
     def _docsedit(self):
         body = self._body()
         doced.Init(topics.GetTopicDir())
-        return self._send(200, doced.ApplyEdit(
-            body.get("id", ""),
-            int(body.get("para_index", -1)),
-            body.get("text", ""),
-            body.get("comment_id"),
-            body.get("html"),
-            body.get("para_style"),
-        ))
+        try:
+            oresult = doced.ApplyEdit(
+                body.get("id", ""),
+                int(body.get("para_index", -1)),
+                body.get("text", ""),
+                body.get("comment_id"),
+                body.get("html"),
+                body.get("para_style"),
+            )
+        except ValueError as e:
+            return self._send(400, {"error": str(e)})
+        except Exception as e:
+            logger.exception("文档段落保存失败")
+            return self._send(500, {"error": str(e) if not multiuser else "保存失败，请稍后重试"})
+        return self._send(200, oresult)
 
     def _docssave(self):
         body = self._body()
@@ -1385,25 +1393,37 @@ class Handler(BaseHTTPRequestHandler):
     def _docsexport(self):
         body = self._body()
         doced.Init(topics.GetTopicDir())
-        sdocid = body.get("id", "")
+        sdocid = (body.get("id") or "").strip()
         sfilename = body.get("filename", "")
-        if multiuser:
-            import urllib.parse
-            bdata, sname = doced.ExportDocBytes(sdocid, sfilename)
-            sexports = os.path.join(_boundroot, "exports")
-            os.makedirs(sexports, exist_ok=True)
-            spath = os.path.join(sexports, sname)
-            with open(spath, "wb") as f:
-                f.write(bdata)
-            result = {
-                "filename": sname,
-                "download": "/api/docs/download?id=%s&filename=%s" % (
-                    urllib.parse.quote(sdocid, safe=""),
-                    urllib.parse.quote(sname, safe=""),
-                ),
-            }
-        else:
-            result = doced.ExportDoc(sdocid, body.get("dir", ""), sfilename)
+        if not sdocid:
+            return self._send(400, {"error": "缺少文档 id"})
+        try:
+            if multiuser:
+                import urllib.parse
+                bdata, sname = doced.ExportDocBytes(sdocid, sfilename)
+                sexports = os.path.join(_boundroot, "exports")
+                os.makedirs(sexports, exist_ok=True)
+                spath = os.path.join(sexports, sname)
+                with open(spath, "wb") as f:
+                    f.write(bdata)
+                result = {
+                    "filename": sname,
+                    "download": "/api/docs/download?id=%s&filename=%s" % (
+                        urllib.parse.quote(sdocid, safe=""),
+                        urllib.parse.quote(sname, safe=""),
+                    ),
+                }
+            else:
+                result = doced.ExportDoc(sdocid, body.get("dir", ""), sfilename)
+        except ValueError as e:
+            return self._send(400, {"error": str(e)})
+        except PermissionError:
+            return self._send(403, {"error": "没有写入导出文件夹的权限，请换一个目录"})
+        except OSError as e:
+            return self._send(400, {"error": "无法写入导出路径：%s" % e})
+        except Exception as e:
+            logger.exception("文档导出失败 doc=%s", sdocid)
+            return self._send(500, {"error": str(e) if not multiuser else "导出失败，请稍后重试"})
         try:
             core.AppendLog("[doc] 导出 %s → %s" % (sdocid, result.get("path") or result.get("filename")))
         except Exception:
@@ -1421,7 +1441,8 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as e:
             return self._send(400, {"error": str(e)})
         except Exception as e:
-            return self._send(404, {"error": str(e)})
+            logger.exception("文档下载失败 id=%s", sid)
+            return self._send(500, {"error": str(e) if not multiuser else "下载失败，请稍后重试"})
         sencoded = urllib.parse.quote(sname)
         self.send_response(200)
         self.send_header(

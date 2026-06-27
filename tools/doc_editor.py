@@ -1267,6 +1267,17 @@ def _ParaComparable(opara, othemes=None):
     }, ensure_ascii=False)
 
 
+def _BodyParagraphs(odoc):
+    """与编辑器 para index 一致：仅 body 直下段落（跳过表格内段落）。"""
+    from docx.text.paragraph import Paragraph
+    vparas = []
+    for ochild in odoc.element.body:
+        stag = ochild.tag.split("}")[-1] if "}" in ochild.tag else ochild.tag
+        if stag == "p":
+            vparas.append(Paragraph(ochild, odoc))
+    return vparas
+
+
 def _IterAllParagraphs(odoc):
     from docx.text.paragraph import Paragraph
     from docx.table import Table
@@ -1354,7 +1365,9 @@ def _SetParaTextPreserveMedia(opara, stext):
         return
     vtext_runs[0].text = stext
     for orun in vtext_runs[1:]:
-        orun._element.getparent().remove(orun._element)
+        oparent = orun._element.getparent()
+        if oparent is not None:
+            oparent.remove(orun._element)
 
 
 def GetMediaBytes(sdocid, sfname):
@@ -2180,12 +2193,18 @@ def _SetParaPlainText(opara, stext):
 
 
 def ApplyEdit(sdocid, npara_index, snew_text, scomment_id=None, shtml=None, spara_style=None):
-    from docx import Document
+    try:
+        from docx import Document
+    except ImportError as e:
+        raise ValueError("服务器缺少 python-docx 依赖，无法保存文档") from e
     scurrent = os.path.join(DocDir(sdocid), "current.docx")
+    if not os.path.isfile(scurrent):
+        raise ValueError("文档不存在")
     odoc = Document(scurrent)
-    if npara_index < 0 or npara_index >= len(odoc.paragraphs):
+    vparas = _BodyParagraphs(odoc)
+    if npara_index < 0 or npara_index >= len(vparas):
         raise ValueError("段落索引无效")
-    opara = odoc.paragraphs[npara_index]
+    opara = vparas[npara_index]
     if spara_style:
         _ApplyParaLayout(opara, spara_style)
     if shtml and shtml.strip():
@@ -2652,7 +2671,10 @@ def _BuildExportDocx(sdocid):
     scurrent = os.path.join(DocDir(sdocid), "current.docx")
     if not os.path.isfile(scurrent):
         raise ValueError("文档不存在")
-    from docx import Document
+    try:
+        from docx import Document
+    except ImportError as e:
+        raise ValueError("服务器缺少 python-docx 依赖，无法导出 Word 文档") from e
     odoc = Document(scurrent)
     _CleanDocxUiArtifacts(odoc)
     return odoc

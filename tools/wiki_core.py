@@ -3894,7 +3894,8 @@ async function ConfirmDocExport(){
   try{
     await FlushDocEditor();
     if(CLOUDMODE){
-      await DownloadDocFile(sname);
+      const r=await Api("/api/docs/export",{id:CURRENT_DOC,filename:sname});
+      await DownloadDocFile(r.filename||sname);
       HideOverlay();CloseDocExport();Toast("已开始下载："+sname,4000);
       return;
     }
