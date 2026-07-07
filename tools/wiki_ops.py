@@ -55,7 +55,7 @@ def ListWikiPages():
     return vpages
 
 
-def RunLintQuick(vnodes, vedges):
+def RunLintQuick(vnodes, vedges, ndeadlinks=0):
     """轻量巡检摘要（供 BuildData /api/data 附带，避免重复全量扫描）。"""
     olinked = {n["id"]: 0 for n in vnodes}
     for e in vedges:
@@ -66,7 +66,47 @@ def RunLintQuick(vnodes, vedges):
         if n["type"] not in ("purpose", "unknown") and olinked.get(n["id"], 0) == 0
     )
     nstale = sum(1 for n in vnodes if n.get("type") == "source" and n.get("pipeline_stale"))
-    return {"orphans": norphans, "dead_links": 0, "knowledge_gaps": 0, "stale_pipelines": nstale}
+    nknowledge_gaps = 0
+    try:
+        onodeids = {n["id"] for n in vnodes}
+        ofields = topics.ParsePurposeFields(topics.ReadText(topics.RulePath("purpose.md")))
+        for skey in ("rq1", "rq2", "rq3", "rq4"):
+            sval = (ofields.get(skey) or "").strip()
+            if not sval or sval in ("（未填写）", "（待填写）"):
+                continue
+            smatch = re.search(r"\[\[([^\]|]+)", sval)
+            srqid = smatch.group(1) if smatch else ""
+            if srqid and srqid not in onodeids:
+                nknowledge_gaps += 1
+    except Exception:
+        pass
+    return {"orphans": norphans, "dead_links": ndeadlinks, "knowledge_gaps": nknowledge_gaps, "stale_pipelines": nstale}
+
+
+def EscapeBibtex(sval):
+    sval = str(sval or "")
+    return sval.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}").replace("%", "\\%")
+
+
+def ExportBibtex():
+    core = _ImportCore()
+    vlines = []
+    for p in ListWikiPages():
+        if p["type"] != "source":
+            continue
+        fm = p["frontmatter"]
+        skey = EscapeBibtex(p["id"])
+        vauthors = fm.get("authors", [])
+        if isinstance(vauthors, str):
+            vauthors = [vauthors]
+        sauthor = " and ".join(EscapeBibtex(a) for a in vauthors) if vauthors else "Unknown"
+        syear = EscapeBibtex(fm.get("year", ""))
+        stitle = EscapeBibtex(fm.get("title", p["id"]))
+        svenue = EscapeBibtex(fm.get("venue", ""))
+        surl = EscapeBibtex(fm.get("url", ""))
+        vlines.append("@article{%s,\n  author = {%s},\n  title = {%s},\n  year = {%s},\n  journal = {%s},\n  url = {%s}\n}" % (
+            skey, sauthor, stitle, syear, svenue, surl))
+    return "\n\n".join(vlines)
 
 
 def RunLintWithOdata(odata):
@@ -165,7 +205,7 @@ def WriteOverview(odata):
     for stype, slabel in [
         ("source", "文献"), ("concept", "概念"), ("entity", "实体"),
         ("rq", "研究问题"), ("experiment", "实验"), ("synthesis", "综合"),
-        ("comparison", "对比"), ("query", "问答"),
+        ("comparison", "对比"), ("analysis-report", "研究报告"), ("query", "问答"),
     ]:
         if ostats.get(stype):
             lines.append("- %s：%d" % (slabel, ostats[stype]))
@@ -381,27 +421,6 @@ def FixLintIssues():
     import wiki_workflow as wflow
     wflow.Init(wikidir)
     return wflow.FixLintExtended()
-
-
-def ExportBibtex():
-    core = _ImportCore()
-    vlines = []
-    for p in ListWikiPages():
-        if p["type"] != "source":
-            continue
-        fm = p["frontmatter"]
-        skey = p["id"]
-        vauthors = fm.get("authors", [])
-        if isinstance(vauthors, str):
-            vauthors = [vauthors]
-        sauthor = " and ".join(vauthors) if vauthors else "Unknown"
-        syear = fm.get("year", "")
-        stitle = fm.get("title", skey)
-        svenue = fm.get("venue", "")
-        surl = fm.get("url", "")
-        vlines.append("@article{%s,\n  author = {%s},\n  title = {%s},\n  year = {%s},\n  journal = {%s},\n  url = {%s}\n}" % (
-            skey, sauthor, stitle, syear, svenue, surl))
-    return "\n\n".join(vlines)
 
 
 def SnapshotTopic():

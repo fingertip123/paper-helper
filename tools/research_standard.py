@@ -78,7 +78,9 @@ def GetStandardJobStatus(nuid=0):
 
 def IsStandardCancelled():
     with standardlock:
-        ojob = GetStandardJob(standard_active_uid)
+        ojob = GetStandardJob(_standard_run_uid)
+        if not StandardJobAlive(_standard_run_uid, _standard_run_gen):
+            return True
         if ojob.get("cancelled"):
             return True
         nstart = ojob.get("started_at") or 0
@@ -366,7 +368,7 @@ def _RunStandardJob(oconfig, nfilename, sroot=None, skey=None, nuid=0, ngen=0):
                 ojob["finished"] = True
                 ojob["progress"] = -1
     finally:
-        ReleaseLlm("standard")
+        ReleaseLlm("standard", nuid)
         with standardlock:
             if StandardJobAlive(nuid, ngen):
                 GetStandardJob(nuid)["running"] = False
@@ -376,8 +378,8 @@ def StartStandardAnalysis(oconfig, nfilename, sroot=None, skey=None, nuid=0):
     with standardlock:
         if GetStandardJob(nuid).get("running"):
             return {"error": "标准分析正在进行中，请等待完成"}
-    if not TryAcquireLlm("standard", skey or nfilename or ""):
-        return LlmBusyPayload() or {"error": "大模型正忙，请稍后再试"}
+    if not TryAcquireLlm("standard", skey or nfilename or "", nuid):
+        return LlmBusyPayload(nuid) or {"error": "大模型正忙，请稍后再试"}
     ngen = BeginStandardJob(
         nuid,
         current=nfilename or skey or "",

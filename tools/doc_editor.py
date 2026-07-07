@@ -24,6 +24,7 @@ RELNS = "http://schemas.openxmlformats.org/package/2006/relationships"
 _docsdir = ""
 _oEditorHtmlCache = {}
 _nEditorCacheMax = 10
+_docidre = re.compile(r"^[\w\u4e00-\u9fff-]{1,64}$")
 
 
 def Init(ntopicdir):
@@ -40,8 +41,22 @@ def ManifestPath():
     return os.path.join(_docsdir, "index.json")
 
 
+def ValidateDocId(sdocid):
+    """校验文档 id，防止路径穿越。"""
+    sid = (sdocid or "").strip()
+    if not sid or not _docidre.match(sid):
+        raise ValueError("无效的文档 id")
+    return sid
+
+
 def DocDir(sdocid):
-    return os.path.join(_docsdir, sdocid)
+    sid = ValidateDocId(sdocid)
+    spath = os.path.join(_docsdir, sid)
+    nbase = os.path.normpath(os.path.abspath(_docsdir))
+    nfull = os.path.normpath(os.path.abspath(spath))
+    if not (nfull == nbase or nfull.startswith(nbase + os.sep)):
+        raise ValueError("无效的文档 id")
+    return spath
 
 
 def ReadJson(spath, sdefault=None):

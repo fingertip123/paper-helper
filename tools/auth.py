@@ -28,7 +28,6 @@ PBKDF2_ITERS = 200_000
 _dataroot = ""
 _baseroot = ""  # 主项目根：用于给新用户复制 templates/
 _dblock = threading.Lock()
-_loginfail = {}  # ip -> [fail_count, window_start]
 
 
 def Init(ndataroot, nbaseroot=""):
@@ -49,6 +48,8 @@ def Init(ndataroot, nbaseroot=""):
             "CREATE TABLE IF NOT EXISTS llm_usage("
             " uid INTEGER NOT NULL, day TEXT NOT NULL, count INTEGER NOT NULL,"
             " PRIMARY KEY(uid, day));"
+            "CREATE TABLE IF NOT EXISTS login_fails("
+            " ip TEXT PRIMARY KEY, count INTEGER NOT NULL, window_start REAL NOT NULL);"
         )
 
 
@@ -104,19 +105,36 @@ def Register(susername, spassword):
 
 
 def _ThrottleLogin(sip):
-    ofail = _loginfail.get(sip)
+    if not sip:
+        return
     nnow = time.time()
-    if ofail and nnow - ofail[1] < 600 and ofail[0] >= 10:
-        raise ValueError("尝试过于频繁，请 10 分钟后再试")
+    with _dblock, _Db() as odb:
+        orow = odb.execute(
+            "SELECT count, window_start FROM login_fails WHERE ip=?", (sip,)
+        ).fetchone()
+        if orow and nnow - orow[1] < 600 and orow[0] >= 10:
+            raise ValueError("尝试过于频繁，请 10 分钟后再试")
 
 
 def _RecordLoginFail(sip):
-    ofail = _loginfail.get(sip)
+    if not sip:
+        return
     nnow = time.time()
-    if not ofail or nnow - ofail[1] >= 600:
-        _loginfail[sip] = [1, nnow]
-    else:
-        ofail[0] += 1
+    with _dblock, _Db() as odb:
+        orow = odb.execute(
+            "SELECT count, window_start FROM login_fails WHERE ip=?", (sip,)
+        ).fetchone()
+        if not orow or nnow - orow[1] >= 600:
+            odb.execute(
+                "INSERT INTO login_fails(ip, count, window_start) VALUES(?,?,?)"
+                " ON CONFLICT(ip) DO UPDATE SET count=1, window_start=?",
+                (sip, 1, nnow, nnow),
+            )
+        else:
+            odb.execute(
+                "UPDATE login_fails SET count=? WHERE ip=?",
+                (orow[0] + 1, sip),
+            )
 
 
 def Login(susername, spassword, sip=""):
@@ -168,6 +186,18 @@ def CookieFromHeaders(scookieheader):
         if skey == SESSION_COOKIE:
             return sval
     return ""
+
+
+def IssueCsrf(stoken):
+    if not stoken:
+        return ""
+    return hashlib.sha256(("%s:yz-csrf" % stoken).encode("utf-8")).hexdigest()[:32]
+
+
+def VerifyCsrf(stoken, scsrf):
+    if not stoken:
+        return False
+    return hmac.compare_digest(IssueCsrf(stoken), (scsrf or "").strip())
 
 
 def MakeSetCookie(stoken, bclear=False, bsecure=False):

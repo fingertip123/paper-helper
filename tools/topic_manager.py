@@ -66,12 +66,35 @@ def GetCurrentTopicId():
         return json.load(f).get("id")
 
 
+_topicidre = re.compile(r"^[\w-]{1,64}$")
+
+
+def ValidateTopicId(ntopicid):
+    """校验选题 id，防止路径穿越。"""
+    nid = (ntopicid or "").strip()
+    if not nid or not _topicidre.match(nid) or "." in nid:
+        raise ValueError("无效的选题 id")
+    return nid
+
+
+def _TopicDirPath(ntopicid):
+    nid = ValidateTopicId(ntopicid)
+    spath = os.path.join(TopicsDir(), nid)
+    nbase = os.path.normpath(os.path.abspath(TopicsDir()))
+    nfull = os.path.normpath(os.path.abspath(spath))
+    if not (nfull == nbase or nfull.startswith(nbase + os.sep)):
+        raise ValueError("无效的选题 id")
+    return spath
+
+
 def GetTopicDir(ntopicid=None):
-    nid = ntopicid or GetCurrentTopicId()
+    if ntopicid:
+        return _TopicDirPath(ntopicid)
+    nid = GetCurrentTopicId()
     if not nid:
         EnsureLayout()
         nid = GetCurrentTopicId() or "default"
-    return os.path.join(TopicsDir(), nid)
+    return _TopicDirPath(nid)
 
 
 def RulePath(sname, ntopicid=None):
@@ -83,7 +106,7 @@ def GetTemplateFile(sname):
 
 
 def MetaPath(ntopicid):
-    return os.path.join(TopicsDir(), ntopicid, "meta.json")
+    return os.path.join(_TopicDirPath(ntopicid), "meta.json")
 
 
 def ReadText(spath, sdefault=""):
@@ -273,7 +296,8 @@ def SyncAllTopicMetaNames():
 
 def GetTopicConfig(ntopicid):
     """读取指定选题的完整规则配置（供一键导入）。"""
-    if not os.path.isdir(GetTopicDir(ntopicid)):
+    spath = GetTopicDir(ntopicid)
+    if not os.path.isdir(spath):
         raise ValueError("选题不存在")
     ofields = CleanImportedFields(ParsePurposeFields(ReadText(RulePath("purpose.md", ntopicid))))
     sdisplay = GetTopicDisplayName(ntopicid)
@@ -475,6 +499,8 @@ def CreateTopic(sname, ofields=None, bcopyrules=True, nimportfrom=None):
         raise ValueError("选题已存在")
     os.makedirs(ntdir, exist_ok=True)
     InitTopicDirs(ntdir)
+    if nimportfrom:
+        ValidateTopicId(nimportfrom)
     nqueries = CopyInheritedQueries(ntdir, nimportfrom) if nimportfrom else 0
     sold = nimportfrom if nimportfrom else GetCurrentTopicId()
     if bcopyrules and sold:
@@ -504,11 +530,12 @@ def CreateTopic(sname, ofields=None, bcopyrules=True, nimportfrom=None):
 
 
 def SwitchTopic(ntopicid):
-    spath = os.path.join(TopicsDir(), ntopicid)
+    nid = ValidateTopicId(ntopicid)
+    spath = _TopicDirPath(nid)
     if not os.path.isdir(spath):
         raise ValueError("选题不存在")
-    SaveCurrentTopic(ntopicid)
-    return {"id": ntopicid, "name": GetTopicDisplayName(ntopicid)}
+    SaveCurrentTopic(nid)
+    return {"id": nid, "name": GetTopicDisplayName(nid)}
 
 
 def GetPurposeFieldDefs():

@@ -98,6 +98,9 @@ def UserScope(nroot=None):
 # PDF 静态服务大小上限（150MB）
 pdf_max_serve_bytes = 150 * 1024 * 1024
 pdf_serve_chunk = 256 * 1024
+max_body_bytes = 160 * 1024 * 1024
+max_upload_bytes = 150 * 1024 * 1024
+_exportdir_cache = {}
 
 
 def PickFolderNative():
@@ -349,12 +352,12 @@ def BuildIngestMessages(oconfig, nfilename, npapertext):
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
-def IngestPrepare(oconfig, nfilename):
+def IngestPrepare(oconfig, nfilename, nuid=0, ngen=0):
     """摄入阶段一（文件读取，须在 UserScope 内）：提取文本并构造 LLM 消息。"""
     fullpath = os.path.join(core.rawsourcesdir, SafeName(nfilename))
     if not os.path.isfile(fullpath):
         raise FileNotFoundError(nfilename)
-    if IsIngestCancelled():
+    if IsIngestCancelled(nuid, ngen):
         raise IngestCancelled("用户已取消")
     text = ExtractPaperText(fullpath)
     if not text.strip():
@@ -362,19 +365,19 @@ def IngestPrepare(oconfig, nfilename):
     return BuildIngestMessages(oconfig, nfilename, text)
 
 
-def IngestFinalize(nfilename, content):
+def IngestFinalize(nfilename, content, nuid=0, ngen=0):
     """摄入阶段三（文件写入，须在 UserScope 内）：解析 LLM 输出，staging 后一次性 commit。"""
     import shutil
     import uuid
 
-    if IsIngestCancelled():
+    if IsIngestCancelled(nuid, ngen):
         raise IngestCancelled("用户已取消")
     result = ParseLlmJson(content)
     vcommits = []
     sstaging = os.path.join(core.wikidir, ".ingest-staging", uuid.uuid4().hex)
     try:
         for item in result.get("files", []):
-            if IsIngestCancelled():
+            if IsIngestCancelled(nuid, ngen):
                 raise IngestCancelled("用户已取消")
             fp = SafeWikiPath(item.get("path", ""))
             body = item.get("content", "")
@@ -427,7 +430,7 @@ def IngestFinalize(nfilename, content):
 
 def RunQueryJob(oconfig, squestion, bsave, sroot=None, nuid=0, ngen=0):
     """后台线程：知识库问答，不阻塞网页其他操作。文件读写阶段绑定提交者的数据根。"""
-    if not TryAcquireLlm("query", squestion[:48]):
+    if not TryAcquireLlm("query", squestion[:48], nuid):
         with querylock:
             if QueryJobAlive(nuid, ngen):
                 ojob = GetQueryJob(nuid)
@@ -484,7 +487,7 @@ def RunQueryJob(oconfig, squestion, bsave, sroot=None, nuid=0, ngen=0):
                 ojob["error"] = str(e)
                 ojob["status"] = "error"
     finally:
-        ReleaseLlm("query")
+        ReleaseLlm("query", nuid)
         with querylock:
             if QueryJobAlive(nuid, ngen):
                 ojob = GetQueryJob(nuid)
@@ -499,7 +502,7 @@ def RunIngestJob(oconfig, vtargets, sroot=None, nuid=0, ngen=0):
     避免打包（无终端/证书等差异）环境下线程半途崩溃导致前端「一直转圈」。
     文件读写阶段绑定提交者的数据根（LLM 网络调用在锁外，不阻塞其他用户）。
     """
-    if not TryAcquireLlm("ingest", vtargets[0] if vtargets else ""):
+    if not TryAcquireLlm("ingest", vtargets[0] if vtargets else "", nuid):
         with ingestlock:
             if IngestJobAlive(nuid, ngen):
                 ojob = GetIngestJob(nuid)
@@ -519,7 +522,7 @@ def RunIngestJob(oconfig, vtargets, sroot=None, nuid=0, ngen=0):
 
         def _work():
             with UserScope(sroot):
-                return IngestPrepare(oconfig, snext)
+                return IngestPrepare(oconfig, snext, nuid, ngen)
 
         oprefetch[snext] = oexecutor.submit(_work)
 
@@ -539,12 +542,13 @@ def RunIngestJob(oconfig, vtargets, sroot=None, nuid=0, ngen=0):
                     vmessages = ofuture.result()
                 else:
                     with UserScope(sroot):
-                        vmessages = IngestPrepare(oconfig, fn)
+                        vmessages = IngestPrepare(oconfig, fn, nuid, ngen)
                 if nidx + 1 < len(vtargets):
                     StartPrefetch(vtargets[nidx + 1])
-                content = CallLlm(oconfig, vmessages, fcancel=IsIngestCancelled)
+                fcancel = lambda: IsIngestCancelled(nuid, ngen)
+                content = CallLlm(oconfig, vmessages, fcancel=fcancel)
                 with UserScope(sroot):
-                    oresult = IngestFinalize(fn, content)
+                    oresult = IngestFinalize(fn, content, nuid, ngen)
                 with ingestlock:
                     if IngestJobAlive(nuid, ngen):
                         ojob = GetIngestJob(nuid)
@@ -571,7 +575,7 @@ def RunIngestJob(oconfig, vtargets, sroot=None, nuid=0, ngen=0):
                     GetIngestJob(nuid)["done"] += 1
             if bbreak:
                 break
-        if not IsIngestCancelled():
+        if not IsIngestCancelled(nuid, ngen):
             try:
                 with UserScope(sroot):
                     refresh.RefreshWiki(bwrite_files=True, bforce=True)
@@ -588,7 +592,7 @@ def RunIngestJob(oconfig, vtargets, sroot=None, nuid=0, ngen=0):
                 GetIngestJob(nuid)["failed"].append({"file": "(任务异常)", "error": str(e)})
     finally:
         oexecutor.shutdown(wait=False)
-        ReleaseLlm("ingest")
+        ReleaseLlm("ingest", nuid)
         with ingestlock:
             if IngestJobAlive(nuid, ngen):
                 ojob = GetIngestJob(nuid)
@@ -615,7 +619,9 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _body(self):
-        length = int(self.headers.get("Content-Length", 0))
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        if length > max_body_bytes:
+            raise ValueError("请求体过大（上限 %d MB）" % (max_body_bytes // (1024 * 1024)))
         return json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
 
     # ---------- 多用户：会话与认证 ----------
@@ -701,6 +707,15 @@ class Handler(BaseHTTPRequestHandler):
                     "可在「偏好设置」填写自己的免费 API Key（如智谱），不受限额。" % llmdailylimit)
         return ""
 
+    def _CheckCsrf(self):
+        if not multiuser:
+            return True
+        stoken = auth.CookieFromHeaders(self.headers.get("Cookie", ""))
+        if not auth.VerifyCsrf(stoken, self.headers.get("X-Yz-CSRF", "")):
+            self._send(403, {"error": "CSRF 校验失败，请刷新页面后重试"})
+            return False
+        return True
+
     def _BusyOwnerUid(self, sbusy):
         """返回当前占用某类 LLM 任务的用户 uid（多用户隔离用）。"""
         if sbusy == "ingest":
@@ -742,11 +757,12 @@ class Handler(BaseHTTPRequestHandler):
     def _HandleGet(self, path):
         if path in ("/", "/index.html"):
             ouser = getattr(self, "_user", None)
+            stoken = auth.CookieFromHeaders(self.headers.get("Cookie", "")) if multiuser else ""
             odata = refresh.RefreshWiki(bwrite_files=True)
             return self._send(200, core.Render(
                 odata, servermode=True, desktopmode=desktopmode,
                 stheme=GetUserTheme(), susername=ouser["username"] if ouser else "",
-                bcloud=multiuser,
+                bcloud=multiuser, scsrf=auth.IssueCsrf(stoken) if stoken else "",
             ), "text/html; charset=utf-8")
         if path == "/api/data":
             return self._send(200, refresh.RefreshWiki(bwrite_files=True))
@@ -810,7 +826,10 @@ class Handler(BaseHTTPRequestHandler):
             import urllib.parse
             oquery = urllib.parse.parse_qs(self.path.split("?", 1)[-1] if "?" in self.path else "")
             nid = (oquery.get("id") or [""])[0]
-            return self._send(200, topics.GetTopicConfig(nid))
+            try:
+                return self._send(200, topics.GetTopicConfig(nid))
+            except ValueError as e:
+                return self._send(400, {"error": str(e)})
         if path.startswith("/raw/sources/"):
             return self._serve_file(path)
         if path == "/api/docs":
@@ -824,7 +843,10 @@ class Handler(BaseHTTPRequestHandler):
             sid = (oq.get("id") or [""])[0]
             blight = (oq.get("light") or ["0"])[0] in ("1", "true", "yes")
             doced.Init(topics.GetTopicDir())
-            return self._send(200, doced.GetDocDetail(sid, blight))
+            try:
+                return self._send(200, doced.GetDocDetail(sid, blight))
+            except ValueError as e:
+                return self._send(400, {"error": str(e)})
         if path == "/api/docs/preview":
             import urllib.parse
             oq = urllib.parse.parse_qs(self.path.split("?", 1)[-1] if "?" in self.path else "")
@@ -949,6 +971,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _HandlePost(self):
         self.path = self.path.split("?", 1)[0]
+        if multiuser and not self.path.startswith("/auth/") and not self._CheckCsrf():
+            return
         try:
             if self.path == "/api/upload":
                 return self._upload()
@@ -1024,6 +1048,10 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/docs/delete":
                 return self._docsdelete()
             return self._send(404, {"error": "not found"})
+        except ValueError as e:
+            if "请求体过大" in str(e):
+                return self._send(413, {"error": str(e)})
+            return self._send(400, {"error": str(e)})
         except Exception as e:
             logger.exception("POST %s 失败", self.path)
             if multiuser:
@@ -1032,7 +1060,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def _topicswitch(self):
         body = self._body()
-        result = topics.SwitchTopic(body.get("id", ""))
+        try:
+            result = topics.SwitchTopic(body.get("id", ""))
+        except ValueError as e:
+            return self._send(400, {"error": str(e)})
         refresh.InvalidateWikiCache()
         core.ReloadTopicPaths()
         refresh.RefreshWiki(bwrite_files=True)
@@ -1040,12 +1071,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def _topicnew(self):
         body = self._body()
-        result = topics.CreateTopic(
-            body.get("name", "新选题"),
-            body.get("fields"),
-            True,
-            body.get("import_from"),
-        )
+        try:
+            result = topics.CreateTopic(
+                body.get("name", "新选题"),
+                body.get("fields"),
+                True,
+                body.get("import_from"),
+            )
+        except ValueError as e:
+            return self._send(400, {"error": str(e)})
         refresh.InvalidateWikiCache()
         core.ReloadTopicPaths()
         refresh.RefreshWiki(bwrite_files=True)
@@ -1144,6 +1178,8 @@ class Handler(BaseHTTPRequestHandler):
             bdata = base64.b64decode(body.get("data", ""))
         except Exception:
             return self._send(400, {"error": "上传数据编码损坏"})
+        if len(bdata) > max_upload_bytes:
+            return self._send(413, {"error": "文件过大（上限 %d MB）" % (max_upload_bytes // (1024 * 1024))})
         with open(stmp, "wb") as f:
             f.write(bdata)
         if os.path.getsize(stmp) <= 0:
@@ -1284,7 +1320,7 @@ class Handler(BaseHTTPRequestHandler):
                     "status": "busy", "busy": "query",
                     "message": "上一条问答仍在进行，请稍后再提问。",
                 })
-        obusy = LlmBusyPayload()
+        obusy = LlmBusyPayload(self._Uid())
         if obusy and obusy.get("busy") != "query":
             return self._send(200, self._MaybeOtherUserBusy(obusy))
         serr = self._CheckLlmQuota(1)
@@ -1323,6 +1359,8 @@ class Handler(BaseHTTPRequestHandler):
             bcontent = base64.b64decode(sdata, validate=True)
         except Exception:
             return self._send(400, {"error": "文件编码损坏，请重新上传"})
+        if len(bcontent) > max_upload_bytes:
+            return self._send(413, {"error": "文件过大（上限 %d MB）" % (max_upload_bytes // (1024 * 1024))})
         core.ReloadTopicPaths()
         doced.Init(topics.GetTopicDir())
         try:
@@ -1413,6 +1451,8 @@ class Handler(BaseHTTPRequestHandler):
     def _docspickfolder(self):
         try:
             spath = PickFolderNative()
+            if spath:
+                _exportdir_cache[self._Uid()] = spath
             return self._send(200, {"path": spath or ""})
         except Exception as e:
             return self._send(500, {"error": str(e)})
@@ -1441,7 +1481,10 @@ class Handler(BaseHTTPRequestHandler):
                     ),
                 }
             else:
-                result = doced.ExportDoc(sdocid, body.get("dir", ""), sfilename)
+                sdir = _exportdir_cache.get(self._Uid(), "")
+                if not sdir:
+                    return self._send(400, {"error": "请先通过「选择文件夹」指定导出目录"})
+                result = doced.ExportDoc(sdocid, sdir, sfilename)
         except ValueError as e:
             return self._send(400, {"error": str(e)})
         except PermissionError:
@@ -1497,7 +1540,7 @@ class Handler(BaseHTTPRequestHandler):
             ojob = GetIngestJob(nuid)
             if ojob["running"]:
                 return self._send(200, dict(ojob, status="running"))
-        obusy = LlmBusyPayload()
+        obusy = LlmBusyPayload(nuid)
         if obusy and obusy.get("busy") != "ingest":
             return self._send(200, self._MaybeOtherUserBusy(obusy))
         rawfile = body.get("rawfile")
@@ -1544,7 +1587,7 @@ class Handler(BaseHTTPRequestHandler):
         nuid = self._Uid()
         if rdeep.GetDeepJobStatus(nuid).get("running"):
             return self._send(200, {"error": "深度分析正在进行中，请等待完成"})
-        obusy = LlmBusyPayload()
+        obusy = LlmBusyPayload(nuid)
         if obusy and obusy.get("busy") != "deep":
             return self._send(200, self._MaybeOtherUserBusy(obusy))
         ouser = getattr(self, "_user", None)
@@ -1578,7 +1621,7 @@ class Handler(BaseHTTPRequestHandler):
         nuid = self._Uid()
         if rstd.GetStandardJobStatus(nuid).get("running"):
             return self._send(200, {"error": "标准分析正在进行中，请等待完成"})
-        obusy = LlmBusyPayload()
+        obusy = LlmBusyPayload(nuid)
         if obusy and obusy.get("busy") != "standard":
             return self._send(200, self._MaybeOtherUserBusy(obusy))
         ouser = getattr(self, "_user", None)

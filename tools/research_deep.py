@@ -556,7 +556,9 @@ def GetDeepJobStatus(nuid=0):
 def IsDeepCancelled():
     """深度分析专用取消/超时检测（与「纳入研究」相互独立）。"""
     with deeplock:
-        ojob = GetDeepJob(deep_active_uid)
+        ojob = GetDeepJob(_deep_run_uid)
+        if not DeepJobAlive(_deep_run_uid, _deep_run_gen):
+            return True
         if ojob.get("cancelled"):
             return True
         nstart = ojob.get("started_at") or 0
@@ -598,7 +600,7 @@ def _RunDeepJob(oconfig, nfilename, sroot=None, skey=None, nuid=0, ngen=0):
                 ojob["finished"] = True
                 ojob["progress"] = -1
     finally:
-        ReleaseLlm("deep")
+        ReleaseLlm("deep", nuid)
         with deeplock:
             if DeepJobAlive(nuid, ngen):
                 GetDeepJob(nuid)["running"] = False
@@ -610,8 +612,8 @@ def StartDeepAnalysis(oconfig, nfilename, sroot=None, skey=None, nuid=0):
     with deeplock:
         if GetDeepJob(nuid).get("running"):
             return {"error": "深度分析正在进行中，请等待完成"}
-    if not TryAcquireLlm("deep", skey or nfilename or ""):
-        return LlmBusyPayload() or {"error": "大模型正忙，请稍后再试"}
+    if not TryAcquireLlm("deep", skey or nfilename or "", nuid):
+        return LlmBusyPayload(nuid) or {"error": "大模型正忙，请稍后再试"}
     ngen = BeginDeepJob(
         nuid,
         current=nfilename or skey or "",

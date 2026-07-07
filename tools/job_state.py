@@ -11,6 +11,13 @@ ingest_active_uid = 0
 query_active_uid = 0
 llmrunlock = threading.Lock()
 ollmstate = {"owner": "", "detail": ""}
+bmultiuser_mode = False
+ollm_by_uid = {}
+
+
+def SetMultiuserMode(bmulti):
+    global bmultiuser_mode
+    bmultiuser_mode = bool(bmulti)
 
 
 def ResetJobDict(ojob, ngen, **fields):
@@ -79,13 +86,25 @@ def QueryJobAlive(nuid, ngen):
         return GetQueryJob(nuid).get("gen") == ngen
 
 
-def IsIngestCancelled():
+def IsIngestCancelled(nuid=None, ngen=None):
     with ingestlock:
+        if nuid is not None and ngen is not None:
+            ojob = GetIngestJob(nuid)
+            if ojob.get("gen") != ngen:
+                return True
+            return bool(ojob.get("cancelled"))
         return bool(GetIngestJob(ingest_active_uid).get("cancelled"))
 
 
-def TryAcquireLlm(sowner, sdetail=""):
+def TryAcquireLlm(sowner, sdetail="", nuid=0):
     with llmrunlock:
+        if bmultiuser_mode and nuid:
+            state = ollm_by_uid.setdefault(nuid, {"owner": "", "detail": ""})
+            if state["owner"] and state["owner"] != sowner:
+                return False
+            state["owner"] = sowner
+            state["detail"] = sdetail
+            return True
         if ollmstate["owner"] and ollmstate["owner"] != sowner:
             return False
         ollmstate["owner"] = sowner
@@ -93,22 +112,23 @@ def TryAcquireLlm(sowner, sdetail=""):
         return True
 
 
-def ReleaseLlm(sowner):
+def ReleaseLlm(sowner, nuid=0):
     with llmrunlock:
+        if bmultiuser_mode and nuid:
+            state = ollm_by_uid.get(nuid, {})
+            if state.get("owner") == sowner:
+                state["owner"] = ""
+                state["detail"] = ""
+            return
         if ollmstate["owner"] == sowner:
             ollmstate["owner"] = ""
             ollmstate["detail"] = ""
 
 
-def LlmBusyPayload():
-    with llmrunlock:
-        sowner = ollmstate.get("owner") or ""
-        sdetail = ollmstate.get("detail") or ""
-    if not sowner:
-        return None
+def _BusyPayloadForOwner(sowner, sdetail, nuid):
     if sowner == "ingest":
         with ingestlock:
-            ojob = GetIngestJob(ingest_active_uid)
+            ojob = GetIngestJob(nuid or ingest_active_uid)
             scur = ojob.get("current") or sdetail or "文献"
         sshort = scur if len(scur) <= 34 else scur[:33] + "…"
         return {
@@ -117,7 +137,7 @@ def LlmBusyPayload():
         }
     if sowner == "query":
         with querylock:
-            ojob = GetQueryJob(query_active_uid)
+            ojob = GetQueryJob(nuid or query_active_uid)
             sq = ojob.get("question") or sdetail or "问题"
         sshort = sq if len(sq) <= 28 else sq[:27] + "…"
         return {
@@ -126,7 +146,7 @@ def LlmBusyPayload():
         }
     if sowner == "deep":
         import research_deep as rdeep
-        ostatus = rdeep.GetDeepJobStatus(rdeep.GetDeepActiveUid())
+        ostatus = rdeep.GetDeepJobStatus(nuid or rdeep.GetDeepActiveUid())
         scur = ostatus.get("key") or ostatus.get("current") or sdetail or "文献"
         sshort = scur if len(scur) <= 34 else scur[:33] + "…"
         return {
@@ -135,7 +155,7 @@ def LlmBusyPayload():
         }
     if sowner == "standard":
         import research_standard as rstd
-        ostatus = rstd.GetStandardJobStatus(rstd.GetStandardActiveUid())
+        ostatus = rstd.GetStandardJobStatus(nuid or rstd.GetStandardActiveUid())
         scur = ostatus.get("key") or ostatus.get("current") or sdetail or "文献"
         sshort = scur if len(scur) <= 34 else scur[:33] + "…"
         return {
@@ -143,3 +163,20 @@ def LlmBusyPayload():
             "message": "标准分析进行中（%s），大模型暂无法同时处理其他任务，请稍后再试。" % sshort,
         }
     return {"status": "busy", "busy": sowner, "message": "大模型正在处理其他任务，请稍后再试。"}
+
+
+def LlmBusyPayload(nuid=0):
+    with llmrunlock:
+        if bmultiuser_mode and nuid:
+            mystate = ollm_by_uid.get(nuid, {})
+            if mystate.get("owner"):
+                return _BusyPayloadForOwner(mystate["owner"], mystate.get("detail") or "", nuid)
+            for ouid, ost in ollm_by_uid.items():
+                if ouid != nuid and ost.get("owner"):
+                    return _BusyPayloadForOwner(ost["owner"], ost.get("detail") or "", ouid)
+            return None
+        sowner = ollmstate.get("owner") or ""
+        sdetail = ollmstate.get("detail") or ""
+    if not sowner:
+        return None
+    return _BusyPayloadForOwner(sowner, sdetail, nuid)

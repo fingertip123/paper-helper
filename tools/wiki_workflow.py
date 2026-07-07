@@ -4,6 +4,7 @@
 import os
 import re
 import hashlib
+import shutil
 from datetime import datetime
 
 import topic_manager as topics
@@ -211,15 +212,39 @@ def PurposeRqHash(ofields=None):
     return hashlib.md5("\n".join(parts).encode("utf-8")).hexdigest()
 
 
+def _RqIdsFromFields(ofields, vkeys):
+    vids = set()
+    for skey in vkeys:
+        sval = ofields.get(skey) or ""
+        for m in re.finditer(r"\[\[([^\]|]+)", sval):
+            vids.add(m.group(1).strip().lower())
+    return vids
+
+
 def DetectStaleSources(sold_fields, snew_fields):
     """purpose 中 RQ/论点变更后，返回可能需要重新对齐的已纳入文献 id。"""
     if PurposeRqHash(sold_fields) == PurposeRqHash(snew_fields):
         return []
-    import wiki_refresh as refresh
-    return [
-        n["id"] for n in refresh.GetWikiData()["nodes"]
-        if n.get("type") == "source" and n.get("ingested")
+    vchanged = [
+        skey for skey in ("rq1", "rq2", "rq3", "rq4", "thesis")
+        if (sold_fields.get(skey) or "").strip() != (snew_fields.get(skey) or "").strip()
     ]
+    if not vchanged:
+        return []
+    import wiki_refresh as refresh
+    vnodes = refresh.GetWikiData()["nodes"]
+    vingested = [n for n in vnodes if n.get("type") == "source" and n.get("ingested")]
+    if vchanged == ["thesis"]:
+        return [n["id"] for n in vingested]
+    vrqs = _RqIdsFromFields(sold_fields, vchanged) | _RqIdsFromFields(snew_fields, vchanged)
+    if not vrqs:
+        return [n["id"] for n in vingested]
+    vstale = []
+    for n in vingested:
+        vrqlinks = {x.lower() for x in ((n.get("research") or {}).get("rq_links") or [])}
+        if vrqs & vrqlinks:
+            vstale.append(n["id"])
+    return vstale
 
 
 def ParseOutlineChapters(soutline):
@@ -337,16 +362,6 @@ def SearchWikiPages(squery, nlimit=40):
     return vresults[:nlimit]
 
 
-def _FuzzyResolveId(starget, onodeindex):
-    slow = starget.strip().lower()
-    if slow in onodeindex:
-        return onodeindex[slow]
-    for sid, sreal in onodeindex.items():
-        if slow in sid or sid in slow:
-            return sreal
-    return ""
-
-
 def RepairDeadLinks():
     core = _Core()
     import wiki_refresh as refresh
@@ -359,9 +374,10 @@ def RepairDeadLinks():
         nbody = p["body"]
         bchanged = False
         for starget in core.ExtractLinks(nbody):
-            if starget.strip().lower() in onodeindex:
+            slow = starget.strip().lower()
+            if slow in onodeindex:
                 continue
-            sresolved = _FuzzyResolveId(starget, onodeindex)
+            sresolved = onodeindex.get(slow, "")
             if sresolved and sresolved != starget:
                 nbody = nbody.replace("[[%s]]" % starget, "[[%s]]" % sresolved)
                 bchanged = True
@@ -378,7 +394,7 @@ def RepairDeadLinks():
                 p["path"],
                 "---\n" + "\n".join(vfm) + "\n---\n\n" + nbody.lstrip(),
             )
-            vfixed.append({"page": p["id"], "action": "dead_link_fuzzy"})
+            vfixed.append({"page": p["id"], "action": "dead_link_casefix"})
     return vfixed
 
 
@@ -426,7 +442,7 @@ def RepairOrphanConcepts(odata):
 
 
 def PruneOrphanPages(odata):
-    """删除仍无链接的孤立 concept / comparison 页。"""
+    """将仍无链接的孤立 concept / comparison 页移入 wiki/.trash/（可恢复）。"""
     core = _Core()
     vnodes = odata.get("nodes") or []
     vedges = odata.get("edges") or []
@@ -436,15 +452,25 @@ def PruneOrphanPages(odata):
         olinked[e["target"]] = olinked.get(e["target"], 0) + 1
     import wiki_ops as wops
     wops.Init(core.wikidir, core.rawsourcesdir, core.rootdir)
+    strashroot = os.path.join(wikidir, ".trash")
     vremoved = []
     for p in wops.ListWikiPages():
         if p["type"] not in ("comparison", "concept"):
             continue
         if olinked.get(p["id"], 0) > 0:
             continue
-        if os.path.isfile(p["path"]):
-            os.remove(p["path"])
-            vremoved.append({"id": p["id"], "type": p["type"], "action": "orphan_pruned"})
+        if not os.path.isfile(p["path"]):
+            continue
+        srelpath = os.path.relpath(p["path"], wikidir)
+        strashpath = os.path.join(strashroot, srelpath)
+        os.makedirs(os.path.dirname(strashpath), exist_ok=True)
+        shutil.move(p["path"], strashpath)
+        vremoved.append({
+            "id": p["id"],
+            "type": p["type"],
+            "action": "orphan_archived",
+            "trash_path": srelpath,
+        })
     return vremoved
 
 
@@ -487,6 +513,19 @@ def FixLintExtended(odata=None):
     vpruned = PruneOrphanPages(odata)
     refresh.RefreshWiki(bwrite_files=True, bforce=True)
     olint = wops.RunLint()
+    vparts = []
+    if vrep_queries:
+        vparts.append("query 补链 %d" % len(vrep_queries))
+    if vrep_dead:
+        vparts.append("死链修复 %d" % len(vrep_dead))
+    if vrep_orphan:
+        vparts.append("孤立补链 %d" % len(vrep_orphan))
+    if vrep_dup:
+        vparts.append("重复 source 合并 %d" % len(vrep_dup))
+    if vpruned:
+        vparts.append("孤儿页归档 %d" % len(vpruned))
+    if vparts:
+        core.AppendLog("[lint-fix] " + "；".join(vparts))
     return {
         "repaired_queries": vrep_queries,
         "repaired_dead_links": vrep_dead,

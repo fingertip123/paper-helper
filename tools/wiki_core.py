@@ -10,6 +10,7 @@ import sys
 import json
 import shutil
 import logging
+import threading
 from datetime import datetime
 
 import io_utils
@@ -132,11 +133,19 @@ frontmatterpattern = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 
 
 def ParseFrontmatter(ntext):
-    """从 Markdown 文本中提取 YAML frontmatter（仅支持本项目用到的简单标量/列表）。"""
+    """从 Markdown 文本中提取 YAML frontmatter。"""
     omatch = frontmatterpattern.match(ntext)
-    oresult = {}
     if not omatch:
-        return oresult, ntext
+        return {}, ntext
+    sblock = omatch.group(1)
+    try:
+        import yaml
+        oparsed = yaml.safe_load(sblock)
+        if isinstance(oparsed, dict):
+            return oparsed, ntext[omatch.end():]
+    except Exception:
+        pass
+    oresult = {}
     for line in omatch.group(1).split("\n"):
         if ":" not in line:
             continue
@@ -433,18 +442,23 @@ def SourceMetaPath():
     return os.path.join(ResolveConfigDir(topics.GetTopicDir()), "source_meta.json")
 
 
+_sourcemetalock = threading.Lock()
+
+
 def ReadSourceMeta():
     spath = SourceMetaPath()
     if not os.path.isfile(spath):
         return {}
-    with open(spath, "r", encoding="utf-8") as f:
-        return json.load(f)
+    with _sourcemetalock:
+        with open(spath, "r", encoding="utf-8") as f:
+            return json.load(f)
 
 
 def WriteSourceMeta(odata):
     spath = SourceMetaPath()
     os.makedirs(os.path.dirname(spath), exist_ok=True)
-    io_utils.AtomicWriteJson(spath, odata)
+    with _sourcemetalock:
+        io_utils.AtomicWriteJson(spath, odata)
 
 
 def NormalizeUrl(surl):
@@ -1101,7 +1115,17 @@ def ScanWiki():
             "tgt_type": ttype,
             "explicit": True,
         })
-    return vnodes, vedges
+    ndeadlinks = CountDeadLinks(vrawlinks, onodeindex)
+    return vnodes, vedges, ndeadlinks
+
+
+def CountDeadLinks(vrawlinks, onodeindex):
+    vseen = set()
+    for _, starget in vrawlinks:
+        slow = starget.strip().lower()
+        if slow not in onodeindex:
+            vseen.add(slow)
+    return len(vseen)
 
 
 def CountTopicSources(ntopicid):
@@ -1151,25 +1175,42 @@ def GetPageContent(sid):
     sid = (sid or "").strip()
     if not sid or ".." in sid or "/" in sid or "\\" in sid:
         return None
-    import wiki_ops as wops
-    wops.Init(wikidir, rawsourcesdir, rootdir)
-    for p in wops.ListWikiPages():
-        if p["id"] != sid:
+    spath = ResolveWikiPagePath(sid)
+    if not spath:
+        return None
+    with open(spath, "r", encoding="utf-8") as f:
+        ntext = f.read()
+    ofm, nbody = ParseFrontmatter(ntext)
+    stype = ofm.get("type", "unknown")
+    stitle = ofm.get("title", sid)
+    if stype == "analysis-report":
+        try:
+            import research_deep as rdeep
+            sbody = rdeep.NormalizeReportBody(nbody, stitle)
+        except Exception:
+            sbody = nbody
+    else:
+        sbody = nbody
+    return {
+        "id": sid,
+        "title": stitle,
+        "type": stype,
+        "body": sbody,
+    }
+
+
+def ResolveWikiPagePath(sid):
+    """按 id 直接定位 wiki 页面路径（避免全量扫描）。"""
+    sid = (sid or "").strip()
+    if not sid or ".." in sid or "/" in sid or "\\" in sid:
+        return None
+    for stype, ocfg in typeconfig.items():
+        sdir = ocfg.get("dir")
+        if not sdir:
             continue
-        if p["type"] == "analysis-report":
-            try:
-                import research_deep as rdeep
-                sbody = rdeep.NormalizeReportBody(p["body"], p.get("title"))
-            except Exception:
-                sbody = p["body"]
-        else:
-            sbody = p["body"]
-        return {
-            "id": sid,
-            "title": p.get("title", sid),
-            "type": p.get("type", "unknown"),
-            "body": sbody,
-        }
+        spath = os.path.join(wikidir, sdir, sid + ".md")
+        if os.path.isfile(spath):
+            return spath
     return None
 
 
@@ -1195,7 +1236,7 @@ def AppendLog(nmessage):
             f.write("---\ntype: log\ntitle: 操作审计日志\n---\n\n# Log · 操作历史\n\n" + line)
 
 
-def Render(odata, servermode=False, desktopmode=False, stheme="girly", susername="", bcloud=False):
+def Render(odata, servermode=False, desktopmode=False, stheme="girly", susername="", bcloud=False, scsrf=""):
     payload = json.dumps(odata, ensure_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e")
     startcmd = os.path.join(rootdir, "start.command").replace("\\", "\\\\").replace('"', '\\"')
     otopicsinit = {"topics": [], "current": ""}
@@ -1220,6 +1261,7 @@ def Render(odata, servermode=False, desktopmode=False, stheme="girly", susername
             .replace("/*__SERVERMODE__*/", "true" if servermode else "false")
             .replace("/*__DESKTOPMODE__*/", "true" if desktopmode else "false")
             .replace("/*__CLOUDMODE__*/", "true" if bcloud else "false")
+            .replace("/*__CSRF__*/", json.dumps(scsrf or ""))
             .replace("<!--__USERCHIP__-->", suserchip)
             .replace("/*__STARTCMD__*/", startcmd))
 
@@ -1973,6 +2015,7 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
 const SERVERMODE = /*__SERVERMODE__*/;
 const DESKTOPMODE = /*__DESKTOPMODE__*/;
 const CLOUDMODE = /*__CLOUDMODE__*/;
+const CSRF_TOKEN = /*__CSRF__*/;
 let DATA = /*__DATA__*/;
 let TC = DATA.typeconfig;
 let NODEMAP = {};
@@ -3238,6 +3281,7 @@ function NeedServer(){
 
 async function Api(path,body){
   const opt={method:body?"POST":"GET",headers:{"Content-Type":"application/json"}};
+  if(CLOUDMODE&&CSRF_TOKEN)opt.headers["X-Yz-CSRF"]=CSRF_TOKEN;
   if(body)opt.body=JSON.stringify(body);
   const r=await fetch(path,opt);
   let odata=null;
@@ -3680,7 +3724,7 @@ async function FixLintIssues(){
     if(nd)nparts.push(nd+" 处死链");
     if(no)nparts.push(no+" 个 concept 补链");
     if(ndup)nparts.push(ndup+" 个重复 source 合并");
-    if(npr)nparts.push(npr+" 个孤儿页删除");
+    if(npr)nparts.push(npr+" 个孤儿页归档");
     Toast(nparts.length?"已修复："+nparts.join("、"):"暂无可自动修复项");
     await Refresh(true);
   }catch(e){document.getElementById("lint_body").textContent="修复失败："+e.message}

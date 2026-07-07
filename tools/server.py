@@ -21,6 +21,7 @@ sys.path.insert(0, HERE)
 import app as appmod  # noqa: E402
 import auth  # noqa: E402
 import wiki_core as core  # noqa: E402
+import job_state  # noqa: E402
 
 
 def Setup():
@@ -29,8 +30,15 @@ def Setup():
     appmod.llmdailylimit = int(os.environ.get("YANZHAN_LLM_DAILY", "60"))
     appmod.host = os.environ.get("HOST", "0.0.0.0")
     appmod.port = int(os.environ.get("PORT", "8765"))
+    if not appmod.multiuser and appmod.host not in ("127.0.0.1", "localhost", "::1"):
+        print("错误：单用户模式（YANZHAN_MULTIUSER=0）不允许绑定公网地址。")
+        print("请设置 YANZHAN_MULTIUSER=1 启用登录，或将 HOST 设为 127.0.0.1。")
+        sys.exit(1)
     if appmod.multiuser:
         auth.Init(sdataroot, appmod.baseroot)
+        job_state.SetMultiuserMode(True)
+    else:
+        job_state.SetMultiuserMode(False)
     return sdataroot
 
 

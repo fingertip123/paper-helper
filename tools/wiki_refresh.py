@@ -48,7 +48,7 @@ def WikiSignature():
     return hashlib.md5("\n".join(parts).encode("utf-8")).hexdigest()
 
 
-def BuildDataFromScan(vnodes, vedges):
+def BuildDataFromScan(vnodes, vedges, ndeadlinks=0):
     """由 ScanWiki 原始结果构建前端/API 用的 odata（去重、PageRank 等）。"""
     vnodes = core.DedupeSourceNodes(vnodes)
     core.EnrichSourceLibraryMeta(vnodes)
@@ -65,7 +65,7 @@ def BuildDataFromScan(vnodes, vedges):
     ostats = {}
     for n in vnodes:
         ostats[n["type"]] = ostats.get(n["type"], 0) + 1
-    olint = wops.RunLintQuick(vnodes, vedges)
+    olint = wops.RunLintQuick(vnodes, vedges, ndeadlinks=ndeadlinks)
     from datetime import datetime
     oprogress = {}
     try:
@@ -100,7 +100,7 @@ def BuildDataFromScan(vnodes, vedges):
 
 def WriteIndex(vnodes):
     """写 wiki/index.md（不再内部 ScanWiki）。"""
-    order = ["rq", "concept", "entity", "source", "experiment", "synthesis", "comparison", "query"]
+    order = ["rq", "concept", "entity", "source", "experiment", "synthesis", "comparison", "analysis-report", "query"]
     from datetime import datetime
     lines = [
         "---",
@@ -139,8 +139,8 @@ def GetWikiData(bforce=False):
             oentry = _ocache.get(swikidir)
             if oentry and oentry.get("sig") == ssig and oentry.get("odata"):
                 return oentry["odata"]
-    vnodes, vedges = core.ScanWiki()
-    odata = BuildDataFromScan(vnodes, vedges)
+    vnodes, vedges, ndeadlinks = core.ScanWiki()
+    odata = BuildDataFromScan(vnodes, vedges, ndeadlinks)
     with _olock:
         _ocache[swikidir] = {
             "sig": ssig,

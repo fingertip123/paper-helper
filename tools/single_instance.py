@@ -37,7 +37,7 @@ def _HandleConnection(oconn):
     try:
         oconn.settimeout(3)
         sdata = oconn.recv(64) or b""
-        if _pingtoken in sdata:
+        if sdata.strip() == _pingtoken:
             fcb = _activatecallback
             if fcb is not None:
                 try:
