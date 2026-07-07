@@ -1219,12 +1219,19 @@ class Handler(BaseHTTPRequestHandler):
 
     def _delete(self):
         body = self._body()
-        name = SafeName(body.get("rawfile", ""))
+        sraw = SafeName(body.get("rawfile", ""))
+        sid = (body.get("id") or body.get("key") or "").strip()
+        if not sraw and not sid:
+            return self._send(400, {"error": "缺少文献 id 或 rawfile"})
         wops.Init(core.wikidir, core.rawsourcesdir, core.rootdir)
-        oresult = wops.DeleteSourceCascade(name, body.get("cascade", True))
+        try:
+            oresult = wops.DeleteSourceCascade(
+                srawfile=sraw or None, skey=sid or None, bcascade=body.get("cascade", True))
+        except ValueError as e:
+            return self._send(400, {"error": str(e)})
         refresh.RefreshWiki(bwrite_files=True, bforce=True)
         core.AppendLog("[delete] 删除文献 %s（级联 %s，共 %d 项）" % (
-            name, "是" if body.get("cascade", True) else "否", len(oresult.get("removed", []))))
+            sid or sraw, "是" if body.get("cascade", True) else "否", len(oresult.get("removed", []))))
         return self._send(200, {"status": "ok", **oresult})
 
     def _ingestcancel(self):

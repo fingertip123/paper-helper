@@ -1272,6 +1272,7 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   .libfiltbtn:not(.active) .cnt{background:var(--panel);color:var(--muted)}
   .libsearch{flex:1;min-width:180px;max-width:360px;padding:8px 14px;border-radius:999px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:13px;outline:none;transition:border-color .2s,box-shadow .2s}
   .libsearch:focus{border-color:var(--focus-border);box-shadow:0 0 0 3px var(--focus-shadow)}
+  .libsort{padding:6px 12px;border-radius:999px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:12px;cursor:pointer}
   .libtagbar{display:flex;gap:6px;flex-wrap:wrap;margin:-4px 0 12px}
   .libtagchip{padding:4px 12px;border-radius:999px;border:1px solid var(--border);background:var(--panel2);color:var(--muted);font-size:11px;cursor:pointer;transition:.18s}
   .libtagchip:hover,.libtagchip.active{border-color:var(--accent);color:var(--accent);background:var(--ghost-hover)}
@@ -1384,7 +1385,7 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
 </header>
 <button type="button" class="theme-fab" id="theme_fab" onclick="OpenThemePicker()" title="切换界面主题">🎨</button>
 <main>
-  <section id="libview" class="view active"><div class="libtabs" id="libtabs"></div><div class="libtoolbar"><div class="libfilt" id="libfilt"></div><input type="search" class="libsearch" id="libsearch" placeholder="搜索标题、作者、标签…" autocomplete="off"></div><div class="libtagbar" id="libtagbar"></div><div class="stats" id="statsbar"></div><div class="dropzone" id="dropzone">🌷 拖放 PDF / Word / Markdown 到此处，或点击「添加文献」开始整理</div><div class="grid" id="libgrid"></div></section>
+  <section id="libview" class="view active"><div class="libtoolbar"><div class="libfilt" id="libfilt"></div><select id="libsort" class="libsort" title="排序方式"><option value="stage_desc">研究深度 ↓</option><option value="stage_asc">研究深度 ↑</option><option value="year_desc">年份 ↓</option><option value="year_asc">年份 ↑</option><option value="title">标题 A-Z</option><option value="added">添加顺序</option></select><input type="search" class="libsearch" id="libsearch" placeholder="搜索标题、作者、标签…" autocomplete="off"></div><div class="libtagbar" id="libtagbar"></div><div class="stats" id="statsbar"></div><div class="dropzone" id="dropzone">🌷 拖放 PDF / Word / Markdown 到此处，或点击「添加文献」开始整理</div><div class="grid" id="libgrid"></div></section>
   <section id="graphview" class="view"><canvas id="graphcanvas"></canvas><div class="legend" id="legend"></div><div class="graphegobadge" id="graphegobadge"><span id="graphego_lbl"></span><span class="x" onclick="ClearGraphFocus()" title="返回全局">×</span></div><div class="graphfilter"><div class="graphrow"><label>搜索</label><input id="graph_search" type="search" placeholder="标题 / ID" oninput="OnGraphSearchInput()" onkeydown="if(event.key==='Enter')FocusGraphSearch()"></div><div class="graphrow"><label>节点</label><select id="graph_filter" onchange="ApplyGraphFilter()"><option value="">全部类型</option></select></div><div class="graphrow"><label>关系</label><select id="graph_edge_filter" onchange="ApplyGraphFilter()"><option value="">全部关系</option></select></div><button type="button" onclick="FocusGraphSearch()">⌖ 定位节点</button><button type="button" onclick="ExportGraphPng()">📷 导出 PNG</button><button type="button" onclick="ExportGraphJson()">⬇ 导出 JSON</button></div><div id="graphtooltip"></div><div class="hint">滚轮缩放 · 拖拽平移 · 拖动节点 · 点击查看详情 · 悬停边看关系</div></section>
   <section id="listview" class="view"></section>
   <section id="progressview" class="view"></section>
@@ -1758,6 +1759,7 @@ function LibTopicCount(t){
 let LIB_FILTER="all";
 let LIB_TAG="";
 let LIB_SEARCH="";
+let LIB_SORT=localStorage.getItem("lib_sort")||"stage_desc";
 let _libAnimTimer=null;
 const LIB_FILTERS=[
   {id:"all",label:"全部"},
@@ -1844,9 +1846,43 @@ function LibFilterCounts(){
     deep:vs.filter(LibIsDeep).length,
   };
 }
+function LibStageRank(n){
+  if(LibIsDeep(n))return 4;
+  if(LibIsStandard(n))return 3;
+  if(LibIsAwaitDeep(n))return 2;
+  return 1;
+}
+function LibSortKey(n){
+  const ny=parseInt(String(n.year||"").replace(/\D/g,""),10)||0;
+  return {rank:LibStageRank(n),year:ny,title:(n.title||n.id||"").toLowerCase(),id:n.id||""};
+}
+function SortLibSources(vsources){
+  const vout=[...vsources];
+  if(LIB_SORT==="added")return vout;
+  vout.sort((a,b)=>{
+    const ka=LibSortKey(a),kb=LibSortKey(b);
+    if(LIB_SORT==="stage_desc")return kb.rank-ka.rank||kb.year-ka.year||ka.title.localeCompare(kb.title,"zh");
+    if(LIB_SORT==="stage_asc")return ka.rank-kb.rank||ka.year-kb.year||ka.title.localeCompare(kb.title,"zh");
+    if(LIB_SORT==="year_desc")return kb.year-ka.year||kb.rank-ka.rank||ka.title.localeCompare(kb.title,"zh");
+    if(LIB_SORT==="year_asc")return ka.year-kb.year||ka.rank-kb.rank||ka.title.localeCompare(kb.title,"zh");
+    if(LIB_SORT==="title")return ka.title.localeCompare(kb.title,"zh");
+    return 0;
+  });
+  return vout;
+}
+function InitLibSort(){
+  const osel=document.getElementById("libsort");
+  if(!osel)return;
+  osel.value=LIB_SORT;
+  if(!osel._bound){
+    osel._bound=true;
+    osel.onchange=()=>{LIB_SORT=osel.value;localStorage.setItem("lib_sort",LIB_SORT);AnimateRenderLibrary()};
+  }
+}
 function RenderLibToolbar(){
   RenderLibFilters();
   RenderLibTagBar();
+  InitLibSort();
 }
 function RenderLibFilters(){
   const bar=document.getElementById("libfilt");if(!bar)return;
@@ -1894,23 +1930,12 @@ function AnimateRenderLibrary(){
     }
   },180);
 }
-function RenderLibTabs(){
-  const bar=document.getElementById("libtabs");
-  if(!bar)return;
-  if(!SERVERMODE||!TOPICS.length){bar.style.display="none";return;}
-  bar.style.display="";
-  bar.innerHTML=TOPICS.map(t=>{
-    const slabel=TopicLabel(t)||t.id;
-    return `<button type="button" class="libtab${t.id===CURRENT_TOPIC?" active":""}" data-id="${Attr(t.id)}" title="${Esc(slabel)}"><span class="libtab-lbl">${Esc(slabel)}</span><span class="cnt">${LibTopicCount(t)}</span></button>`;
-  }).join("");
-  bar.querySelectorAll(".libtab").forEach(el=>{el.onclick=()=>PickLibTopic(el.dataset.id)});
-}
 function PickLibTopic(nid){PickTopic(nid)}
 function RenderLibGrid(){
   ResetLibGridAnim();
   SyncLibSearchFromInput();
   const vs=LibSources();
-  const sources=vs.filter(LibFilterMatch);
+  const sources=SortLibSources(vs.filter(LibFilterMatch));
   const grid=document.getElementById("libgrid");
   if(!grid)return;
   if(!vs.length){
@@ -1930,7 +1955,7 @@ function RenderLibGrid(){
     const pdfbtn=IsPdf(n.rawfile)?`<button class="pdfbtn" onclick="event.stopPropagation();OpenPdf('${Attr(n.rawfile)}')">${DESKTOPMODE?"📄 浏览器打开":"📄 打开 PDF"}</button>`:"";
     const surl=SafeUrl(n.url);
     const urlbtn=surl?`<button class="urlbtn" onclick="event.stopPropagation();OpenPaperUrl('${Attr(surl)}')">🔗 在线阅读</button>`:"";
-    const del=(SERVERMODE&&n.rawfile)?`<span class="del" title="删除" onclick="event.stopPropagation();DeletePaper('${Attr(n.rawfile)}')">🗑</span>`:"";
+    const del=(SERVERMODE)?`<span class="del" title="删除" onclick="event.stopPropagation();DeleteSource('${Attr(n.id)}','${Attr(n.rawfile||"")}')">🗑</span>`:"";
     const rq=(n.research&&n.research.rq_links&&n.research.rq_links.length)?`<span class="badge soft" title="已关联研究问题">RQ</span>`:"";
     let actionbtn="";
     if(LibIsDeep(n)){
@@ -2032,7 +2057,7 @@ function RenderProgress(){
 }
 function RenderAll(){
   TC=DATA.typeconfig;ReindexNodes();
-  RenderLibTabs();RenderStats();RenderLibrary();RenderList();RenderProgress();
+  RenderStats();RenderLibrary();RenderList();RenderProgress();
   document.getElementById("metainfo").textContent=(SERVERMODE?"本地服务 · ":"")+"更新于 "+DATA.generated;
   UpdateLintBadge(DATA.lint);
   UpdateCurrentTopicDisplay();
@@ -2123,6 +2148,9 @@ function RenderDrawer(id){
     }else if(LibIsDeep(n)){
       h+=`<div class="field"><button class="btn" onclick="OpenReport('${Attr(n.id)}-report')">📋 查看深度研究报告</button> `+
         (n.rawfile&&SERVERMODE?DeepActionBtn(n.id,"btn","deep_drawer_btn_",false,n.deep_stale?"↻ 升级深度分析":"↻ 重新分析"):"")+`</div>`;
+    }
+    if(SERVERMODE){
+      h+=`<div class="field"><button class="btn ghost" style="color:var(--rose)" onclick="DeleteSource('${Attr(n.id)}','${Attr(n.rawfile||"")}')">🗑 删除该文献</button></div>`;
     }
   }
   const obody=document.getElementById("drawerbody");
@@ -2272,7 +2300,6 @@ function ApplyCurrentTopic(nid,sdisplay){
   RenderTopicSelect();
   UpdateTopicPickBtn();
   UpdateCurrentTopicDisplay();
-  RenderLibTabs();
 }
 function UpdateCurrentTopicDisplay(){
   const el=document.getElementById("curtopic_title");
@@ -2457,7 +2484,7 @@ async function LoadTopics(){
   try{
     const r=await Api("/api/topics");
     TOPICS=r.topics||[];CURRENT_TOPIC=r.current||"";PURPOSE_FIELDS=r.purpose_fields||PURPOSE_FIELDS;
-    RenderTopicSelect();UpdateTopicPickBtn();RenderLibTabs();
+    RenderTopicSelect();UpdateTopicPickBtn();
     document.getElementById("metainfo").textContent=(SERVERMODE?"本地服务 · ":"")+"更新于 "+DATA.generated;
     UpdateCurrentTopicDisplay();
   }catch(e){console.error("LoadTopics",e)}
@@ -3107,14 +3134,18 @@ async function SnapshotTopic(){
   try{const r=await Api("/api/topics/snapshot",{});Toast("已备份至 "+r.path,5000)}catch(e){Toast("备份失败："+e.message)}
 }
 
-async function DeletePaper(rawfile){
+async function DeleteSource(sid, rawfile){
   if(NeedServer())return;
-  if(!confirm("确定删除该文献？\n"+rawfile))return;
-  const bcascade=confirm("是否同时删除关联的知识页？\n\n确定 = 一并删除引用了该文献的知识页\n取消 = 只删原文件与这篇文献的摘要页");
+  const slabel=rawfile||sid||"该文献";
+  if(!confirm("确定删除该文献？\n"+slabel))return;
+  const bcascade=confirm("是否同时删除关联的知识页？\n\n确定 = 一并删除引用了该文献的知识页、分析报告\n取消 = 只删摘要页与原文件");
   ShowOverlay("正在删除…");
-  try{const r=await Api("/api/delete",{rawfile,cascade:bcascade});await Refresh(true);HideOverlay();Toast("已删除 "+(r.removed?r.removed.length:0)+" 项")}
-  catch(e){HideOverlay();Toast("删除失败："+e.message)}
+  try{
+    const r=await Api("/api/delete",{id:sid,rawfile:rawfile||null,cascade:bcascade});
+    await Refresh(true);HideOverlay();Toast("已删除 "+(r.removed?r.removed.length:0)+" 项");
+  }catch(e){HideOverlay();Toast("删除失败："+e.message)}
 }
+async function DeletePaper(rawfile){return DeleteSource("",rawfile)}
 let ingestPoller=null,_ingestLastDone=-1;
 /* 通用轮询器：到达最大次数 maxTicks 后弹窗询问「继续等待 / 放弃」。
    放弃仅停止前端轮询，后台任务不受影响（完成后刷新可见）。

@@ -213,10 +213,18 @@ def FindPagesBySource(skey):
     return vpaths
 
 
-def DeleteSourceCascade(srawfile, bcascade=True):
+def DeleteSourceCascade(srawfile=None, skey=None, bcascade=True):
+    """删除文献：支持 raw 文件名或 source id（重复纳入/BibTeX 占位后 rawfile 可能缺失）。"""
     core = _ImportCore()
-    sname = os.path.basename(srawfile)
-    skey = core.ParseSourceFilename(sname)["key"]
+    from io_utils import SafeName
+    skey = (skey or "").strip()
+    sname = SafeName(srawfile or "")
+    if sname:
+        skey = skey or core.ParseSourceFilename(sname)["key"]
+    elif skey:
+        sname = core.ResolveRawfileForKey(skey) or ""
+    else:
+        raise ValueError("缺少文献 id 或 rawfile")
     vremoved = []
 
     ssrc = os.path.join(wikidir, "sources", skey + ".md")
@@ -226,18 +234,41 @@ def DeleteSourceCascade(srawfile, bcascade=True):
                 os.remove(spath)
                 vremoved.append(os.path.relpath(spath, rootdir))
 
+    for srel in (
+        "analysis/%s-report.md" % skey,
+        "analysis/%s-standard.md" % skey,
+        "comparisons/%s-cross.md" % skey,
+        "comparisons/%s-draft.md" % skey,
+    ):
+        spath = os.path.join(wikidir, srel)
+        if os.path.isfile(spath):
+            os.remove(spath)
+            vremoved.append("wiki/" + srel)
+
     if os.path.isfile(ssrc):
         os.remove(ssrc)
         vremoved.append("wiki/sources/%s.md" % skey)
 
-    spdf = os.path.join(rawsourcesdir, sname)
-    if os.path.isfile(spdf):
-        os.remove(spdf)
-        vremoved.append(sname)
+    for fn in core.ListSources():
+        if core.ParseSourceFilename(fn)["key"] != skey:
+            continue
+        spdf = os.path.join(rawsourcesdir, fn)
+        if os.path.isfile(spdf):
+            os.remove(spdf)
+            if fn not in vremoved:
+                vremoved.append(fn)
 
     ometa = core.ReadSourceMeta()
-    if sname in ometa:
-        del ometa[sname]
+    vdel = []
+    for sk in list(ometa.keys()):
+        if sk == core.LIB_TAG_PREFIX + skey:
+            vdel.append(sk)
+            continue
+        if sk.endswith((".pdf", ".docx", ".md", ".txt")) and core.ParseSourceFilename(sk)["key"] == skey:
+            vdel.append(sk)
+    for sk in vdel:
+        ometa.pop(sk, None)
+    if vdel:
         core.WriteSourceMeta(ometa)
 
     return {"key": skey, "removed": vremoved}
