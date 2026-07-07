@@ -1463,7 +1463,14 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   .graphegobadge.show{display:flex}
   .graphegobadge .x{cursor:pointer;color:var(--muted);font-size:16px;line-height:1}
   .graphegobadge .x:hover{color:var(--text)}
-  #graphtooltip{position:fixed;pointer-events:none;background:var(--float-panel);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:11px;color:var(--text-soft);z-index:60;opacity:0;transition:opacity .12s;box-shadow:var(--shadow-sm);max-width:220px}
+  .legend.has-ego{top:58px}
+  .graphstats{position:absolute;left:18px;bottom:52px;background:var(--float-panel);border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 12px;font-size:11px;color:var(--muted);z-index:2;box-shadow:var(--shadow-sm);backdrop-filter:blur(10px);line-height:1.6;max-width:240px}
+  .graphstats b{color:var(--text-soft);font-weight:600}
+  .graphlayouttog{display:flex;gap:4px}
+  .graphlayouttog button{flex:1;font-size:11px;padding:4px 6px;border-radius:6px;background:var(--panel2);border:1px solid var(--border);color:var(--muted);cursor:pointer;transition:.15s}
+  .graphlayouttog button.active{border-color:var(--accent);color:var(--accent);background:var(--ghost-hover)}
+  .graphempty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:14px;pointer-events:none;z-index:1}
+  #graphtooltip{position:fixed;pointer-events:none;background:var(--float-panel);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:11px;color:var(--text-soft);z-index:60;opacity:0;transition:opacity .12s;box-shadow:var(--shadow-sm);max-width:260px;line-height:1.5}
   #graphtooltip.show{opacity:1}
   .lintlist{font-size:12px;line-height:1.7;color:var(--text)}
   .lintlist li{margin:4px 0}
@@ -1728,7 +1735,7 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
 <button type="button" class="theme-fab" id="theme_fab" onclick="OpenThemePicker()" title="切换界面主题">🎨</button>
 <main>
   <section id="libview" class="view active"><div class="libtoolbar"><div class="libfilt" id="libfilt"></div><div class="libviewtog" id="libviewtog"><button type="button" class="libviewbtn active" data-view="card" title="卡片视图" aria-label="卡片视图"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="1.5" width="5.5" height="5.5" rx="1.2" fill="currentColor"/><rect x="9" y="1.5" width="5.5" height="5.5" rx="1.2" fill="currentColor"/><rect x="1.5" y="9" width="5.5" height="5.5" rx="1.2" fill="currentColor"/><rect x="9" y="9" width="5.5" height="5.5" rx="1.2" fill="currentColor"/></svg></button><button type="button" class="libviewbtn" data-view="list" title="列表视图" aria-label="列表视图"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="2.2" rx="1.1" fill="currentColor"/><rect x="1.5" y="6.9" width="13" height="2.2" rx="1.1" fill="currentColor"/><rect x="1.5" y="11.3" width="13" height="2.2" rx="1.1" fill="currentColor"/></svg></button></div><select id="libsort" class="libsort" title="排序方式"><option value="ingested_desc">最近纳入 ↓</option><option value="ingested_asc">最近纳入 ↑</option><option value="stage_desc">研究深度 ↓</option><option value="stage_asc">研究深度 ↑</option><option value="added_desc">最近添加 ↓</option><option value="added_asc">最近添加 ↑</option><option value="year_desc">年份 ↓</option><option value="year_asc">年份 ↑</option><option value="pagerank_desc">关联度 ↓</option><option value="author">作者 A-Z</option><option value="title">标题 A-Z</option><option value="added">扫描顺序</option></select><input type="search" class="libsearch" id="libsearch" placeholder="搜索标题、作者、标签…" autocomplete="off"></div><div class="libgroupbar" id="libgroupbar"></div><div class="libstagebar" id="libstagebar"></div><div class="dropzone" id="dropzone">🌷 拖放 PDF / Word / Markdown 到此处，或点击「添加文献」开始整理</div><div class="grid" id="libgrid"></div></section>
-  <section id="graphview" class="view"><canvas id="graphcanvas"></canvas><div class="legend" id="legend"></div><div class="graphegobadge" id="graphegobadge"><span id="graphego_lbl"></span><span class="x" onclick="ClearGraphFocus()" title="返回全局">×</span></div><div class="graphfilter"><div class="graphrow"><label>搜索</label><input id="graph_search" type="search" placeholder="标题 / ID" oninput="OnGraphSearchInput()" onkeydown="if(event.key==='Enter')FocusGraphSearch()"></div><div class="graphrow"><label>节点</label><select id="graph_filter" onchange="ApplyGraphFilter()"><option value="">全部类型</option></select></div><div class="graphrow"><label>关系</label><select id="graph_edge_filter" onchange="ApplyGraphFilter()"><option value="">全部关系</option></select></div><button type="button" onclick="FocusGraphSearch()">⌖ 定位节点</button><button type="button" onclick="ExportGraphPng()">📷 导出 PNG</button><button type="button" onclick="ExportGraphJson()">⬇ 导出 JSON</button></div><div id="graphtooltip"></div><div class="hint">滚轮缩放 · 拖拽平移 · 拖动节点 · 点击查看详情 · 悬停边看关系</div></section>
+  <section id="graphview" class="view"><canvas id="graphcanvas"></canvas><div class="legend" id="legend"></div><div class="graphegobadge" id="graphegobadge"><span id="graphego_lbl"></span><span class="x" onclick="ClearGraphFocus()" title="返回全局">×</span></div><div class="graphstats" id="graphstats"></div><div class="graphfilter"><div class="graphrow"><label>搜索</label><input id="graph_search" type="search" placeholder="标题 / ID" oninput="OnGraphSearchInput()" onkeydown="if(event.key==='Enter')FocusGraphSearch()"></div><div class="graphrow"><label>节点</label><select id="graph_filter" onchange="ApplyGraphFilter()"><option value="">全部类型</option></select></div><div class="graphrow"><label>关系</label><select id="graph_edge_filter" onchange="ApplyGraphFilter()"><option value="">全部关系</option></select></div><div class="graphlayouttog"><button type="button" id="graph_mode_flow" class="active" onclick="SetGraphLayoutMode('flow')">脉络</button><button type="button" id="graph_mode_free" onclick="SetGraphLayoutMode('free')">探索</button></div><button type="button" onclick="ApplyGraphThreadView()">🧭 梳理主脉络</button><button type="button" onclick="FocusGraphSearch()">⌖ 定位节点</button><button type="button" onclick="ExportGraphPng()">📷 导出 PNG</button><button type="button" onclick="ExportGraphJson()">⬇ 导出 JSON</button></div><div id="graphtooltip"></div><div class="graphempty" id="graphempty" style="display:none">当前筛选下无可见节点，请调整关系或节点类型</div><div class="hint">滚轮缩放 · 拖拽平移 · 拖动节点 · 点击查看详情 · 悬停高亮邻域</div></section>
   <section id="listview" class="view"></section>
   <section id="progressview" class="view"></section>
   <section id="docview" class="view">
@@ -2999,7 +3006,9 @@ function ClearTopicUiState(){
   GRAPH_EDGE_FILTER="";
   GRAPH_EGO=null;
   GRAPH_SEARCH="";
-  dragnode=null;
+  GRAPH_THREAD=false;
+  GRAPH_LAYOUT_MODE="flow";
+  CancelGraphLayout();
   dragging=false;
   hover=null;
   ClearLibUiFilters();
@@ -4558,16 +4567,49 @@ async function ConfirmDocExport(){
 }
 /* ---------- 力导向知识图谱 ---------- */
 let canvas,ctx,nodes=[],links=[],view={x:0,y:0,scale:1},dragnode=null,dragging=false,last={x:0,y:0},hover=null,hoverLink=null,rafid=null;
-let GRAPH_FILTER="",GRAPH_EDGE_FILTER="",GRAPH_EGO=null,GRAPH_SEARCH="",graphTick=0,graphStable=false;
+let GRAPH_FILTER="",GRAPH_EDGE_FILTER="",GRAPH_EGO=null,GRAPH_SEARCH="",GRAPH_THREAD=false,GRAPH_LAYOUT_MODE="flow";
+let graphTick=0,graphStable=false,graphLayoutRaf=null,graphPulsePhase=0;
 let GRAPH_NEIGHBORS=null,GRAPH_THEME={},graphDrawRaf=null;
-const GRAPH_REPEL_DIST=280,GRAPH_MAX_TICKS=800;
+const GRAPH_REPEL_DIST=320,GRAPH_MAX_TICKS=900;
 let EC=DATA.edgeconfig||{},GL=DATA.graphlayers||{};
+function CancelGraphLayout(){
+  if(graphLayoutRaf){cancelAnimationFrame(graphLayoutRaf);graphLayoutRaf=null;}
+  if(rafid){cancelAnimationFrame(rafid);rafid=null;}
+}
+function ForceGraphRedraw(){
+  if(!canvas||!ctx)return;
+  ResizeCanvas();
+  DrawGraph();
+  requestAnimationFrame(()=>{if(!canvas||!ctx)return;ResizeCanvas();DrawGraph();});
+}
+function SetGraphLayoutMode(mode){
+  GRAPH_LAYOUT_MODE=mode==="free"?"free":"flow";
+  document.getElementById("graph_mode_flow")?.classList.toggle("active",GRAPH_LAYOUT_MODE==="flow");
+  document.getElementById("graph_mode_free")?.classList.toggle("active",GRAPH_LAYOUT_MODE==="free");
+  if(document.getElementById("graphview").classList.contains("active"))ReinitGraph();
+}
+function ApplyGraphThreadView(){
+  GRAPH_THREAD=true;
+  GRAPH_LAYOUT_MODE="flow";
+  document.getElementById("graph_filter").value="";
+  document.getElementById("graph_edge_filter").value="";
+  GRAPH_FILTER="";GRAPH_EDGE_FILTER="";
+  SetGraphLayoutMode("flow");
+  ReinitGraph();
+  Toast("已切换脉络视图：隐藏弱链接，突出研究主线",2600);
+}
+function ReinitGraph(){
+  CancelGraphLayout();
+  if(!document.getElementById("graphview").classList.contains("active"))return;
+  InitGraph();
+}
 function SyncGraphTheme(){
   GRAPH_THEME={
     slinka:GetCssVar("--graph-link-active")||"rgba(201,120,154,.75)",
     slabel:GetCssVar("--graph-label")||"#4a3f47",
     sring:GetCssVar("--graph-ring")||"rgba(74,63,71,.35)",
     ssearch:GetCssVar("--accent")||"#c9789a",
+    sglow:GetCssVar("--accent")||"#c9789a",
   };
 }
 function BuildGraphNeighbors(){
@@ -4587,9 +4629,9 @@ function LayoutLayerPositions(vraw,w,hh){
   const olayers={};
   vraw.forEach(n=>{const st=n.type||"unknown";if(!olayers[st])olayers[st]=[];olayers[st].push(n);});
   const opos={};
-  const nspread=Math.min(w,hh)*0.72;
+  const nspread=Math.min(w,hh)*0.68;
   Object.keys(olayers).forEach(st=>{
-    const vitems=olayers[st].slice().sort((a,b)=>(a.id||"").localeCompare(b.id||""));
+    const vitems=olayers[st].slice().sort((a,b)=>(b.pagerank||0)-(a.pagerank||0)||(a.id||"").localeCompare(b.id||""));
     const ncount=vitems.length,nlayer=GraphLayerY(st,hh);
     const nslot=ncount>1?nspread/(ncount-1):0,nstart=w*0.5-nspread/2;
     vitems.forEach((n,i)=>{
@@ -4598,6 +4640,32 @@ function LayoutLayerPositions(vraw,w,hh){
     });
   });
   return opos;
+}
+function FilterGraphEdges(vedges){
+  if(GRAPH_THREAD)vedges=vedges.filter(e=>e.type!=="链接"&&e.type!=="同类关联");
+  if(GRAPH_EDGE_FILTER)vedges=vedges.filter(e=>e.type===GRAPH_EDGE_FILTER);
+  return vedges;
+}
+function PruneOrphanNodes(){
+  if(!GRAPH_EDGE_FILTER&&!GRAPH_THREAD)return;
+  const vids=new Set();
+  links.forEach(l=>{vids.add(l.s.id);vids.add(l.t.id);});
+  nodes=nodes.filter(n=>vids.has(n.id));
+  const nm=new Set(nodes.map(n=>n.id));
+  links=links.filter(l=>nm.has(l.s.id)&&nm.has(l.t.id));
+}
+function UpdateGraphStats(){
+  const ot=document.getElementById("graphstats");if(!ot)return;
+  const ncore=nodes.filter(n=>(n.pagerank||0)>=0.02).length;
+  const ntypes=[...new Set(nodes.map(n=>n.type))].length;
+  ot.innerHTML=`<div><b>${nodes.length}</b> 节点 · <b>${links.length}</b> 关系 · <b>${ntypes}</b> 类型</div>`+
+    (ncore?`<div>核心节点 ${ncore} 个（按关联度）</div>`:"")+
+    (GRAPH_THREAD?"<div>脉络模式：已隐藏弱链接</div>":"")+
+    (GRAPH_LAYOUT_MODE==="flow"?"<div>布局：分层脉络</div>":"<div>布局：自由探索</div>");
+}
+function UpdateGraphEmpty(){
+  const oe=document.getElementById("graphempty");if(!oe)return;
+  oe.style.display=nodes.length?"none":"flex";
 }
 function GraphNodeMatch(n,vq){
   const sq=vq||(GRAPH_SEARCH||"").trim().toLowerCase();
@@ -4620,7 +4688,7 @@ function CenterGraphOnNodes(vsubset){
   const gw=Math.max(maxx-minx,1),gh=Math.max(maxy-miny,1);
   const w=canvas.clientWidth,hh=canvas.clientHeight;
   const cx=(minx+maxx)/2,cy=(miny+maxy)/2;
-  view.scale=Math.min(1.6,Math.min((w-80)/gw,(hh-80)/gh));
+  view.scale=Math.min(1.5,Math.min((w-100)/gw,(hh-100)/gh));
   view.x=w/2-cx*view.scale;view.y=hh/2-cy*view.scale;
 }
 function FocusGraphSearch(){
@@ -4630,7 +4698,7 @@ function FocusGraphSearch(){
   if(!vm.length){Toast("未找到匹配节点");return}
   hover=vm[0];
   CenterGraphOnNodes(vm);
-  RedrawGraph();
+  ForceGraphRedraw();
   Toast(vm.length>1?"已定位 "+vm.length+" 个匹配节点":"已定位："+(vm[0].title||vm[0].id),2200);
 }
 function BuildGraphFilter(){
@@ -4648,22 +4716,24 @@ function BuildGraphFilter(){
   }
 }
 function UpdateGraphEgoBadge(){
-  const ob=document.getElementById("graphegobadge"),ol=document.getElementById("graphego_lbl");
+  const ob=document.getElementById("graphegobadge"),ol=document.getElementById("graphego_lbl"),oleg=document.getElementById("legend");
   if(!ob||!ol)return;
-  if(!GRAPH_EGO||!NODEMAP[GRAPH_EGO]){ob.classList.remove("show");return}
+  if(!GRAPH_EGO||!NODEMAP[GRAPH_EGO]){ob.classList.remove("show");if(oleg)oleg.classList.remove("has-ego");return}
   ob.classList.add("show");
+  if(oleg)oleg.classList.add("has-ego");
   ol.textContent="邻域："+((NODEMAP[GRAPH_EGO]||{}).title||GRAPH_EGO);
 }
 function FocusGraphOn(id){
   if(!NODEMAP[id])return;
-  GRAPH_EGO=id;canvas=null;SwitchView("graphview");
+  GRAPH_EGO=id;CancelGraphLayout();SwitchView("graphview");
 }
-function ClearGraphFocus(){GRAPH_EGO=null;canvas=null;if(document.getElementById("graphview").classList.contains("active"))InitGraph()}
+function ClearGraphFocus(){GRAPH_EGO=null;CancelGraphLayout();if(document.getElementById("graphview").classList.contains("active"))InitGraph()}
 function ApplyGraphFilter(){
   GRAPH_FILTER=document.getElementById("graph_filter").value;
   const esel=document.getElementById("graph_edge_filter");
   GRAPH_EDGE_FILTER=esel?esel.value:"";
-  canvas=null;InitGraph();
+  GRAPH_THREAD=false;
+  ReinitGraph();
 }
 function GraphEgoIds(sid){
   const vids=new Set([sid]);
@@ -4677,6 +4747,7 @@ function InitGraph(){
   canvas=document.getElementById("graphcanvas");
   if(!canvas)return;
   if(!canvas.clientWidth||!canvas.clientHeight){requestAnimationFrame(InitGraph);return}
+  CancelGraphLayout();
   ctx=canvas.getContext("2d");ResizeCanvas();BuildGraphFilter();UpdateGraphEgoBadge();
   GRAPH_SEARCH=document.getElementById("graph_search")?.value||GRAPH_SEARCH||"";
   view={x:0,y:0,scale:1};
@@ -4689,32 +4760,60 @@ function InitGraph(){
   nodes=vraw.map(n=>{
     const op=opos[n.id]||{x:w*0.5,y:hh*0.5,targetY:hh*0.5,targetX:w*0.5};
     const npr=n.pagerank||0;
-    return {...n,x:op.x,y:op.y,targetY:op.targetY,targetX:op.targetX,vx:0,vy:0,r:6+Math.min((n.degree||0)*2,10)+Math.min(npr*14,12)};
+    const ndeg=n.degree||0;
+    return {...n,x:op.x,y:op.y,targetY:op.targetY,targetX:op.targetX,vx:0,vy:0,r:7+Math.min(ndeg*1.8,12)+Math.min(npr*16,14)};
   });
   const nm={};nodes.forEach(n=>nm[n.id]=n);
   const vids=new Set(nodes.map(n=>n.id));
-  let vedges=DATA.edges||[];
-  if(GRAPH_EDGE_FILTER)vedges=vedges.filter(e=>e.type===GRAPH_EDGE_FILTER);
+  let vedges=FilterGraphEdges(DATA.edges||[]);
   links=vedges.map(e=>({s:nm[e.source],t:nm[e.target],type:e.type||"链接",src_type:e.src_type,tgt_type:e.tgt_type,explicit:!!e.explicit})).filter(l=>l.s&&l.t&&vids.has(l.s.id)&&vids.has(l.t.id));
+  PruneOrphanNodes();
   SyncGraphTheme();BuildGraphNeighbors();
-  RenderLegend();BindGraph();SettleGraphLayoutAsync();
+  RenderLegend();BindGraph();UpdateGraphStats();UpdateGraphEmpty();
+  if(!nodes.length){DrawGraph();return}
+  SettleGraphLayoutAsync();
 }
 function SettleGraphLayoutAsync(onDone){
-  graphTick=0;graphStable=false;
-  if(rafid){cancelAnimationFrame(rafid);rafid=null;}
-  const ntickBatch=48;
+  CancelGraphLayout();
+  graphTick=0;graphStable=false;graphPulsePhase=0;
+  const ntickBatch=GRAPH_LAYOUT_MODE==="flow"?56:40;
   function step(){
     for(let i=0;i<ntickBatch;i++){
       const nenergy=StepGraphPhysics();
       graphTick++;
-      if(nodes.length>0&&nenergy/nodes.length<0.02){finish();return}
+      if(nodes.length>0&&nenergy/nodes.length<0.015){finish();return}
       if(graphTick>=GRAPH_MAX_TICKS){finish();return}
     }
     DrawGraph();
-    requestAnimationFrame(step);
+    graphLayoutRaf=requestAnimationFrame(step);
   }
-  function finish(){graphStable=true;CenterGraphView();DrawGraph();if(onDone)onDone()}
-  requestAnimationFrame(step);
+  function finish(){
+    if(graphLayoutRaf){cancelAnimationFrame(graphLayoutRaf);graphLayoutRaf=null;}
+    graphStable=true;
+    CenterGraphView();
+    ForceGraphRedraw();
+    StartGraphIdlePulse();
+    if(onDone)onDone();
+  }
+  graphLayoutRaf=requestAnimationFrame(step);
+}
+function StartGraphIdlePulse(){
+  CancelGraphLayout();
+  if(!canvas||!nodes.length||dragging||dragnode)return;
+  graphStable=false;
+  function pulse(){
+    if(dragging||dragnode||!document.getElementById("graphview").classList.contains("active")){rafid=null;return;}
+    graphPulsePhase+=0.018;
+    nodes.forEach(n=>{
+      if(n===dragnode)return;
+      n.vx+=Math.sin(graphPulsePhase+n.x*0.01)*0.015;
+      n.vy+=Math.cos(graphPulsePhase*0.9+n.y*0.01)*0.012;
+    });
+    StepGraphPhysics(true);
+    DrawGraph();
+    rafid=requestAnimationFrame(pulse);
+  }
+  rafid=requestAnimationFrame(pulse);
 }
 function CenterGraphView(){CenterGraphOnNodes(nodes)}
 function ResizeCanvas(){const dpr=window.devicePixelRatio||1;canvas.width=canvas.clientWidth*dpr;canvas.height=canvas.clientHeight*dpr;ctx.setTransform(dpr,0,0,dpr,0,0)}
@@ -4724,96 +4823,99 @@ function RenderLegend(){
   let h=used.map(t=>`<div class="row"><span class="dot" style="background:${TypeColor(t)}"></span>${TypeLabel(t)}</div>`).join("");
   const vedgeTypes=[...new Set((DATA.edges||[]).map(e=>e.type).filter(Boolean))].sort((a,b)=>EdgeLabel(a).localeCompare(EdgeLabel(b),"zh"));
   if(vedgeTypes.length)h+='<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:10px;color:var(--muted)">关系</div>'+
-    vedgeTypes.map(t=>`<div class="row"><span class="dot" style="background:${EdgeColor(t)};border-radius:2px;width:14px;height:3px;margin-top:4px"></span>${Esc(EdgeLabel(t))}</div>`).join("");
+    vedgeTypes.slice(0,8).map(t=>`<div class="row"><span class="dot" style="background:${EdgeColor(t)};border-radius:2px;width:14px;height:3px;margin-top:4px"></span>${Esc(EdgeLabel(t))}</div>`).join("")+
+    (vedgeTypes.length>8?`<div style="font-size:10px;color:var(--muted);margin-top:4px">+${vedgeTypes.length-8} 种…</div>`:"");
   document.getElementById("legend").innerHTML=h;
 }
-function StepGraphPhysics(){
+function StepGraphPhysics(bidle){
   const w=canvas.clientWidth,hh=canvas.clientHeight,cx=w/2,cy=hh/2;
   const nrepel=GRAPH_REPEL_DIST;
+  const bflow=GRAPH_LAYOUT_MODE==="flow";
+  const nyStr=bflow?0.006:0.003,nxStr=bflow?0.005:0.002;
   for(let i=0;i<nodes.length;i++){
     const a=nodes[i];
-    a.vx+=(cx-a.x)*0.0006;a.vy+=(cy-a.y)*0.0004;
-    if(a.targetY!=null)a.vy+=(a.targetY-a.y)*0.004;
-    if(a.targetX!=null)a.vx+=(a.targetX-a.x)*0.004;
+    a.vx+=(cx-a.x)*0.0004;a.vy+=(cy-a.y)*0.0003;
+    if(a.targetY!=null)a.vy+=(a.targetY-a.y)*nyStr;
+    if(a.targetX!=null)a.vx+=(a.targetX-a.x)*nxStr;
     for(let j=i+1;j<nodes.length;j++){
       const b=nodes[j];
       const dx=a.x-b.x,dy=a.y-b.y;
       if(Math.abs(dx)>nrepel&&Math.abs(dy)>nrepel)continue;
       const d2=dx*dx+dy*dy||1,d=Math.sqrt(d2);
-      const f=2200/d2;const fx=dx/d*f,fy=dy/d*f;
+      const f=(bidle?900:2600)/d2;const fx=dx/d*f,fy=dy/d*f;
       a.vx+=fx;a.vy+=fy;b.vx-=fx;b.vy-=fy;
     }
   }
   links.forEach(l=>{
     let dx=l.t.x-l.s.x,dy=l.t.y-l.s.y,d=Math.sqrt(dx*dx+dy*dy)||1;
-    const f=(d-110)*0.01;dx/=d;dy/=d;
+    const ideal=bflow?130:105;
+    const f=(d-ideal)*(bidle?0.004:0.012);dx/=d;dy/=d;
     l.s.vx+=dx*f;l.s.vy+=dy*f;l.t.vx-=dx*f;l.t.vy-=dy*f;
   });
   let nenergy=0;
+  const damp=bidle?0.92:0.84;
   nodes.forEach(n=>{
     if(n===dragnode)return;
-    n.vx*=0.85;n.vy*=0.85;n.x+=n.vx;n.y+=n.vy;
+    n.vx*=damp;n.vy*=damp;n.x+=n.vx;n.y+=n.vy;
     nenergy+=n.vx*n.vx+n.vy*n.vy;
   });
   return nenergy;
 }
-function SettleGraphLayout(){
-  graphTick=0;graphStable=false;
-  if(rafid){cancelAnimationFrame(rafid);rafid=null;}
-  for(let t=0;t<GRAPH_MAX_TICKS;t++){
-    const nenergy=StepGraphPhysics();
-    graphTick++;
-    if(nodes.length>0&&nenergy/nodes.length<0.02)break;
-  }
-  graphStable=true;CenterGraphView();DrawGraph();
-}
-function Simulate(){
-  if(!canvas||dragging)return;
-  if(graphStable&&!dragnode){DrawGraph();return}
-  const nenergy=StepGraphPhysics();
-  graphTick++;
-  if(graphTick>GRAPH_MAX_TICKS||(nodes.length>0&&nenergy/nodes.length<0.02)){
-    graphStable=true;rafid=null;DrawGraph();return;
-  }
-  DrawGraph();rafid=requestAnimationFrame(Simulate);
-}
-function DrawGraphArrow(sx,sy,tx,ty,sr,tr,color,nwidth){
+function DrawGraphLink(sx,sy,tx,ty,sr,tr,color,nwidth,bactive,bexplicit){
   const dx=tx-sx,dy=ty-sy,len=Math.sqrt(dx*dx+dy*dy)||1;
   const ux=dx/len,uy=dy/len;
   const fx=sx+ux*sr,fy=sy+uy*sr;
-  const ex=tx-ux*(tr+6),ey=ty-uy*(tr+6);
-  ctx.strokeStyle=color;ctx.lineWidth=nwidth;
-  ctx.beginPath();ctx.moveTo(fx,fy);ctx.lineTo(ex,ey);ctx.stroke();
-  const ang=Math.atan2(dy,dx),ah=7;
+  const ex=tx-ux*(tr+7),ey=ty-uy*(tr+7);
+  ctx.strokeStyle=color;ctx.lineWidth=nwidth;ctx.globalAlpha=bactive?1:(bexplicit?0.72:0.38);
+  if(!bactive&&len>60){
+    const mx=(fx+ex)/2,my=(fy+ey)/2;
+    const px=-uy,py=ux;
+    const bend=Math.min(len*0.12,36)*(bexplicit?1:0.7);
+    ctx.beginPath();ctx.moveTo(fx,fy);ctx.quadraticCurveTo(mx+px*bend,my+py*bend,ex,ey);ctx.stroke();
+  }else{
+    ctx.beginPath();ctx.moveTo(fx,fy);ctx.lineTo(ex,ey);ctx.stroke();
+  }
+  const ang=Math.atan2(ey-fy,ex-fx),ah=bactive?8:6;
   ctx.fillStyle=color;
   ctx.beginPath();ctx.moveTo(ex,ey);
   ctx.lineTo(ex-ah*Math.cos(ang-0.45),ey-ah*Math.sin(ang-0.45));
   ctx.lineTo(ex-ah*Math.cos(ang+0.45),ey-ah*Math.sin(ang+0.45));
   ctx.closePath();ctx.fill();
+  ctx.globalAlpha=1;
 }
 function DrawGraph(){
+  if(!canvas||!ctx)return;
   ctx.clearRect(0,0,canvas.clientWidth,canvas.clientHeight);ctx.save();ctx.translate(view.x,view.y);ctx.scale(view.scale,view.scale);
   const ot=GRAPH_THEME;
   const hoverNeigh=hover&&GRAPH_NEIGHBORS?GRAPH_NEIGHBORS[hover.id]:null;
   const bsearch=!!(GRAPH_SEARCH||"").trim();
-  const slinka=ot.slinka,slabel=ot.slabel,sring=ot.sring,ssearch=ot.ssearch;
+  const slinka=ot.slinka,slabel=ot.slabel,sring=ot.sring,ssearch=ot.ssearch,sglow=ot.sglow;
   links.forEach(l=>{
     const active=hover&&(l.s.id===hover.id||l.t.id===hover.id)||hoverLink===l;
+    const dim=hover&&!active;
+    if(dim)return;
     const sc=active?slinka:EdgeColor(l.type);
-    DrawGraphArrow(l.s.x,l.s.y,l.t.x,l.t.y,l.s.r,l.t.r,sc,active?2.5:(l.explicit?2.2:1.6));
+    DrawGraphLink(l.s.x,l.s.y,l.t.x,l.t.y,l.s.r,l.t.r,sc,active?2.8:(l.explicit?2:1.4),active,!!l.explicit);
   });
   const sfont=window.__graphFont||"500 12px sans-serif";
   let bfont=false;
+  const npmax=Math.max(...nodes.map(n=>n.pagerank||0),0.001);
   nodes.forEach(n=>{
     const bmatch=!bsearch||GraphNodeMatch(n);
     const dim=(hover&&n!==hover&&!(hoverNeigh&&hoverNeigh.has(n.id)))||(bsearch&&!bmatch);
-    ctx.globalAlpha=dim?0.22:1;ctx.beginPath();ctx.arc(n.x,n.y,n.r,0,6.2832);ctx.fillStyle=TypeColor(n.type);ctx.fill();
+    const bcore=(n.pagerank||0)>=npmax*0.45;
+    ctx.globalAlpha=dim?0.18:1;
+    if((bcore||n===hover)&&!dim){
+      ctx.beginPath();ctx.arc(n.x,n.y,n.r+4,0,6.2832);
+      ctx.fillStyle=sglow;ctx.globalAlpha=dim?0.08:0.14;ctx.fill();ctx.globalAlpha=dim?0.18:1;
+    }
+    ctx.beginPath();ctx.arc(n.x,n.y,n.r,0,6.2832);ctx.fillStyle=TypeColor(n.type);ctx.fill();
     if(bmatch&&bsearch){ctx.lineWidth=2.5;ctx.strokeStyle=ssearch;ctx.setLineDash([]);ctx.stroke()}
     if(!n.ingested){ctx.lineWidth=1.5;ctx.strokeStyle=sring;ctx.setLineDash([3,3]);ctx.stroke();ctx.setLineDash([])}
-    if(view.scale>0.55||n.degree>1||n===hover||bmatch&&bsearch){
+    if(n===hover||bcore||view.scale>0.5||n.degree>1||bmatch&&bsearch){
       if(!bfont){ctx.font=sfont;ctx.textAlign="center";bfont=true}
-      ctx.globalAlpha=dim?0.35:1;ctx.fillStyle=slabel;
-      const lbl=n.title.length>16?n.title.slice(0,15)+"…":n.title;ctx.fillText(lbl,n.x,n.y+n.r+13);
+      ctx.globalAlpha=dim?0.3:0.92;ctx.fillStyle=slabel;
+      const lbl=n.title.length>18?n.title.slice(0,17)+"…":n.title;ctx.fillText(lbl,n.x,n.y+n.r+14);
     }
   });
   ctx.globalAlpha=1;ctx.restore();
@@ -4823,8 +4925,17 @@ function UpdateGraphTooltip(e){
   const ot=document.getElementById("graphtooltip");if(!ot)return;
   if(hoverLink){
     let stxt=EdgeLabel(hoverLink.type)+"："+(hoverLink.s.title||"")+" → "+(hoverLink.t.title||"");
-    if(hoverLink.explicit)stxt+=" [显式]";
-    ot.textContent=stxt;
+    if(hoverLink.explicit)stxt+=" · 显式关系";
+    ot.innerHTML=stxt;
+    ot.classList.add("show");
+    if(e){ot.style.left=(e.clientX+14)+"px";ot.style.top=(e.clientY+14)+"px";}
+    return;
+  }
+  if(hover){
+    const nd=hover.degree||0,npr=hover.pagerank||0;
+    ot.innerHTML=`<div style="font-weight:600;color:var(--text)">${Esc(hover.title||hover.id)}</div>`+
+      `<div>${TypeLabel(hover.type)} · 连接 ${nd} · 关联度 ${(npr*100).toFixed(1)}%</div>`+
+      (nd?`<div style="color:var(--muted);margin-top:2px">单击查看详情 · 双击聚焦邻域</div>`:"");
     ot.classList.add("show");
     if(e){ot.style.left=(e.clientX+14)+"px";ot.style.top=(e.clientY+14)+"px";}
     return;
@@ -4838,15 +4949,15 @@ function PickLink(p){
     const t=Math.max(0,Math.min(1,((p.x-l.s.x)*dx+(p.y-l.s.y)*dy)/len2));
     const px=l.s.x+t*dx,py=l.s.y+t*dy;
     const d=Math.hypot(p.x-px,p.y-py);
-    if(d<12&&d<bdist){bdist=d;obest=l}
+    if(d<14&&d<bdist){bdist=d;obest=l}
   });
   return obest;
 }
 function ToWorld(e){const r=canvas.getBoundingClientRect();return{x:(e.clientX-r.left-view.x)/view.scale,y:(e.clientY-r.top-view.y)/view.scale}}
-function PickNode(p){return nodes.find(n=>{const dx=n.x-p.x,dy=n.y-p.y;return dx*dx+dy*dy<=n.r*n.r+25})}
+function PickNode(p){return nodes.find(n=>{const dx=n.x-p.x,dy=n.y-p.y;return dx*dx+dy*dy<=n.r*n.r+30})}
 function GraphPointerDown(e){
   const p=ToWorld(e);dragnode=PickNode(p);dragging=true;last={x:e.clientX,y:e.clientY};
-  if(rafid){cancelAnimationFrame(rafid);rafid=null;}
+  CancelGraphLayout();
   graphStable=true;
   if(dragnode){hover=dragnode;DrawGraph();}
 }
@@ -4863,7 +4974,7 @@ function GraphPointerMove(e){
   hover=nhover;hoverLink=nlink;
   canvas.style.cursor=hover||hoverLink?"pointer":"grab";
   UpdateGraphTooltip(e);
-  if(!dragging){if(graphStable&&bchanged)DrawGraph();return}
+  if(!dragging){if(bchanged)DrawGraph();return}
   view.x+=e.clientX-last.x;view.y+=e.clientY-last.y;last={x:e.clientX,y:e.clientY};
   ScheduleDrawGraph();
 }
@@ -4871,14 +4982,23 @@ function GraphPointerUp(e){
   if(dragnode&&Math.abs(e.clientX-last.x)<4&&Math.abs(e.clientY-last.y)<4)OpenDrawer(dragnode.id);
   dragging=false;dragnode=null;
   DrawGraph();
+  StartGraphIdlePulse();
+}
+function GraphPointerDblClick(e){
+  const p=ToWorld(e);const n=PickNode(p);
+  if(!n)return;
+  GRAPH_EGO=n.id;CancelGraphLayout();InitGraph();
 }
 function BindGraph(){
+  if(canvas._graphBound)return;
+  canvas._graphBound=true;
   canvas.onpointerdown=e=>{canvas.setPointerCapture(e.pointerId);GraphPointerDown(e)};
   canvas.onpointermove=GraphPointerMove;
   canvas.onpointerup=e=>{try{canvas.releasePointerCapture(e.pointerId)}catch(x){}GraphPointerUp(e)};
-  canvas.onpointerleave=()=>{hover=null;hoverLink=null;UpdateGraphTooltip();if(graphStable)DrawGraph()};
+  canvas.onpointerleave=()=>{hover=null;hoverLink=null;UpdateGraphTooltip();DrawGraph()};
+  canvas.ondblclick=GraphPointerDblClick;
   canvas.onwheel=e=>{e.preventDefault();const f=e.deltaY<0?1.1:0.9;const r=canvas.getBoundingClientRect();const mx=e.clientX-r.left,my=e.clientY-r.top;view.x=mx-(mx-view.x)*f;view.y=my-(my-view.y)*f;view.scale=Math.max(0.15,Math.min(4,view.scale*f));RedrawGraph()};
-  window.onresize=()=>{if(document.getElementById("graphview").classList.contains("active"))RedrawGraph()};
+  window.onresize=()=>{if(document.getElementById("graphview").classList.contains("active"))ForceGraphRedraw()};
 }
 function ExportGraphPng(){
   if(!canvas){Toast("请先打开知识图谱");return}
@@ -4910,7 +5030,7 @@ function SwitchView(vid){
     void view.offsetWidth;
     view.classList.add("active");
   }
-  if(vid==="graphview"){if(!canvas||!nodes.length)InitGraph();else requestAnimationFrame(()=>RedrawGraph())}
+  if(vid==="graphview"){CancelGraphLayout();if(!canvas||!nodes.length)InitGraph();else requestAnimationFrame(()=>ForceGraphRedraw())}
   if(vid==="docview")LoadDocsList();
   if(vid==="progressview")RenderProgress();
   if(vid==="libview")setTimeout(()=>AnimateRenderLibrary(),40);
