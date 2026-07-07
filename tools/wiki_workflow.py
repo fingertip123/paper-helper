@@ -144,6 +144,47 @@ def _AppendSourceToRq(spath, ssource_key, sblurb):
     return True
 
 
+def _AppendRqToSourcePage(ssource_key, srqid):
+    """在 source 页「关联研究问题」追加 wikilink（用户手动分组时）。"""
+    spath = os.path.join(wikidir, "sources", ssource_key + ".md")
+    if not os.path.isfile(spath):
+        return False
+    with open(spath, "r", encoding="utf-8") as f:
+        nfull = f.read()
+    ofm, nbody = _Core().ParseFrontmatter(nfull)
+    slink = "[[%s]]" % srqid
+    if slink in nbody:
+        return False
+    if "## 关联研究问题" in nbody:
+        nbody = re.sub(
+            r"(## 关联研究问题\n)([\s\S]*?)(?=\n## |\Z)",
+            lambda m: m.group(1) + (m.group(2).rstrip() + "\n" + slink + "\n\n"),
+            nbody,
+            count=1,
+        )
+    else:
+        nbody = nbody.rstrip() + "\n\n## 关联研究问题\n\n" + slink + "\n"
+    ofm["updated"] = datetime.now().strftime("%Y-%m-%d")
+    vfm = []
+    for k, v in ofm.items():
+        if isinstance(v, list):
+            vfm.append("%s: [%s]" % (k, ", ".join(str(x) for x in v)))
+        else:
+            vfm.append("%s: %s" % (k, v))
+    io_utils.AtomicWriteText(spath, "---\n" + "\n".join(vfm) + "\n---\n\n" + nbody.lstrip())
+    return True
+
+
+def LinkSourceToRq(ssource_key, srqid, sblurb=""):
+    """用户分组：确保 RQ 页存在并双向链接 source。"""
+    if not wikidir or not ssource_key or not srqid:
+        return False
+    spath = _EnsureRqPage(srqid, ssource_key)
+    bupdated = _AppendSourceToRq(spath, ssource_key, sblurb)
+    _AppendRqToSourcePage(ssource_key, srqid)
+    return bupdated
+
+
 def SyncRqPages(ssource_key, oresearch=None, sblurb=""):
     """纳入/分析完成后：确保 RQ 页存在并追加支撑文献。"""
     if not wikidir or not ssource_key:

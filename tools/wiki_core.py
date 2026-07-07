@@ -542,15 +542,43 @@ def EnsureNodeRawfile(onode):
 LIB_TAG_PREFIX = "@id:"
 
 
-def GetLibTags(skey):
-    """读取论文库自定义标签（按 source id 存于 source_meta.json）。"""
+def GetSourceMetaEntry(skey):
+    """读取单篇文献在 source_meta.json 中的条目。"""
     oentry = ReadSourceMeta().get(LIB_TAG_PREFIX + (skey or ""), {})
-    vtags = oentry.get("lib_tags", []) if isinstance(oentry, dict) else []
-    return [str(t).strip() for t in vtags if str(t).strip()]
+    return oentry if isinstance(oentry, dict) else {}
+
+
+def SaveSourceMetaEntry(skey, oentry):
+    """写入或清除单篇文献元数据条目。"""
+    skey = (skey or "").strip()
+    if not skey:
+        raise ValueError("缺少文献 id")
+    ometa = ReadSourceMeta()
+    smeta = LIB_TAG_PREFIX + skey
+    if oentry:
+        ometa[smeta] = oentry
+    elif smeta in ometa:
+        del ometa[smeta]
+    WriteSourceMeta(ometa)
+
+
+def GetLibTags(skey):
+    """读取论文库自定义文件夹标签。"""
+    return [str(t).strip() for t in GetSourceMetaEntry(skey).get("lib_tags", []) if str(t).strip()]
+
+
+def GetLibRq(skey):
+    """读取用户指定的 RQ 分组。"""
+    return [str(t).strip() for t in GetSourceMetaEntry(skey).get("lib_rq", []) if str(t).strip()]
+
+
+def GetLibChapter(skey):
+    """读取用户指定的论文章节分组。"""
+    return (GetSourceMetaEntry(skey).get("lib_chapter") or "").strip()
 
 
 def SetLibTags(skey, vtags):
-    """保存论文库自定义标签。"""
+    """保存论文库自定义文件夹标签（保留 RQ/章节字段）。"""
     skey = (skey or "").strip()
     if not skey:
         raise ValueError("缺少文献 id")
@@ -562,14 +590,155 @@ def SetLibTags(skey, vtags):
             continue
         vseen.add(sval)
         vclean.append(sval)
-    ometa = ReadSourceMeta()
-    smeta = LIB_TAG_PREFIX + skey
+    oentry = GetSourceMetaEntry(skey)
     if vclean:
-        ometa[smeta] = {"lib_tags": vclean}
-    elif smeta in ometa:
-        del ometa[smeta]
-    WriteSourceMeta(ometa)
+        oentry["lib_tags"] = vclean
+    elif "lib_tags" in oentry:
+        del oentry["lib_tags"]
+    if oentry:
+        SaveSourceMetaEntry(skey, oentry)
+    else:
+        SaveSourceMetaEntry(skey, None)
     return vclean
+
+
+def SetLibRq(skey, vrq_ids):
+    """保存用户指定的 RQ 分组。"""
+    skey = (skey or "").strip()
+    if not skey:
+        raise ValueError("缺少文献 id")
+    vclean = []
+    vseen = set()
+    for srid in vrq_ids or []:
+        sval = str(srid).strip()
+        if not sval or sval in vseen:
+            continue
+        vseen.add(sval)
+        vclean.append(sval)
+    oentry = GetSourceMetaEntry(skey)
+    if vclean:
+        oentry["lib_rq"] = vclean
+    elif "lib_rq" in oentry:
+        del oentry["lib_rq"]
+    if oentry:
+        SaveSourceMetaEntry(skey, oentry)
+    else:
+        SaveSourceMetaEntry(skey, None)
+    return vclean
+
+
+def SetLibChapter(skey, schapter):
+    """保存用户指定的论文章节分组。"""
+    skey = (skey or "").strip()
+    if not skey:
+        raise ValueError("缺少文献 id")
+    schapter = (schapter or "").strip()
+    oentry = GetSourceMetaEntry(skey)
+    if schapter:
+        oentry["lib_chapter"] = schapter
+    elif "lib_chapter" in oentry:
+        del oentry["lib_chapter"]
+    if oentry:
+        SaveSourceMetaEntry(skey, oentry)
+    else:
+        SaveSourceMetaEntry(skey, None)
+    return schapter
+
+
+def AssignSourceGroup(skey, stype, sgroup_id, saction="add"):
+    """将文献归入/移出 RQ、章节或自定义文件夹。"""
+    skey = (skey or "").strip()
+    sgroup_id = (sgroup_id or "").strip()
+    stype = (stype or "").strip().lower()
+    saction = (saction or "add").strip().lower()
+    if not skey:
+        raise ValueError("缺少文献 id")
+    if not sgroup_id and not (stype == "chapter" and saction == "remove"):
+        raise ValueError("缺少文献或分组")
+    if stype not in ("rq", "chapter", "folder"):
+        raise ValueError("无效分组类型")
+    import wiki_workflow as wflow
+    wflow.Init(wikidir)
+    if stype == "folder":
+        vtags = GetLibTags(skey)
+        if saction == "add":
+            if sgroup_id not in vtags:
+                vtags.append(sgroup_id)
+        else:
+            vtags = [t for t in vtags if t != sgroup_id]
+        vclean = SetLibTags(skey, vtags)
+        return {"id": skey, "type": stype, "group": sgroup_id, "tags": vclean}
+    if stype == "rq":
+        vrq = GetLibRq(skey)
+        if saction == "add":
+            if sgroup_id not in vrq:
+                vrq.append(sgroup_id)
+                wflow.LinkSourceToRq(skey, sgroup_id)
+        else:
+            vrq = [r for r in vrq if r != sgroup_id]
+        vclean = SetLibRq(skey, vrq)
+        return {"id": skey, "type": stype, "group": sgroup_id, "rq": vclean}
+    if saction == "add":
+        SetLibChapter(skey, sgroup_id)
+    else:
+        SetLibChapter(skey, "")
+    return {"id": skey, "type": stype, "group": sgroup_id, "chapter": GetLibChapter(skey)}
+
+
+def BuildLibraryGroups(vnodes=None):
+    """汇总 RQ / 章节 / 文件夹分组及文献计数。"""
+    if vnodes is None:
+        import wiki_refresh as refresh
+        vnodes = refresh.GetWikiData()["nodes"]
+    import wiki_workflow as wflow
+    wflow.Init(wikidir)
+    oprogress = wflow.GetChapterProgress({"nodes": vnodes})
+    ofolders = {}
+    orq_counts = {}
+    ochapter_counts = {}
+    for n in vnodes:
+        if n.get("type") != "source":
+            continue
+        sid = n.get("id", "")
+        oentry = GetSourceMetaEntry(sid)
+        for stag in oentry.get("lib_tags") or n.get("lib_tags") or []:
+            stag = str(stag).strip()
+            if stag:
+                ofolders[stag] = ofolders.get(stag, 0) + 1
+        for srid in oentry.get("lib_rq") or n.get("lib_rq") or []:
+            srid = str(srid).strip()
+            if srid:
+                orq_counts[srid] = orq_counts.get(srid, 0) + 1
+        sch = (oentry.get("lib_chapter") or n.get("lib_chapter") or "").strip()
+        if sch:
+            ochapter_counts[sch] = ochapter_counts.get(sch, 0) + 1
+    vrqs = []
+    for r in oprogress.get("rq_pages") or []:
+        rid = r.get("id", "")
+        vrqs.append({
+            "id": rid,
+            "title": r.get("title", rid),
+            "count": orq_counts.get(rid, 0),
+        })
+    for rid, ncnt in sorted(orq_counts.items()):
+        if not any(x["id"] == rid for x in vrqs):
+            vrqs.append({"id": rid, "title": wflow.RqTitleFromPurpose(rid), "count": ncnt})
+    vchapters = []
+    for ch in oprogress.get("chapters") or []:
+        stitle = ch.get("title", "")
+        if not stitle:
+            continue
+        vchapters.append({
+            "id": stitle,
+            "title": stitle,
+            "count": ochapter_counts.get(stitle, 0),
+            "done": bool(ch.get("done")),
+        })
+    for stitle, ncnt in sorted(ochapter_counts.items()):
+        if not any(x["id"] == stitle for x in vchapters):
+            vchapters.append({"id": stitle, "title": stitle, "count": ncnt, "done": False})
+    vfolders = [{"id": f, "title": f, "count": c} for f, c in sorted(ofolders.items(), key=lambda x: x[0])]
+    return {"rq": vrqs, "chapters": vchapters, "folders": vfolders}
 
 
 def HasDeepReportFile(skey):
@@ -680,6 +849,11 @@ def EnrichSourceLibraryMeta(vnodes):
         else:
             n["lib_stage"] = "pending"
         n["lib_tags"] = GetLibTags(n.get("id", ""))
+        n["lib_rq"] = GetLibRq(n.get("id", ""))
+        n["lib_chapter"] = GetLibChapter(n.get("id", ""))
+        n["suggested_tags"] = [str(t).strip() for t in (n.get("tags") or []) if str(t).strip()]
+        vrqs = list((n.get("research") or {}).get("rq_links") or [])
+        n["suggested_rq"] = [r for r in vrqs if r and r not in n["lib_rq"]]
         nadded, ningested = SourceTimestamps(n)
         n["added_at"] = nadded
         n["ingested_at"] = ningested
@@ -1309,9 +1483,11 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   .libsearch{flex:1;min-width:180px;max-width:360px;padding:8px 14px;border-radius:999px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:13px;outline:none;transition:border-color .2s,box-shadow .2s}
   .libsearch:focus{border-color:var(--focus-border);box-shadow:0 0 0 3px var(--focus-shadow)}
   .libsort{padding:6px 12px;border-radius:999px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:12px;cursor:pointer}
-  .libviewtog{display:flex;gap:2px;border:1px solid var(--border);border-radius:999px;padding:3px;background:var(--panel2)}
-  .libviewbtn{padding:4px 10px;border:none;border-radius:999px;background:transparent;cursor:pointer;color:var(--muted);font-size:13px;line-height:1}
-  .libviewbtn.active{background:var(--panel);color:var(--accent);box-shadow:var(--shadow-sm)}
+  .libviewtog{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--border);border-radius:10px;padding:4px;background:var(--panel2)}
+  .libviewbtn{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;padding:0;border:none;border-radius:8px;background:transparent;cursor:pointer;color:var(--muted);transition:background .18s,color .18s,box-shadow .18s}
+  .libviewbtn svg{display:block;pointer-events:none;flex-shrink:0}
+  .libviewbtn:hover{color:var(--text-soft);background:var(--ghost-hover)}
+  .libviewbtn.active{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;box-shadow:var(--tab-shadow)}
   .libstagebar{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 16px}
   .libstageitem{flex:1;min-width:108px;padding:10px 12px;border-radius:14px;border:1px solid var(--border);background:var(--panel2);cursor:pointer;text-align:left;transition:border-color .18s,box-shadow .18s}
   .libstageitem:hover,.libstageitem.active{border-color:var(--accent);box-shadow:var(--shadow-sm)}
@@ -1327,7 +1503,21 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   .grid.list-mode .card .sum{display:none}
   .grid.list-mode .card .tags{flex:1 1 100%;margin:0}
   .grid.list-mode .card>div[style]{flex:1 1 100%;margin-top:0!important}
-  .libtagbar{display:flex;gap:6px;flex-wrap:wrap;margin:-4px 0 12px}
+  .libtagbar,.libgroupbar{display:flex;flex-direction:column;gap:8px;margin:-4px 0 12px}
+  .libgrouptabs{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+  .libgrouptab{padding:5px 12px;border-radius:999px;border:1px solid var(--border);background:var(--panel2);color:var(--muted);font-size:11px;cursor:pointer;transition:.18s}
+  .libgrouptab:hover,.libgrouptab.active{border-color:var(--accent);color:var(--accent);background:var(--ghost-hover)}
+  .libgroupchips{display:flex;gap:6px;flex-wrap:wrap;align-items:center;min-height:28px}
+  .libgroupchip{padding:4px 12px;border-radius:999px;border:1px dashed var(--border);background:var(--panel2);color:var(--text-soft);font-size:11px;cursor:pointer;transition:.18s}
+  .libgroupchip:hover,.libgroupchip.active{border-color:var(--accent);color:var(--accent);background:var(--ghost-hover);border-style:solid}
+  .libgroupchip.drop-over{border-color:var(--accent);background:var(--dropzone-drag);box-shadow:0 0 0 2px var(--focus-shadow)}
+  .libgroupchip .cnt{font-size:10px;margin-left:4px;color:var(--muted)}
+  .libgroupchip.active .cnt{color:inherit;opacity:.85}
+  .libgrouphint{font-size:11px;color:var(--muted)}
+  .card.lib-dragging{opacity:.45;transform:scale(.98)}
+  .badge.suggest{opacity:.72;border-style:dashed;cursor:pointer}
+  .badge.group-rq{color:var(--accent)}
+  .badge.group-chapter{color:var(--sage)}
   .libtagchip{padding:4px 12px;border-radius:999px;border:1px solid var(--border);background:var(--panel2);color:var(--muted);font-size:11px;cursor:pointer;transition:.18s}
   .libtagchip:hover,.libtagchip.active{border-color:var(--accent);color:var(--accent);background:var(--ghost-hover)}
   .libtab{display:inline-flex;align-items:center;gap:6px;max-width:min(280px,100%);padding:6px 14px;border-radius:999px;cursor:pointer;font-family:var(--font-ui);font-size:13px;font-weight:var(--fw-ui);letter-spacing:var(--ls-ui);color:var(--muted);background:var(--panel2);border:1px solid var(--border);transition:background .22s ease,color .22s ease,border-color .22s ease,box-shadow .22s ease}
@@ -1439,7 +1629,7 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
 </header>
 <button type="button" class="theme-fab" id="theme_fab" onclick="OpenThemePicker()" title="切换界面主题">🎨</button>
 <main>
-  <section id="libview" class="view active"><div class="libtoolbar"><div class="libfilt" id="libfilt"></div><div class="libviewtog" id="libviewtog"><button type="button" class="libviewbtn active" data-view="card" title="卡片视图">▦</button><button type="button" class="libviewbtn" data-view="list" title="列表视图">☰</button></div><select id="libsort" class="libsort" title="排序方式"><option value="ingested_desc">最近纳入 ↓</option><option value="ingested_asc">最近纳入 ↑</option><option value="stage_desc">研究深度 ↓</option><option value="stage_asc">研究深度 ↑</option><option value="added_desc">最近添加 ↓</option><option value="added_asc">最近添加 ↑</option><option value="year_desc">年份 ↓</option><option value="year_asc">年份 ↑</option><option value="pagerank_desc">关联度 ↓</option><option value="author">作者 A-Z</option><option value="title">标题 A-Z</option><option value="added">扫描顺序</option></select><input type="search" class="libsearch" id="libsearch" placeholder="搜索标题、作者、标签…" autocomplete="off"></div><div class="libtagbar" id="libtagbar"></div><div class="libstagebar" id="libstagebar"></div><div class="dropzone" id="dropzone">🌷 拖放 PDF / Word / Markdown 到此处，或点击「添加文献」开始整理</div><div class="grid" id="libgrid"></div></section>
+  <section id="libview" class="view active"><div class="libtoolbar"><div class="libfilt" id="libfilt"></div><div class="libviewtog" id="libviewtog"><button type="button" class="libviewbtn active" data-view="card" title="卡片视图" aria-label="卡片视图"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="1.5" width="5.5" height="5.5" rx="1.2" fill="currentColor"/><rect x="9" y="1.5" width="5.5" height="5.5" rx="1.2" fill="currentColor"/><rect x="1.5" y="9" width="5.5" height="5.5" rx="1.2" fill="currentColor"/><rect x="9" y="9" width="5.5" height="5.5" rx="1.2" fill="currentColor"/></svg></button><button type="button" class="libviewbtn" data-view="list" title="列表视图" aria-label="列表视图"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="2.2" rx="1.1" fill="currentColor"/><rect x="1.5" y="6.9" width="13" height="2.2" rx="1.1" fill="currentColor"/><rect x="1.5" y="11.3" width="13" height="2.2" rx="1.1" fill="currentColor"/></svg></button></div><select id="libsort" class="libsort" title="排序方式"><option value="ingested_desc">最近纳入 ↓</option><option value="ingested_asc">最近纳入 ↑</option><option value="stage_desc">研究深度 ↓</option><option value="stage_asc">研究深度 ↑</option><option value="added_desc">最近添加 ↓</option><option value="added_asc">最近添加 ↑</option><option value="year_desc">年份 ↓</option><option value="year_asc">年份 ↑</option><option value="pagerank_desc">关联度 ↓</option><option value="author">作者 A-Z</option><option value="title">标题 A-Z</option><option value="added">扫描顺序</option></select><input type="search" class="libsearch" id="libsearch" placeholder="搜索标题、作者、标签…" autocomplete="off"></div><div class="libgroupbar" id="libgroupbar"></div><div class="libstagebar" id="libstagebar"></div><div class="dropzone" id="dropzone">🌷 拖放 PDF / Word / Markdown 到此处，或点击「添加文献」开始整理</div><div class="grid" id="libgrid"></div></section>
   <section id="graphview" class="view"><canvas id="graphcanvas"></canvas><div class="legend" id="legend"></div><div class="graphegobadge" id="graphegobadge"><span id="graphego_lbl"></span><span class="x" onclick="ClearGraphFocus()" title="返回全局">×</span></div><div class="graphfilter"><div class="graphrow"><label>搜索</label><input id="graph_search" type="search" placeholder="标题 / ID" oninput="OnGraphSearchInput()" onkeydown="if(event.key==='Enter')FocusGraphSearch()"></div><div class="graphrow"><label>节点</label><select id="graph_filter" onchange="ApplyGraphFilter()"><option value="">全部类型</option></select></div><div class="graphrow"><label>关系</label><select id="graph_edge_filter" onchange="ApplyGraphFilter()"><option value="">全部关系</option></select></div><button type="button" onclick="FocusGraphSearch()">⌖ 定位节点</button><button type="button" onclick="ExportGraphPng()">📷 导出 PNG</button><button type="button" onclick="ExportGraphJson()">⬇ 导出 JSON</button></div><div id="graphtooltip"></div><div class="hint">滚轮缩放 · 拖拽平移 · 拖动节点 · 点击查看详情 · 悬停边看关系</div></section>
   <section id="listview" class="view"></section>
   <section id="progressview" class="view"></section>
@@ -1810,7 +2000,9 @@ function RenderStats(){
 function LoadLibUiState(){
   try{
     if(localStorage.getItem("lib_filter"))LIB_FILTER=localStorage.getItem("lib_filter");
-    if(localStorage.getItem("lib_tag")!=null)LIB_TAG=localStorage.getItem("lib_tag")||"";
+    if(localStorage.getItem("lib_group_tab"))LIB_GROUP_TAB=localStorage.getItem("lib_group_tab");
+    if(localStorage.getItem("lib_group_id")!=null)LIB_GROUP_ID=localStorage.getItem("lib_group_id")||"";
+    else if(localStorage.getItem("lib_tag")){LIB_GROUP_TAB="folder";LIB_GROUP_ID=localStorage.getItem("lib_tag")||"";}
     if(localStorage.getItem("lib_search")!=null)LIB_SEARCH=localStorage.getItem("lib_search")||"";
     if(localStorage.getItem("lib_sort"))LIB_SORT=localStorage.getItem("lib_sort");
     if(localStorage.getItem("lib_view"))LIB_VIEW=localStorage.getItem("lib_view");
@@ -1819,7 +2011,9 @@ function LoadLibUiState(){
 function SaveLibUiState(){
   try{
     localStorage.setItem("lib_filter",LIB_FILTER);
-    localStorage.setItem("lib_tag",LIB_TAG);
+    localStorage.setItem("lib_group_tab",LIB_GROUP_TAB);
+    localStorage.setItem("lib_group_id",LIB_GROUP_ID);
+    localStorage.removeItem("lib_tag");
     localStorage.setItem("lib_search",LIB_SEARCH);
     localStorage.setItem("lib_sort",LIB_SORT);
     localStorage.setItem("lib_view",LIB_VIEW);
@@ -1834,7 +2028,8 @@ function LibTopicCount(t){
   return t.source_count!=null?t.source_count:0;
 }
 let LIB_FILTER="all";
-let LIB_TAG="";
+let LIB_GROUP_TAB="all";
+let LIB_GROUP_ID="";
 let LIB_SEARCH="";
 let LIB_SORT="ingested_desc";
 let LIB_VIEW="card";
@@ -1873,16 +2068,21 @@ function LibStageClass(n){
   if(LibIsAwaitDeep(n))return "lib-active";
   return "lib-todo";
 }
-function LibAllTags(){
-  const vset=new Set();
-  LibSources().forEach(n=>{(n.lib_tags||[]).forEach(t=>vset.add(t));(n.tags||[]).forEach(t=>vset.add(t))});
-  return [...vset].sort((a,b)=>a.localeCompare(b,"zh"));
+function LibGroupsData(){
+  return DATA.library_groups||(DATA.chapters?{rq:DATA.chapters.rq_pages||[],chapters:(DATA.chapters.chapters||[]).map(c=>({id:c.title,title:c.title,count:(c.counts||{}).sources||0,done:c.done})),folders:[]}:null)||{rq:[],chapters:[],folders:[]};
+}
+function LibGroupItems(){
+  const og=LibGroupsData();
+  if(LIB_GROUP_TAB==="rq")return og.rq||[];
+  if(LIB_GROUP_TAB==="chapter")return og.chapters||[];
+  if(LIB_GROUP_TAB==="folder")return og.folders||[];
+  return [];
 }
 function LibFuzzyMatch(n,q){
   if(!q)return true;
   q=q.trim().toLowerCase();
   if(!q)return true;
-  const hay=[n.title,n.summary,n.year,n.venue,n.id,(n.authors||[]).join(" "),(n.tags||[]).join(" "),(n.lib_tags||[]).join(" ")].join(" ").toLowerCase();
+  const hay=[n.title,n.summary,n.year,n.venue,n.id,(n.authors||[]).join(" "),(n.lib_tags||[]).join(" ")].join(" ").toLowerCase();
   if(hay.includes(q))return true;
   const vwords=q.split(/\s+/).filter(Boolean);
   return vwords.every(w=>hay.includes(w));
@@ -1892,7 +2092,7 @@ function SyncLibSearchFromInput(){
   if(osearch)LIB_SEARCH=osearch.value||"";
 }
 function ClearLibUiFilters(){
-  LIB_SEARCH="";LIB_TAG="";
+  LIB_SEARCH="";LIB_GROUP_TAB="all";LIB_GROUP_ID="";
   SaveLibUiState();
   const osearch=document.getElementById("libsearch");
   if(osearch)osearch.value="";
@@ -1904,9 +2104,14 @@ function ResetLibGridAnim(){
 }
 function LibFilterMatch(n){
   SyncLibSearchFromInput();
-  if(LIB_TAG){
-    const vtags=[...(n.lib_tags||[]),...(n.tags||[])];
-    if(!vtags.includes(LIB_TAG))return false;
+  if(LIB_GROUP_ID&&LIB_GROUP_TAB!=="all"){
+    if(LIB_GROUP_TAB==="rq"){
+      if(!(n.lib_rq||[]).includes(LIB_GROUP_ID))return false;
+    }else if(LIB_GROUP_TAB==="chapter"){
+      if((n.lib_chapter||"")!==LIB_GROUP_ID)return false;
+    }else if(LIB_GROUP_TAB==="folder"){
+      if(!(n.lib_tags||[]).includes(LIB_GROUP_ID))return false;
+    }
   }
   if(!LibFuzzyMatch(n,LIB_SEARCH))return false;
   if(LIB_FILTER==="all")return true;
@@ -2013,9 +2218,90 @@ function RenderLibStageBar(){
   }).join("");
   bar.querySelectorAll(".libstageitem").forEach(el=>{el.onclick=()=>SetLibFilter(el.dataset.id)});
 }
+function RenderLibGroupBar(){
+  const bar=document.getElementById("libgroupbar");if(!bar)return;
+  const vtabs=[
+    {id:"all",label:"全部分组"},
+    {id:"rq",label:"研究问题"},
+    {id:"chapter",label:"论文章节"},
+    {id:"folder",label:"自定义文件夹"},
+  ];
+  let h=`<div class="libgrouptabs">${vtabs.map(t=>`<button type="button" class="libgrouptab${t.id===LIB_GROUP_TAB?" active":""}" data-tab="${Attr(t.id)}">${Esc(t.label)}</button>`).join("")}</div>`;
+  const vitems=LibGroupItems();
+  if(LIB_GROUP_TAB!=="all"){
+    h+=`<div class="libgroupchips"><button type="button" class="libgroupchip${!LIB_GROUP_ID?" active":""}" data-gid="">全部</button>`;
+    h+=vitems.map(it=>{
+      const slabel=it.title||it.id;
+      const stitle=slabel.length>28?slabel.slice(0,26)+"…":slabel;
+      return `<button type="button" class="libgroupchip drop-target${LIB_GROUP_ID===it.id?" active":""}" data-gid="${Attr(it.id)}" data-gtype="${Attr(LIB_GROUP_TAB)}" title="${Attr(slabel)}">${Esc(stitle)}<span class="cnt">${it.count||0}</span></button>`;
+    }).join("");
+    if(!vitems.length)h+=`<span class="libgrouphint">${LIB_GROUP_TAB==="folder"?"在文献详情中添加文件夹名":LIB_GROUP_TAB==="rq"?"拖拽文献到下方分组，或在详情中指定":"在详情中指定章节"}</span>`;
+    h+=`</div>`;
+    if(SERVERMODE&&(LIB_GROUP_TAB==="rq"||LIB_GROUP_TAB==="chapter"))h+=`<div class="libgrouphint">拖拽文献卡片到分组标签可快速归类</div>`;
+  }
+  bar.innerHTML=h;
+  bar.querySelectorAll(".libgrouptab").forEach(el=>{el.onclick=()=>{
+    LIB_GROUP_TAB=el.dataset.tab||"all";
+    LIB_GROUP_ID="";
+    SaveLibUiState();
+    RenderLibGroupBar();
+    AnimateRenderLibrary();
+  }});
+  bar.querySelectorAll(".libgroupchip").forEach(el=>{el.onclick=()=>{
+    LIB_GROUP_ID=el.dataset.gid||"";
+    SaveLibUiState();
+    RenderLibGroupBar();
+    AnimateRenderLibrary();
+  }});
+  InitLibGroupDropTargets();
+}
+let _libDragSid=null;
+function InitLibGroupDropTargets(){
+  if(!SERVERMODE)return;
+  document.querySelectorAll(".libgroupchip.drop-target").forEach(el=>{
+    if(el._dropBound)return;
+    el._dropBound=true;
+    el.addEventListener("dragover",e=>{if(!_libDragSid)return;e.preventDefault();el.classList.add("drop-over")});
+    el.addEventListener("dragleave",()=>el.classList.remove("drop-over"));
+    el.addEventListener("drop",async e=>{
+      e.preventDefault();el.classList.remove("drop-over");
+      const sgid=el.dataset.gid;
+      const sgtype=el.dataset.gtype;
+      if(!_libDragSid||!sgid||!sgtype)return;
+      await AssignSourceGroup(_libDragSid,sgtype,sgid);
+    });
+  });
+}
+function InitLibCardDrag(){
+  if(!SERVERMODE)return;
+  document.querySelectorAll("#libgrid .card[data-sid]").forEach(el=>{
+    if(el._dragBound)return;
+    el._dragBound=true;
+    el.addEventListener("dragstart",e=>{
+      _libDragSid=el.dataset.sid;
+      el.classList.add("lib-dragging");
+      if(e.dataTransfer){e.dataTransfer.effectAllowed="move";e.dataTransfer.setData("text/plain",_libDragSid)}
+    });
+    el.addEventListener("dragend",()=>{el.classList.remove("lib-dragging");_libDragSid=null});
+  });
+}
+async function AssignSourceGroup(sid,stype,sgroup,saction){
+  if(NeedServer())return;
+  try{
+    await Api("/api/library/assign",{id:sid,type:stype,group:sgroup,action:saction||"add"});
+    await Refresh(true);
+    LIB_GROUP_TAB=stype;LIB_GROUP_ID=sgroup;SaveLibUiState();
+    AnimateRenderLibrary();
+    Toast("已归入分组");
+  }catch(e){Toast("分组失败："+e.message)}
+}
+async function LoadLibraryGroups(){
+  if(!SERVERMODE)return;
+  try{DATA.library_groups=await Api("/api/library/groups")}catch(e){}
+}
 function RenderLibToolbar(){
   RenderLibFilters();
-  RenderLibTagBar();
+  RenderLibGroupBar();
   RenderLibStageBar();
   InitLibSort();
   InitLibViewToggle();
@@ -2033,15 +2319,6 @@ function RenderLibFilters(){
     osearch.oninput=()=>{clearTimeout(ot);ot=setTimeout(()=>{LIB_SEARCH=osearch.value;SaveLibUiState();AnimateRenderLibrary()},220)};
   }
 }
-function RenderLibTagBar(){
-  const bar=document.getElementById("libtagbar");if(!bar)return;
-  const vtags=LibAllTags();
-  if(!vtags.length){bar.style.display="none";bar.innerHTML="";if(LIB_TAG){LIB_TAG="";SaveLibUiState()}return}
-  bar.style.display="";
-  bar.innerHTML=`<button type="button" class="libtagchip${!LIB_TAG?" active":""}" data-tag="">全部标签</button>`+
-    vtags.map(t=>`<button type="button" class="libtagchip${LIB_TAG===t?" active":""}" data-tag="${Attr(t)}">${Esc(t)}</button>`).join("");
-  bar.querySelectorAll(".libtagchip").forEach(el=>{el.onclick=()=>{LIB_TAG=el.dataset.tag||"";SaveLibUiState();RenderLibTagBar();AnimateRenderLibrary()}});
-}
 function SetLibFilter(sid){
   if(!sid)return;
   LIB_FILTER=sid;
@@ -2052,7 +2329,7 @@ function SetLibFilter(sid){
 }
 function AnimateRenderLibrary(){
   RenderLibFilters();
-  RenderLibTagBar();
+  RenderLibGroupBar();
   RenderLibStageBar();
   const grid=document.getElementById("libgrid");
   if(!grid){RenderLibGrid();return}
@@ -2069,6 +2346,18 @@ function AnimateRenderLibrary(){
     }
   },180);
 }
+function LibGroupBadges(n){
+  let h="";
+  (n.lib_rq||[]).forEach(r=>{
+    h+=`<span class="badge soft group-rq" title="RQ 分组">${Esc((NODEMAP[r]||{}).title||r)}</span>`;
+  });
+  if(n.lib_chapter){
+    const sch=n.lib_chapter.length>22?n.lib_chapter.slice(0,20)+"…":n.lib_chapter;
+    h+=`<span class="badge soft group-chapter" title="${Attr(n.lib_chapter)}">${Esc(sch)}</span>`;
+  }
+  (n.lib_tags||[]).forEach(t=>{h+=`<span class="badge soft">${Esc(t)}</span>`});
+  return h;
+}
 function PickLibTopic(nid){PickTopic(nid)}
 function RenderLibGrid(){
   ResetLibGridAnim();
@@ -2084,20 +2373,18 @@ function RenderLibGrid(){
     return;
   }
   if(!sources.length){
-    const shint=(LIB_SEARCH||LIB_TAG)?"试试清除搜索词或标签筛选":"试试切换分类";
+    const shint=(LIB_SEARCH||LIB_GROUP_ID)?"试试清除搜索词或分组筛选":"试试切换分类";
     grid.innerHTML=`<div class="libempty-wrap"><div class="libempty"><div class="hint-title">🔍 无匹配文献</div>${Esc(shint)}</div></div>`;
     return;
   }
   grid.innerHTML=sources.map(n=>{
     const authors=(n.authors||[]).filter(Boolean).join(", ");
     const sub=[authors,n.year,n.venue].filter(Boolean).join(" · ");
-    const valltags=[...new Set([...(n.tags||[]),...(n.lib_tags||[])])];
-    const tags=valltags.map(t=>`<span class="badge soft">${Esc(t)}</span>`).join("");
+    const tags=LibGroupBadges(n);
     const pdfbtn=IsPdf(n.rawfile)?`<button class="pdfbtn" onclick="event.stopPropagation();OpenPdf('${Attr(n.rawfile)}')">${DESKTOPMODE?"📄 浏览器打开":"📄 打开 PDF"}</button>`:"";
     const surl=SafeUrl(n.url);
     const urlbtn=surl?`<button class="urlbtn" onclick="event.stopPropagation();OpenPaperUrl('${Attr(surl)}')">🔗 在线阅读</button>`:"";
     const del=(SERVERMODE)?`<span class="del" title="删除" onclick="event.stopPropagation();DeleteSource('${Attr(n.id)}','${Attr(n.rawfile||"")}')">🗑</span>`:"";
-    const rq=(n.research&&n.research.rq_links&&n.research.rq_links.length)?`<span class="badge soft" title="已关联研究问题">RQ</span>`:"";
     let actionbtn="";
     if(LibIsDeep(n)){
       actionbtn=`<button class="urlbtn" onclick="event.stopPropagation();OpenReport('${Attr(n.id)}-report')">📋 研究报告</button>`;
@@ -2120,14 +2407,16 @@ function RenderLibGrid(){
     }
     const sstage=LibStageClass(n);
     const spending=LibIsPending(n)?" pending":"";
-    return `<div class="card stone3d ${sstage}${spending}" onclick="OpenDrawer('${Attr(n.id)}')">
+    const sdrag=SERVERMODE?` draggable="true" data-sid="${Attr(n.id)}"`:"";
+    return `<div class="card stone3d ${sstage}${spending}"${sdrag} onclick="OpenDrawer('${Attr(n.id)}')">
       <span class="stagepill">${Esc(LibStageLabel(n))}</span>
-      ${del}<div class="ttl">${Esc(n.title)} ${rq}</div>
+      ${del}<div class="ttl">${Esc(n.title)}</div>
       <div class="sub">${Esc(sub)||"—"}</div>
       <div class="sum">${Esc(n.summary||"")}</div>
       <div class="tags">${tags}</div><div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px">${urlbtn}${pdfbtn}${actionbtn}</div></div>`;
   }).join("");
   InitUi3d();
+  InitLibCardDrag();
 }
 function RenderLibrary(){
   RenderLibToolbar();
@@ -2250,12 +2539,40 @@ function RenderDrawer(id){
     if(r.next_steps)h+=`<div class="field research"><div class="k">下一步</div><div class="research-txt">${Esc(r.next_steps)}</div></div>`;
     if(r.limits)h+=`<div class="field research"><div class="k">局限与存疑</div><div class="research-txt">${Esc(r.limits)}</div></div>`;
   }
-  if((n.tags||[]).length||(n.lib_tags||[]).length){
-    const vshow=[...new Set([...(n.tags||[]),...(n.lib_tags||[])])];
-    h+=`<div class="field"><div class="k">标签</div>${vshow.map(t=>`<span class="badge soft">${Esc(t)}</span>`).join("")}</div>`;
+  if((n.tags||[]).length){
+    h+=`<div class="field"><div class="k">Wiki 标签（LLM 生成，只读）</div>${(n.tags||[]).map(t=>`<span class="badge soft suggest">${Esc(t)}</span>`).join("")}</div>`;
   }
   if(n.type==="source"&&SERVERMODE){
-    h+=`<div class="field"><div class="k">论文库标签</div><div class="urledit"><input id="lib_tags_input" value="${Esc((n.lib_tags||[]).join(", "))}" placeholder="自定义标签，逗号分隔"><button class="btn ghost" onclick="SaveLibTags('${Attr(n.id)}')">保存</button></div><div style="font-size:11px;color:var(--muted);margin-top:6px">用于论文库分类筛选，与 wiki 标签独立</div></div>`;
+    const og=LibGroupsData();
+    h+=`<div class="field"><div class="k">论文库分组</div>`;
+    if((og.rq||[]).length){
+      h+=`<div style="margin-bottom:10px"><div style="font-size:11px;color:var(--muted);margin-bottom:6px">研究问题</div>`;
+      h+=(og.rq||[]).map(r=>{
+        const bcheck=(n.lib_rq||[]).includes(r.id);
+        return `<label style="display:flex;align-items:flex-start;gap:8px;font-size:12px;margin:5px 0;cursor:pointer"><input type="checkbox" ${bcheck?"checked":""} onchange="ToggleLibRq('${Attr(n.id)}','${Attr(r.id)}',this.checked)"><span>${Esc(r.title||r.id)}</span></label>`;
+      }).join("");
+      h+=`</div>`;
+    }
+    if((og.chapters||[]).length){
+      h+=`<div style="margin-bottom:10px"><div style="font-size:11px;color:var(--muted);margin-bottom:6px">论文章节</div>`;
+      h+=`<select id="lib_chapter_sel" style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--panel2);color:var(--text);font-size:13px">`;
+      h+=`<option value="">（未指定）</option>`;
+      h+=(og.chapters||[]).map(c=>`<option value="${Attr(c.id)}"${n.lib_chapter===c.id?" selected":""}>${Esc(c.title)}</option>`).join("");
+      h+=`</select><button class="btn ghost" style="margin-top:8px" onclick="SaveLibChapter('${Attr(n.id)}')">保存章节</button></div>`;
+    }
+    h+=`<div><div style="font-size:11px;color:var(--muted);margin-bottom:6px">自定义文件夹</div>`;
+    h+=`<div class="urledit"><input id="lib_tags_input" value="${Esc((n.lib_tags||[]).join(", "))}" placeholder="如：待写综述、方法参考"><button class="btn ghost" onclick="SaveLibTags('${Attr(n.id)}')">保存</button></div></div>`;
+    h+=`</div>`;
+    const vsugtags=n.suggested_tags||(n.tags||[]);
+    const vsugrq=n.suggested_rq||[];
+    if(vsugrq.length||vsugtags.length){
+      h+=`<div class="field"><div class="k">LLM 建议（点击采纳）</div><div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px">`;
+      vsugrq.forEach(r=>{h+=`<span class="badge soft suggest" onclick="AdoptSuggestRq('${Attr(n.id)}','${Attr(r)}')">+ RQ ${Esc((NODEMAP[r]||{}).title||r)}</span>`});
+      vsugtags.forEach(t=>{if((n.lib_tags||[]).includes(t))return;h+=`<span class="badge soft suggest" onclick="AdoptSuggestFolder('${Attr(n.id)}','${Attr(t)}')">+ ${Esc(t)}</span>`});
+      h+=`</div></div>`;
+    }
+  }else if((n.lib_tags||[]).length||(n.lib_rq||[]).length||n.lib_chapter){
+    h+=`<div class="field"><div class="k">论文库分组</div>${LibGroupBadges(n)}</div>`;
   }
   if(neigh.length)h+=`<div class="field links"><div class="k">关联页面 (${neigh.length})</div>${neigh.map(x=>`<a onclick="OpenDrawer('${Attr(x)}')">${Esc((NODEMAP[x]||{}).title||x)}</a>`).join("")}</div>`;
   h+=`<div class="field"><button class="btn ghost" onclick="FocusGraphOn('${Attr(n.id)}')">🕸 在图谱中展开邻域</button></div>`;
@@ -2399,10 +2716,48 @@ async function SaveLibTags(sid){
     const n=NODEMAP[sid];
     if(n)n.lib_tags=vclean;
     DATA.nodes.filter(x=>x.id===sid).forEach(x=>{x.lib_tags=vclean});
-    AnimateRenderLibrary();
+    await Refresh(true);
     OpenDrawer(sid);
-    Toast("论文库标签已保存");
+    Toast("文件夹标签已保存");
   }catch(e){Toast("保存失败："+e.message)}
+}
+async function SaveLibChapter(sid){
+  if(NeedServer())return;
+  const osel=document.getElementById("lib_chapter_sel");
+  const sch=osel?osel.value.trim():"";
+  try{
+    if(sch){
+      await Api("/api/library/assign",{id:sid,type:"chapter",group:sch,action:"add"});
+    }else{
+      await Api("/api/library/assign",{id:sid,type:"chapter",group:"_",action:"remove"});
+    }
+    await Refresh(true);
+    OpenDrawer(sid);
+    Toast(sch?"章节已保存":"章节已清除");
+  }catch(e){Toast("保存失败："+e.message)}
+}
+async function ToggleLibRq(sid,srqid,bchecked){
+  if(NeedServer())return;
+  try{
+    await Api("/api/library/assign",{id:sid,type:"rq",group:srqid,action:bchecked?"add":"remove"});
+    await Refresh(true);
+    OpenDrawer(sid);
+  }catch(e){Toast("RQ 分组失败："+e.message)}
+}
+async function AdoptSuggestRq(sid,srqid){
+  await AssignSourceGroup(sid,"rq",srqid,"add");
+  OpenDrawer(sid);
+}
+async function AdoptSuggestFolder(sid,stag){
+  const n=NODEMAP[sid];
+  const vtags=[...(n&&n.lib_tags||[])];
+  if(!vtags.includes(stag))vtags.push(stag);
+  try{
+    await Api("/api/source/tags",{id:sid,tags:vtags});
+    await Refresh(true);
+    OpenDrawer(sid);
+    Toast("已采纳建议标签");
+  }catch(e){Toast("采纳失败："+e.message)}
 }
 
 /* ---------- PDF 预览 ---------- */

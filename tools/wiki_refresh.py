@@ -80,6 +80,7 @@ def BuildDataFromScan(vnodes, vedges):
         vstale = aver.DetectStalePipelines(core.wikidir, vnodes)
     except Exception:
         aver = None
+    olibrary_groups = core.BuildLibraryGroups(vnodes)
     return {
         "nodes": vnodes,
         "edges": vedges,
@@ -89,6 +90,7 @@ def BuildDataFromScan(vnodes, vedges):
         "graphlayers": core.graphlayers,
         "lint": olint,
         "chapters": oprogress,
+        "library_groups": olibrary_groups,
         "stale_analysis": vstale,
         "stale_pipelines": vstale,
         "pipeline_versions": aver.GetAllVersions() if aver else {},

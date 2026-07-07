@@ -68,5 +68,24 @@ class TestWikiLibrary(unittest.TestCase):
         self.assertEqual(n["sort_author"], "lee")
 
 
+    def testSetLibTagsPreservesRq(self):
+        core.SaveSourceMetaEntry("a-2020", {"lib_rq": ["rq-test"], "lib_chapter": "第1章"})
+        vtags = core.SetLibTags("a-2020", ["文件夹A"])
+        self.assertEqual(vtags, ["文件夹A"])
+        oentry = core.GetSourceMetaEntry("a-2020")
+        self.assertEqual(oentry.get("lib_rq"), ["rq-test"])
+        self.assertEqual(oentry.get("lib_chapter"), "第1章")
+
+    def testBuildLibraryGroups(self):
+        vnodes = [
+            {"id": "a-2020", "type": "source", "lib_tags": ["综述"], "lib_rq": ["rq-a"], "lib_chapter": "绪论"},
+            {"id": "b-2021", "type": "source", "lib_tags": [], "lib_rq": [], "lib_chapter": ""},
+        ]
+        core.SaveSourceMetaEntry("a-2020", {"lib_tags": ["综述"], "lib_rq": ["rq-a"], "lib_chapter": "绪论"})
+        og = core.BuildLibraryGroups(vnodes)
+        self.assertEqual(og["folders"][0]["count"], 1)
+        self.assertTrue(any(x["id"] == "rq-a" for x in og["rq"]))
+
+
 if __name__ == "__main__":
     unittest.main()

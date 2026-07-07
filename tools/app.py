@@ -796,6 +796,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/sources/citations":
             wops.Init(core.wikidir, core.rawsourcesdir, core.rootdir)
             return self._send(200, {"citations": bib_io.ListCitations(refresh.GetWikiData())})
+        if path == "/api/library/groups":
+            return self._send(200, core.BuildLibraryGroups(refresh.GetWikiData()["nodes"]))
         if path == "/api/topics":
             return self._send(200, {
                 "topics": core.TopicsWithCounts(),
@@ -980,6 +982,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._sourceurl()
             if self.path == "/api/source/tags":
                 return self._sourcetags()
+            if self.path == "/api/library/assign":
+                return self._libraryassign()
             if self.path == "/api/ingest/cancel":
                 return self._ingestcancel()
             if self.path == "/api/query":
@@ -1216,6 +1220,22 @@ class Handler(BaseHTTPRequestHandler):
         core.AppendLog("[tags] 更新论文库标签 %s → %s" % (sid, ", ".join(vclean) or "（已清除）"))
         refresh.InvalidateWikiCache(core.wikidir)
         return self._send(200, {"id": sid, "tags": vclean})
+
+    def _libraryassign(self):
+        body = self._body()
+        sid = (body.get("id") or body.get("key") or body.get("source_id") or "").strip()
+        stype = (body.get("type") or body.get("group_type") or "").strip().lower()
+        sgroup = (body.get("group") or body.get("group_id") or "").strip()
+        saction = (body.get("action") or "add").strip().lower()
+        if not sid:
+            return self._send(400, {"error": "缺少文献 id"})
+        try:
+            oresult = core.AssignSourceGroup(sid, stype, sgroup, saction=saction)
+        except ValueError as e:
+            return self._send(400, {"error": str(e)})
+        refresh.RefreshWiki(bwrite_files=True, bforce=True)
+        core.AppendLog("[group] %s %s %s → %s" % (saction, stype, sid, sgroup or "（清除）"))
+        return self._send(200, oresult)
 
     def _delete(self):
         body = self._body()
