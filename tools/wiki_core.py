@@ -621,6 +621,37 @@ def DedupeSourceNodes(vnodes):
     return vothers + vmerged
 
 
+_LIB_STAGE_RANK = {"pending": 1, "await_deep": 2, "standard": 3, "deep": 4}
+
+
+def SortAuthorKey(onode):
+    """首作者或标题首字，供论文库排序。"""
+    vauthors = onode.get("authors") or []
+    if vauthors:
+        sfirst = str(vauthors[0]).strip()
+        if sfirst:
+            return re.split(r"[\s,，、]+", sfirst)[0].lower()
+    return (onode.get("title") or onode.get("id") or "").lower()
+
+
+def SourceTimestamps(onode):
+    """返回 (added_at, ingested_at) Unix 秒级时间戳。"""
+    nadded = 0
+    ningested = 0
+    skey = onode.get("id", "")
+    spath = FindSourcePagePath(skey)
+    if onode.get("rawfile"):
+        rpath = os.path.join(rawsourcesdir, onode["rawfile"])
+        if os.path.isfile(rpath):
+            nadded = max(nadded, int(os.path.getmtime(rpath)))
+    if spath and os.path.isfile(spath):
+        nmt = int(os.path.getmtime(spath))
+        nadded = max(nadded, nmt)
+        if onode.get("ingested"):
+            ningested = nmt
+    return nadded, ningested
+
+
 def EnrichSourceLibraryMeta(vnodes):
     """为 source 节点补充论文库分类阶段与自定义标签。"""
     for n in vnodes:
@@ -649,6 +680,11 @@ def EnrichSourceLibraryMeta(vnodes):
         else:
             n["lib_stage"] = "pending"
         n["lib_tags"] = GetLibTags(n.get("id", ""))
+        nadded, ningested = SourceTimestamps(n)
+        n["added_at"] = nadded
+        n["ingested_at"] = ningested
+        n["lib_rank"] = _LIB_STAGE_RANK.get(n.get("lib_stage"), 1)
+        n["sort_author"] = SortAuthorKey(n)
 
 
 def SetDataRoot(nroot):
@@ -1273,6 +1309,24 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   .libsearch{flex:1;min-width:180px;max-width:360px;padding:8px 14px;border-radius:999px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:13px;outline:none;transition:border-color .2s,box-shadow .2s}
   .libsearch:focus{border-color:var(--focus-border);box-shadow:0 0 0 3px var(--focus-shadow)}
   .libsort{padding:6px 12px;border-radius:999px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:12px;cursor:pointer}
+  .libviewtog{display:flex;gap:2px;border:1px solid var(--border);border-radius:999px;padding:3px;background:var(--panel2)}
+  .libviewbtn{padding:4px 10px;border:none;border-radius:999px;background:transparent;cursor:pointer;color:var(--muted);font-size:13px;line-height:1}
+  .libviewbtn.active{background:var(--panel);color:var(--accent);box-shadow:var(--shadow-sm)}
+  .libstagebar{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 16px}
+  .libstageitem{flex:1;min-width:108px;padding:10px 12px;border-radius:14px;border:1px solid var(--border);background:var(--panel2);cursor:pointer;text-align:left;transition:border-color .18s,box-shadow .18s}
+  .libstageitem:hover,.libstageitem.active{border-color:var(--accent);box-shadow:var(--shadow-sm)}
+  .libstageitem .num{font-family:var(--font-display);font-size:20px;font-weight:var(--fw-display);color:var(--accent)}
+  .libstageitem .lbl{font-size:11px;color:var(--muted);margin-top:2px}
+  .libstageitem .bar{height:4px;border-radius:4px;background:var(--panel);margin-top:8px;overflow:hidden}
+  .libstageitem .bar i{display:block;height:100%;background:var(--accent);border-radius:4px;transition:width .25s ease}
+  .grid.list-mode{grid-template-columns:1fr;gap:8px}
+  .grid.list-mode .card{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;padding:12px 16px}
+  .grid.list-mode .card .stagepill{position:static;flex-shrink:0;margin:0}
+  .grid.list-mode .card .ttl{flex:1 1 200px;padding:0;margin:0;font-size:14px}
+  .grid.list-mode .card .sub{flex:1 1 160px;margin:0;font-size:11px}
+  .grid.list-mode .card .sum{display:none}
+  .grid.list-mode .card .tags{flex:1 1 100%;margin:0}
+  .grid.list-mode .card>div[style]{flex:1 1 100%;margin-top:0!important}
   .libtagbar{display:flex;gap:6px;flex-wrap:wrap;margin:-4px 0 12px}
   .libtagchip{padding:4px 12px;border-radius:999px;border:1px solid var(--border);background:var(--panel2);color:var(--muted);font-size:11px;cursor:pointer;transition:.18s}
   .libtagchip:hover,.libtagchip.active{border-color:var(--accent);color:var(--accent);background:var(--ghost-hover)}
@@ -1385,7 +1439,7 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
 </header>
 <button type="button" class="theme-fab" id="theme_fab" onclick="OpenThemePicker()" title="切换界面主题">🎨</button>
 <main>
-  <section id="libview" class="view active"><div class="libtoolbar"><div class="libfilt" id="libfilt"></div><select id="libsort" class="libsort" title="排序方式"><option value="stage_desc">研究深度 ↓</option><option value="stage_asc">研究深度 ↑</option><option value="year_desc">年份 ↓</option><option value="year_asc">年份 ↑</option><option value="title">标题 A-Z</option><option value="added">添加顺序</option></select><input type="search" class="libsearch" id="libsearch" placeholder="搜索标题、作者、标签…" autocomplete="off"></div><div class="libtagbar" id="libtagbar"></div><div class="stats" id="statsbar"></div><div class="dropzone" id="dropzone">🌷 拖放 PDF / Word / Markdown 到此处，或点击「添加文献」开始整理</div><div class="grid" id="libgrid"></div></section>
+  <section id="libview" class="view active"><div class="libtoolbar"><div class="libfilt" id="libfilt"></div><div class="libviewtog" id="libviewtog"><button type="button" class="libviewbtn active" data-view="card" title="卡片视图">▦</button><button type="button" class="libviewbtn" data-view="list" title="列表视图">☰</button></div><select id="libsort" class="libsort" title="排序方式"><option value="ingested_desc">最近纳入 ↓</option><option value="ingested_asc">最近纳入 ↑</option><option value="stage_desc">研究深度 ↓</option><option value="stage_asc">研究深度 ↑</option><option value="added_desc">最近添加 ↓</option><option value="added_asc">最近添加 ↑</option><option value="year_desc">年份 ↓</option><option value="year_asc">年份 ↑</option><option value="pagerank_desc">关联度 ↓</option><option value="author">作者 A-Z</option><option value="title">标题 A-Z</option><option value="added">扫描顺序</option></select><input type="search" class="libsearch" id="libsearch" placeholder="搜索标题、作者、标签…" autocomplete="off"></div><div class="libtagbar" id="libtagbar"></div><div class="libstagebar" id="libstagebar"></div><div class="dropzone" id="dropzone">🌷 拖放 PDF / Word / Markdown 到此处，或点击「添加文献」开始整理</div><div class="grid" id="libgrid"></div></section>
   <section id="graphview" class="view"><canvas id="graphcanvas"></canvas><div class="legend" id="legend"></div><div class="graphegobadge" id="graphegobadge"><span id="graphego_lbl"></span><span class="x" onclick="ClearGraphFocus()" title="返回全局">×</span></div><div class="graphfilter"><div class="graphrow"><label>搜索</label><input id="graph_search" type="search" placeholder="标题 / ID" oninput="OnGraphSearchInput()" onkeydown="if(event.key==='Enter')FocusGraphSearch()"></div><div class="graphrow"><label>节点</label><select id="graph_filter" onchange="ApplyGraphFilter()"><option value="">全部类型</option></select></div><div class="graphrow"><label>关系</label><select id="graph_edge_filter" onchange="ApplyGraphFilter()"><option value="">全部关系</option></select></div><button type="button" onclick="FocusGraphSearch()">⌖ 定位节点</button><button type="button" onclick="ExportGraphPng()">📷 导出 PNG</button><button type="button" onclick="ExportGraphJson()">⬇ 导出 JSON</button></div><div id="graphtooltip"></div><div class="hint">滚轮缩放 · 拖拽平移 · 拖动节点 · 点击查看详情 · 悬停边看关系</div></section>
   <section id="listview" class="view"></section>
   <section id="progressview" class="view"></section>
@@ -1750,7 +1804,30 @@ function RenderStats(){
   let h=`<div class="statcard"><div class="num">${DATA.nodes.length}</div><div class="lbl">页面总数</div></div>`;
   h+=`<div class="statcard"><div class="num">${DATA.edges.length}</div><div class="lbl">关联数</div></div>`;
   order.forEach(t=>{if(DATA.stats[t])h+=`<div class="statcard"><div class="num">${DATA.stats[t]}</div><div class="lbl">${TypeLabel(t)}</div></div>`});
-  document.getElementById("statsbar").innerHTML=h;
+  const bar=document.getElementById("statsbar");
+  if(bar)bar.innerHTML=h;
+}
+function LoadLibUiState(){
+  try{
+    if(localStorage.getItem("lib_filter"))LIB_FILTER=localStorage.getItem("lib_filter");
+    if(localStorage.getItem("lib_tag")!=null)LIB_TAG=localStorage.getItem("lib_tag")||"";
+    if(localStorage.getItem("lib_search")!=null)LIB_SEARCH=localStorage.getItem("lib_search")||"";
+    if(localStorage.getItem("lib_sort"))LIB_SORT=localStorage.getItem("lib_sort");
+    if(localStorage.getItem("lib_view"))LIB_VIEW=localStorage.getItem("lib_view");
+  }catch(e){}
+}
+function SaveLibUiState(){
+  try{
+    localStorage.setItem("lib_filter",LIB_FILTER);
+    localStorage.setItem("lib_tag",LIB_TAG);
+    localStorage.setItem("lib_search",LIB_SEARCH);
+    localStorage.setItem("lib_sort",LIB_SORT);
+    localStorage.setItem("lib_view",LIB_VIEW);
+  }catch(e){}
+}
+function SyncLibSortFromSelect(){
+  const osel=document.getElementById("libsort");
+  if(osel&&osel.value)LIB_SORT=osel.value;
 }
 function LibTopicCount(t){
   if(t.id===CURRENT_TOPIC)return (DATA.nodes||[]).filter(n=>n.type==="source").length;
@@ -1759,8 +1836,10 @@ function LibTopicCount(t){
 let LIB_FILTER="all";
 let LIB_TAG="";
 let LIB_SEARCH="";
-let LIB_SORT=localStorage.getItem("lib_sort")||"stage_desc";
+let LIB_SORT="ingested_desc";
+let LIB_VIEW="card";
 let _libAnimTimer=null;
+LoadLibUiState();
 const LIB_FILTERS=[
   {id:"all",label:"全部"},
   {id:"pending",label:"待纳入"},
@@ -1814,6 +1893,7 @@ function SyncLibSearchFromInput(){
 }
 function ClearLibUiFilters(){
   LIB_SEARCH="";LIB_TAG="";
+  SaveLibUiState();
   const osearch=document.getElementById("libsearch");
   if(osearch)osearch.value="";
 }
@@ -1854,35 +1934,91 @@ function LibStageRank(n){
 }
 function LibSortKey(n){
   const ny=parseInt(String(n.year||"").replace(/\D/g,""),10)||0;
-  return {rank:LibStageRank(n),year:ny,title:(n.title||n.id||"").toLowerCase(),id:n.id||""};
+  return {
+    rank:n.lib_rank||LibStageRank(n),
+    year:ny,
+    title:(n.title||n.id||"").toLowerCase(),
+    id:(n.id||"").toLowerCase(),
+    added:n.added_at||0,
+    ingested:n.ingested_at||0,
+    pagerank:Number(n.pagerank)||0,
+    author:(n.sort_author||((n.authors||[])[0]||"")).toLowerCase(),
+  };
+}
+function CmpNum(na,nb){return na<nb?-1:na>nb?1:0}
+function CompareLibSort(a,b){
+  const ka=LibSortKey(a),kb=LibSortKey(b);
+  switch(LIB_SORT){
+    case "stage_desc":return CmpNum(kb.rank,ka.rank)||CmpNum(kb.ingested,ka.ingested)||CmpNum(kb.added,ka.added)||ka.title.localeCompare(kb.title,"zh");
+    case "stage_asc":return CmpNum(ka.rank,kb.rank)||CmpNum(ka.ingested,kb.ingested)||CmpNum(ka.added,kb.added)||ka.title.localeCompare(kb.title,"zh");
+    case "year_desc":return CmpNum(kb.year,ka.year)||CmpNum(kb.rank,ka.rank)||ka.title.localeCompare(kb.title,"zh");
+    case "year_asc":return CmpNum(ka.year,kb.year)||CmpNum(ka.rank,kb.rank)||ka.title.localeCompare(kb.title,"zh");
+    case "ingested_desc":return CmpNum(kb.ingested,ka.ingested)||CmpNum(kb.added,ka.added)||ka.title.localeCompare(kb.title,"zh");
+    case "ingested_asc":return CmpNum(ka.ingested,kb.ingested)||CmpNum(ka.added,kb.added)||ka.title.localeCompare(kb.title,"zh");
+    case "added_desc":return CmpNum(kb.added,ka.added)||CmpNum(kb.rank,ka.rank)||ka.title.localeCompare(kb.title,"zh");
+    case "added_asc":return CmpNum(ka.added,kb.added)||CmpNum(ka.rank,kb.rank)||ka.title.localeCompare(kb.title,"zh");
+    case "pagerank_desc":return CmpNum(kb.pagerank,ka.pagerank)||CmpNum(kb.rank,ka.rank)||ka.title.localeCompare(kb.title,"zh");
+    case "author":return ka.author.localeCompare(kb.author,"zh")||ka.title.localeCompare(kb.title,"zh");
+    case "title":return ka.title.localeCompare(kb.title,"zh");
+    default:return CmpNum(kb.rank,ka.rank)||CmpNum(kb.added,ka.added)||ka.title.localeCompare(kb.title,"zh");
+  }
 }
 function SortLibSources(vsources){
+  SyncLibSortFromSelect();
   const vout=[...vsources];
   if(LIB_SORT==="added")return vout;
-  vout.sort((a,b)=>{
-    const ka=LibSortKey(a),kb=LibSortKey(b);
-    if(LIB_SORT==="stage_desc")return kb.rank-ka.rank||kb.year-ka.year||ka.title.localeCompare(kb.title,"zh");
-    if(LIB_SORT==="stage_asc")return ka.rank-kb.rank||ka.year-kb.year||ka.title.localeCompare(kb.title,"zh");
-    if(LIB_SORT==="year_desc")return kb.year-ka.year||kb.rank-ka.rank||ka.title.localeCompare(kb.title,"zh");
-    if(LIB_SORT==="year_asc")return ka.year-kb.year||ka.rank-kb.rank||ka.title.localeCompare(kb.title,"zh");
-    if(LIB_SORT==="title")return ka.title.localeCompare(kb.title,"zh");
-    return 0;
-  });
+  vout.sort((a,b)=>CompareLibSort(a,b));
   return vout;
 }
 function InitLibSort(){
   const osel=document.getElementById("libsort");
   if(!osel)return;
-  osel.value=LIB_SORT;
+  if([...osel.options].some(o=>o.value===LIB_SORT))osel.value=LIB_SORT;
+  else{LIB_SORT=osel.value||"ingested_desc";SaveLibUiState()}
   if(!osel._bound){
     osel._bound=true;
-    osel.onchange=()=>{LIB_SORT=osel.value;localStorage.setItem("lib_sort",LIB_SORT);AnimateRenderLibrary()};
+    const fApplySort=()=>{SyncLibSortFromSelect();SaveLibUiState();RenderLibGrid()};
+    osel.addEventListener("change",fApplySort);
+    osel.addEventListener("input",fApplySort);
   }
+}
+function InitLibViewToggle(){
+  const bar=document.getElementById("libviewtog");if(!bar)return;
+  bar.querySelectorAll(".libviewbtn").forEach(el=>{
+    el.classList.toggle("active",el.dataset.view===LIB_VIEW);
+    if(el._bound)return;
+    el._bound=true;
+    el.onclick=()=>{
+      LIB_VIEW=el.dataset.view||"card";
+      SaveLibUiState();
+      bar.querySelectorAll(".libviewbtn").forEach(x=>x.classList.toggle("active",x.dataset.view===LIB_VIEW));
+      RenderLibGrid();
+    };
+  });
+}
+function RenderLibStageBar(){
+  const bar=document.getElementById("libstagebar");if(!bar)return;
+  const oc=LibFilterCounts();
+  const ntotal=oc.all||0;
+  const vitems=[
+    {id:"all",label:"全部",cnt:oc.all,color:"var(--accent)"},
+    {id:"pending",label:"待纳入",cnt:oc.pending,color:"var(--muted)"},
+    {id:"await_deep",label:"待进阶",cnt:oc.await_deep,color:"var(--gold)"},
+    {id:"standard",label:"已标准",cnt:oc.standard,color:"var(--sage)"},
+    {id:"deep",label:"已深度",cnt:oc.deep,color:"var(--accent)"},
+  ];
+  bar.innerHTML=vitems.map(it=>{
+    const npct=ntotal?Math.round(it.cnt*100/ntotal):0;
+    return `<button type="button" class="libstageitem${it.id===LIB_FILTER?" active":""}" data-id="${Attr(it.id)}"><div class="num">${it.cnt}</div><div class="lbl">${Esc(it.label)}</div><div class="bar"><i style="width:${npct}%;background:${it.color}"></i></div></button>`;
+  }).join("");
+  bar.querySelectorAll(".libstageitem").forEach(el=>{el.onclick=()=>SetLibFilter(el.dataset.id)});
 }
 function RenderLibToolbar(){
   RenderLibFilters();
   RenderLibTagBar();
+  RenderLibStageBar();
   InitLibSort();
+  InitLibViewToggle();
 }
 function RenderLibFilters(){
   const bar=document.getElementById("libfilt");if(!bar)return;
@@ -1894,27 +2030,30 @@ function RenderLibFilters(){
   if(osearch&&!osearch._bound){
     osearch._bound=true;
     let ot=null;
-    osearch.oninput=()=>{clearTimeout(ot);ot=setTimeout(()=>{LIB_SEARCH=osearch.value;AnimateRenderLibrary()},220)};
+    osearch.oninput=()=>{clearTimeout(ot);ot=setTimeout(()=>{LIB_SEARCH=osearch.value;SaveLibUiState();AnimateRenderLibrary()},220)};
   }
 }
 function RenderLibTagBar(){
   const bar=document.getElementById("libtagbar");if(!bar)return;
   const vtags=LibAllTags();
-  if(!vtags.length){bar.style.display="none";bar.innerHTML="";if(LIB_TAG)LIB_TAG="";return}
+  if(!vtags.length){bar.style.display="none";bar.innerHTML="";if(LIB_TAG){LIB_TAG="";SaveLibUiState()}return}
   bar.style.display="";
   bar.innerHTML=`<button type="button" class="libtagchip${!LIB_TAG?" active":""}" data-tag="">全部标签</button>`+
     vtags.map(t=>`<button type="button" class="libtagchip${LIB_TAG===t?" active":""}" data-tag="${Attr(t)}">${Esc(t)}</button>`).join("");
-  bar.querySelectorAll(".libtagchip").forEach(el=>{el.onclick=()=>{LIB_TAG=el.dataset.tag||"";RenderLibTagBar();AnimateRenderLibrary()}});
+  bar.querySelectorAll(".libtagchip").forEach(el=>{el.onclick=()=>{LIB_TAG=el.dataset.tag||"";SaveLibUiState();RenderLibTagBar();AnimateRenderLibrary()}});
 }
 function SetLibFilter(sid){
   if(!sid)return;
   LIB_FILTER=sid;
+  SaveLibUiState();
   RenderLibFilters();
+  RenderLibStageBar();
   AnimateRenderLibrary();
 }
 function AnimateRenderLibrary(){
   RenderLibFilters();
   RenderLibTagBar();
+  RenderLibStageBar();
   const grid=document.getElementById("libgrid");
   if(!grid){RenderLibGrid();return}
   clearTimeout(_libAnimTimer);
@@ -1934,10 +2073,12 @@ function PickLibTopic(nid){PickTopic(nid)}
 function RenderLibGrid(){
   ResetLibGridAnim();
   SyncLibSearchFromInput();
+  SyncLibSortFromSelect();
   const vs=LibSources();
   const sources=SortLibSources(vs.filter(LibFilterMatch));
   const grid=document.getElementById("libgrid");
   if(!grid)return;
+  grid.classList.toggle("list-mode",LIB_VIEW==="list");
   if(!vs.length){
     grid.innerHTML='<div class="libempty-wrap"><div class="libempty"><div class="hint-title">📚 论文库为空</div>点击左上角「＋ 添加文献」上传 PDF、Word 或 Markdown<br>也可拖放到上方区域开始整理</div></div>';
     return;
@@ -2057,7 +2198,7 @@ function RenderProgress(){
 }
 function RenderAll(){
   TC=DATA.typeconfig;ReindexNodes();
-  RenderStats();RenderLibrary();RenderList();RenderProgress();
+  RenderLibrary();RenderList();RenderProgress();
   document.getElementById("metainfo").textContent=(SERVERMODE?"本地服务 · ":"")+"更新于 "+DATA.generated;
   UpdateLintBadge(DATA.lint);
   UpdateCurrentTopicDisplay();
@@ -3254,7 +3395,7 @@ async function FinishProgress(p){
   HideOverlay();
   const blast=p&&p.briefs&&p.briefs.length?p.briefs[p.briefs.length-1]:null;
   ClearLibUiFilters();
-  if(p&&p.ingested&&p.ingested.length&&LIB_FILTER==="pending")LIB_FILTER="all";
+  if(p&&p.ingested&&p.ingested.length&&LIB_FILTER==="pending"){LIB_FILTER="all";SaveLibUiState()}
   await Refresh(true);
   if(p){
     let msg=`完成：成功纳入 ${p.ingested?p.ingested.length:0} 篇`;
