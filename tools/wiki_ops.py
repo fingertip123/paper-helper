@@ -65,7 +65,8 @@ def RunLintQuick(vnodes, vedges):
         1 for n in vnodes
         if n["type"] not in ("purpose", "unknown") and olinked.get(n["id"], 0) == 0
     )
-    return {"orphans": norphans, "dead_links": 0, "knowledge_gaps": 0}
+    nstale = sum(1 for n in vnodes if n.get("type") == "source" and n.get("pipeline_stale"))
+    return {"orphans": norphans, "dead_links": 0, "knowledge_gaps": 0, "stale_pipelines": nstale}
 
 
 def RunLintWithOdata(odata):
@@ -111,8 +112,11 @@ def RunLintWithOdata(odata):
         if srqid and srqid not in onodeids:
             vgaps.append({"kind": "rq", "field": skey, "text": sval, "missing_page": srqid})
 
+    vprunable = [x for x in vorphans if x.get("type") in ("comparison", "concept")]
+
     return {
         "orphans": vorphans,
+        "prunable_orphans": vprunable,
         "dead_links": vdead,
         "frontmatter_issues": vmissingfm,
         "knowledge_gaps": vgaps,

@@ -425,6 +425,53 @@ def RepairOrphanConcepts(odata):
     return vfixed
 
 
+def PruneOrphanPages(odata):
+    """删除仍无链接的孤立 concept / comparison 页。"""
+    core = _Core()
+    vnodes = odata.get("nodes") or []
+    vedges = odata.get("edges") or []
+    olinked = {n["id"]: 0 for n in vnodes}
+    for e in vedges:
+        olinked[e["source"]] = olinked.get(e["source"], 0) + 1
+        olinked[e["target"]] = olinked.get(e["target"], 0) + 1
+    import wiki_ops as wops
+    wops.Init(core.wikidir, core.rawsourcesdir, core.rootdir)
+    vremoved = []
+    for p in wops.ListWikiPages():
+        if p["type"] not in ("comparison", "concept"):
+            continue
+        if olinked.get(p["id"], 0) > 0:
+            continue
+        if os.path.isfile(p["path"]):
+            os.remove(p["path"])
+            vremoved.append({"id": p["id"], "type": p["type"], "action": "orphan_pruned"})
+    return vremoved
+
+
+def RepairDuplicateSources(odata):
+    """删除重复纳入产生的冗余 source wiki 页，保留 canonical 节点。"""
+    core = _Core()
+    vnodes = [n for n in odata.get("nodes") or [] if n.get("type") == "source"]
+    vnodes.sort(key=lambda x: -core._SourceCanonicalScore(x))
+    vcanonical = []
+    vremoved = []
+    for n in vnodes:
+        scanon = next((m for m in vcanonical if core._SameSource(m, n)), None)
+        if not scanon:
+            vcanonical.append(n)
+            continue
+        sdrop = n.get("id", "")
+        scanon_id = scanon.get("id", "")
+        if not sdrop or sdrop == scanon_id:
+            continue
+        spath = os.path.join(wikidir, "sources", sdrop + ".md")
+        if os.path.isfile(spath):
+            os.remove(spath)
+            vremoved.append({"id": sdrop, "canonical": scanon_id, "action": "duplicate_source"})
+        core._MergeSourceMetaEntries(scanon_id, sdrop)
+    return vremoved
+
+
 def FixLintExtended(odata=None):
     core = _Core()
     import wiki_refresh as refresh
@@ -436,11 +483,15 @@ def FixLintExtended(odata=None):
     vrep_queries = wops.RepairOrphanQueries()
     vrep_dead = RepairDeadLinks()
     vrep_orphan = RepairOrphanConcepts(odata)
+    vrep_dup = RepairDuplicateSources(odata)
+    vpruned = PruneOrphanPages(odata)
     refresh.RefreshWiki(bwrite_files=True, bforce=True)
     olint = wops.RunLint()
     return {
         "repaired_queries": vrep_queries,
         "repaired_dead_links": vrep_dead,
         "repaired_orphans": vrep_orphan,
+        "repaired_duplicates": vrep_dup,
+        "pruned_orphans": vpruned,
         "lint": olint,
     }

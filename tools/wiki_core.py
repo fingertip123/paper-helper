@@ -757,6 +757,90 @@ def HasStandardReportFile(skey):
     return os.path.isfile(spath)
 
 
+def _NormalizeTitle(stitle):
+    stitle = re.sub(r"[^\w\u4e00-\u9fff]+", "", (stitle or "").lower())
+    return stitle[:96]
+
+
+def _ExtractDoi(onode):
+    surl = (onode.get("url") or "").lower()
+    om = re.search(r"(10\.\d{4,}/[^\s\"\'<>]+)", surl)
+    return om.group(1).rstrip("/.,;)") if om else ""
+
+
+def _SourceCanonicalScore(onode):
+    nscore = 0
+    if onode.get("ingested"):
+        nscore += 100
+    if FindSourcePagePath(onode.get("id", "")):
+        nscore += 50
+    if onode.get("rawfile"):
+        nscore += 20
+    if onode.get("deep_done"):
+        nscore += 8
+    elif onode.get("standard_done"):
+        nscore += 4
+    nscore -= len(onode.get("id") or "")
+    return nscore
+
+
+def _MergeSourceMetaEntries(scanon, sother):
+    """合并重复 source 的 source_meta（分组标签等）。"""
+    if not scanon or not sother or scanon == sother:
+        return
+    ocanon = GetSourceMetaEntry(scanon)
+    oother = GetSourceMetaEntry(sother)
+    if not oother:
+        return
+    bchanged = False
+    for sk in ("lib_tags", "lib_rq"):
+        vmerged = list(dict.fromkeys((ocanon.get(sk) or []) + (oother.get(sk) or [])))
+        if vmerged != (ocanon.get(sk) or []):
+            ocanon[sk] = vmerged
+            bchanged = True
+    if not ocanon.get("lib_chapter") and oother.get("lib_chapter"):
+        ocanon["lib_chapter"] = oother["lib_chapter"]
+        bchanged = True
+    if bchanged:
+        SaveSourceMetaEntry(scanon, ocanon)
+    SaveSourceMetaEntry(sother, None)
+
+
+def MergeSourceNodes(omatch, n):
+    """合并两个重复 source 节点的字段与元数据。"""
+    scanon_id = omatch.get("id")
+    sother_id = n.get("id")
+    MergeWikiIntoNode(omatch, n, {"type": "source"})
+    if scanon_id:
+        omatch["id"] = scanon_id
+    for sfield in ("aliases", "authors", "tags"):
+        vmerged = list(dict.fromkeys((omatch.get(sfield) or []) + (n.get(sfield) or [])))
+        if vmerged:
+            omatch[sfield] = vmerged
+    if n.get("ingested") or omatch.get("ingested"):
+        omatch["ingested"] = True
+    ore = dict(omatch.get("research") or {})
+    nre = n.get("research") or {}
+    if nre or ore:
+        vrq = list(dict.fromkeys((ore.get("rq_links") or []) + (nre.get("rq_links") or [])))
+        omatch["research"] = {**nre, **ore}
+        if vrq:
+            omatch["research"]["rq_links"] = vrq
+    if not omatch.get("rawfile") and n.get("rawfile"):
+        omatch["rawfile"] = n["rawfile"]
+    if not omatch.get("url") and n.get("url"):
+        omatch["url"] = n["url"]
+    if not omatch.get("year") and n.get("year"):
+        omatch["year"] = n["year"]
+    if not omatch.get("summary") and n.get("summary"):
+        omatch["summary"] = n["summary"]
+    EnsureNodeRawfile(omatch)
+    if sother_id and scanon_id and sother_id != scanon_id:
+        valiases = list(dict.fromkeys((omatch.get("aliases") or []) + [sother_id]))
+        omatch["aliases"] = valiases
+        _MergeSourceMetaEntries(scanon_id, sother_id)
+
+
 def _SameSource(a, b):
     """判断两个 source 节点是否指向同一篇文献。"""
     if a.get("id") == b.get("id"):
@@ -769,22 +853,35 @@ def _SameSource(a, b):
         return True
     rfa = a.get("rawfile") or ResolveRawfileForKey(a.get("id", ""))
     rfb = b.get("rawfile") or ResolveRawfileForKey(b.get("id", ""))
-    return bool(rfa and rfb and rfa == rfb)
+    if rfa and rfb and rfa == rfb:
+        return True
+    sdoi_a = _ExtractDoi(a)
+    sdoi_b = _ExtractDoi(b)
+    if sdoi_a and sdoi_a == sdoi_b:
+        return True
+    sta = _NormalizeTitle(a.get("title"))
+    stb = _NormalizeTitle(b.get("title"))
+    sya = str(a.get("year") or "").strip()
+    syb = str(b.get("year") or "").strip()
+    if sta and sta == stb and len(sta) >= 8:
+        if sya and syb and sya == syb:
+            return True
+        if not sya and not syb:
+            return True
+    return False
 
 
 def DedupeSourceNodes(vnodes):
-    """合并重复 source 节点（如同一 PDF 的待纳入卡片 + 已纳入卡片）。"""
+    """合并重复 source 节点（同一 PDF / DOI / 标题年份 / 别名）。"""
     vothers = [n for n in vnodes if n.get("type") != "source"]
     vsources = [n for n in vnodes if n.get("type") == "source"]
+    vsources.sort(key=lambda x: -_SourceCanonicalScore(x))
     vmerged = []
     for n in vsources:
         EnsureNodeRawfile(n)
         omatch = next((m for m in vmerged if _SameSource(n, m)), None)
         if omatch:
-            MergeWikiIntoNode(omatch, n, {"type": "source"})
-            if n.get("ingested") or omatch.get("ingested"):
-                omatch["ingested"] = True
-            EnsureNodeRawfile(omatch)
+            MergeSourceNodes(omatch, n)
         else:
             vmerged.append(n)
     return vothers + vmerged
@@ -1200,6 +1297,7 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   .card.stone3d.lib-standard{background:var(--lib-standard-bg,var(--lib-active-bg,var(--panel)))!important;border-color:var(--lib-standard-rim,var(--lib-active-rim,var(--border)))!important}
   .card.stone3d.lib-deep{background:var(--lib-deep-bg,var(--panel))!important;border-color:var(--lib-deep-rim,var(--accent))!important}
   .card .stagepill{position:absolute;top:10px;left:12px;font-size:10px;padding:2px 8px;border-radius:999px;background:var(--panel2);color:var(--muted);border:1px solid var(--border);z-index:3}
+  .card .stalebadge{position:absolute;top:10px;right:36px;font-size:10px;padding:2px 8px;border-radius:999px;background:rgba(232,184,109,.18);color:var(--gold);border:1px dashed var(--gold);z-index:3;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .card.lib-deep .stagepill{color:var(--accent);border-color:var(--lib-deep-rim,var(--accent));background:var(--ghost-hover)}
   .card.lib-standard .stagepill{color:var(--sage,var(--accent));border-color:var(--lib-standard-rim,var(--border));background:var(--ghost-hover)}
   .card.lib-active .stagepill{color:var(--accent);border-color:var(--lib-active-rim,var(--border))}
@@ -2041,6 +2139,7 @@ const LIB_FILTERS=[
   {id:"await_deep",label:"待进阶分析"},
   {id:"standard",label:"已标准分析"},
   {id:"deep",label:"已深度研究"},
+  {id:"stale",label:"可升级"},
 ];
 function LibSources(){return (DATA.nodes||[]).filter(n=>n.type==="source")}
 function LibIsDeep(n){return !!(n.deep_done||n.lib_stage==="deep")}
@@ -2119,6 +2218,7 @@ function LibFilterMatch(n){
   if(LIB_FILTER==="await_deep")return LibIsAwaitDeep(n)&&!LibIsStandard(n);
   if(LIB_FILTER==="standard")return LibIsStandard(n)&&!LibIsDeep(n);
   if(LIB_FILTER==="deep")return LibIsDeep(n);
+  if(LIB_FILTER==="stale")return LibHasStale(n);
   return true;
 }
 function LibFilterCounts(){
@@ -2129,7 +2229,16 @@ function LibFilterCounts(){
     await_deep:vs.filter(n=>LibIsAwaitDeep(n)&&!LibIsStandard(n)).length,
     standard:vs.filter(n=>LibIsStandard(n)&&!LibIsDeep(n)).length,
     deep:vs.filter(LibIsDeep).length,
+    stale:vs.filter(LibHasStale).length,
   };
+}
+function StaleBadgeLabel(n){
+  const vk=n.stale_kinds||[];
+  if(!vk.length)return "↻";
+  if(vk.includes("deep"))return "可升级深度";
+  if(vk.includes("standard"))return "可升级标准";
+  if(vk.includes("ingest"))return "可升级纳入";
+  return "↻ "+StaleKindLabel(vk[0]);
 }
 function LibStageRank(n){
   if(LibIsDeep(n))return 4;
@@ -2407,10 +2516,11 @@ function RenderLibGrid(){
     }
     const sstage=LibStageClass(n);
     const spending=LibIsPending(n)?" pending":"";
+    const stalebadge=LibHasStale(n)?`<span class="stalebadge" title="${Attr((n.stale_kinds||[]).map(k=>StaleKindLabel(k)).join("、"))}">${Esc(StaleBadgeLabel(n))}</span>`:"";
     const sdrag=SERVERMODE?` draggable="true" data-sid="${Attr(n.id)}"`:"";
     return `<div class="card stone3d ${sstage}${spending}"${sdrag} onclick="OpenDrawer('${Attr(n.id)}')">
       <span class="stagepill">${Esc(LibStageLabel(n))}</span>
-      ${del}<div class="ttl">${Esc(n.title)}</div>
+      ${stalebadge}${del}<div class="ttl">${Esc(n.title)}</div>
       <div class="sub">${Esc(sub)||"—"}</div>
       <div class="sum">${Esc(n.summary||"")}</div>
       <div class="tags">${tags}</div><div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px">${urlbtn}${pdfbtn}${actionbtn}</div></div>`;
@@ -3144,11 +3254,6 @@ async function Refresh(silent){
     RefreshOnboardingState();
   }catch(e){Toast("刷新失败："+e.message)}
 }
-function UpdateLintBadge(olint){
-  const ob=document.getElementById("lint_badge");if(!ob)return;
-  const n=(olint&&olint.orphans)||0;
-  if(n>0){ob.textContent=n;ob.classList.add("show")}else{ob.classList.remove("show");ob.textContent=""}
-}
 function AddPaper(){if(NeedServer())return;document.getElementById("fileinput").click()}
 document.getElementById("fileinput").onchange=async function(){
   const files=[...this.files];this.value="";
@@ -3528,13 +3633,27 @@ function RenderLintReport(r){
   let h="<ul>";
   h+="<li>无链接的孤立页面："+(r.orphans?r.orphans.length:0);
   if(r.orphans&&r.orphans.length)h+=" — "+r.orphans.slice(0,8).map(x=>Esc(x.id)).join(", ");
-  h+="</li><li>失效链接："+(r.dead_links?r.dead_links.length:0);
+  h+="</li>";
+  if(r.prunable_orphans&&r.prunable_orphans.length){
+    h+="<li>可清理的孤立 concept/comparison："+r.prunable_orphans.length;
+    h+=" — "+r.prunable_orphans.slice(0,6).map(x=>Esc(x.id)).join(", ");
+    h+="</li>";
+  }
+  h+="<li>失效链接："+(r.dead_links?r.dead_links.length:0);
   if(r.dead_links&&r.dead_links.length)h+="<br>"+r.dead_links.slice(0,6).map(x=>Esc(x.page)+"→"+Esc(x.link)).join("<br>");
   h+="</li><li>页面信息（标题/标签等）缺失："+(r.frontmatter_issues?r.frontmatter_issues.length:0)+"</li>";
   h+="<li>知识空白："+(r.knowledge_gaps?r.knowledge_gaps.length:0)+"</li></ul>";
-  if(r.orphans&&r.orphans.length)h+='<p class="note" style="margin-top:10px;font-size:12px">孤立 query 页可点「一键修复」自动补全关联 wikilink。</p>';
+  h+='<p class="note" style="margin-top:10px;font-size:12px">「一键修复」将：补全 query 关联、模糊修复死链、为 concept 补链、合并重复 source 页、删除孤立 concept/comparison 页。</p>';
   document.getElementById("lint_body").innerHTML=h;
-  UpdateLintBadge({orphans:r.orphans?r.orphans.length:0});
+  UpdateLintBadge({orphans:r.orphans?r.orphans.length:0,stale_pipelines:CountLibStale()});
+}
+function CountLibStale(){return LibSources().filter(LibHasStale).length}
+function UpdateLintBadge(olint){
+  const ob=document.getElementById("lint_badge");if(!ob)return;
+  const nor=(olint&&olint.orphans)||0;
+  const nst=(olint&&olint.stale_pipelines)||CountLibStale();
+  const ntotal=nor+nst;
+  if(ntotal>0){ob.textContent=ntotal;ob.classList.add("show")}else{ob.classList.remove("show");ob.textContent=""}
 }
 async function FixLintIssues(){
   if(NeedServer())return;
@@ -3545,10 +3664,14 @@ async function FixLintIssues(){
     const n=(r.repaired_queries||[]).length;
     const nd=(r.repaired_dead_links||[]).length;
     const no=(r.repaired_orphans||[]).length;
+    const ndup=(r.repaired_duplicates||[]).length;
+    const npr=(r.pruned_orphans||[]).length;
     const nparts=[];
     if(n)nparts.push(n+" 个 query");
     if(nd)nparts.push(nd+" 处死链");
-    if(no)nparts.push(no+" 个孤立页");
+    if(no)nparts.push(no+" 个 concept 补链");
+    if(ndup)nparts.push(ndup+" 个重复 source 合并");
+    if(npr)nparts.push(npr+" 个孤儿页删除");
     Toast(nparts.length?"已修复："+nparts.join("、"):"暂无可自动修复项");
     await Refresh(true);
   }catch(e){document.getElementById("lint_body").textContent="修复失败："+e.message}

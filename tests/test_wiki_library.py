@@ -87,5 +87,23 @@ class TestWikiLibrary(unittest.TestCase):
         self.assertTrue(any(x["id"] == "rq-a" for x in og["rq"]))
 
 
+    def testDedupeByTitleYear(self):
+        va = {"id": "a-2020", "type": "source", "title": "Policy Overload Study", "year": "2020", "ingested": False}
+        vb = {"id": "b-2020", "type": "source", "title": "Policy Overload Study", "year": "2020", "ingested": True}
+        vout = core.DedupeSourceNodes([va, vb])
+        vs = [n for n in vout if n.get("type") == "source"]
+        self.assertEqual(len(vs), 1)
+        self.assertTrue(vs[0].get("ingested"))
+
+    def testMergeSourceMetaOnDedupe(self):
+        core.SaveSourceMetaEntry("dup-key", {"lib_tags": ["综述"], "lib_rq": ["rq-a"]})
+        va = {"id": "canonical", "type": "source", "title": "Same Paper", "year": "2021", "ingested": True, "rawfile": "x.pdf"}
+        vb = {"id": "dup-key", "type": "source", "title": "Same Paper", "year": "2021", "ingested": False}
+        core.MergeSourceNodes(va, vb)
+        oentry = core.GetSourceMetaEntry("canonical")
+        self.assertEqual(oentry.get("lib_tags"), ["综述"])
+        self.assertEqual(core.GetSourceMetaEntry("dup-key"), {})
+
+
 if __name__ == "__main__":
     unittest.main()
