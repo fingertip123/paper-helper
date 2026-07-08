@@ -1262,6 +1262,7 @@ def Render(odata, servermode=False, desktopmode=False, stheme="girly", susername
             .replace("/*__DESKTOPMODE__*/", "true" if desktopmode else "false")
             .replace("/*__CLOUDMODE__*/", "true" if bcloud else "false")
             .replace("/*__CSRF__*/", json.dumps(scsrf or ""))
+            .replace("/*__CLOUD_USER__*/", json.dumps(susername or ""))
             .replace("<!--__USERCHIP__-->", suserchip)
             .replace("/*__STARTCMD__*/", startcmd))
 
@@ -1779,7 +1780,7 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
 </header>
 <button type="button" class="theme-fab" id="theme_fab" onclick="OpenThemePicker()" title="切换界面主题">🎨</button>
 <main>
-  <section id="libview" class="view active"><div class="libtoolbar"><div class="libfilt" id="libfilt"></div><div class="libviewtog" id="libviewtog"><button type="button" class="libviewbtn active" data-view="card" title="卡片视图" aria-label="卡片视图"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="1.5" width="5.5" height="5.5" rx="1.2" fill="currentColor"/><rect x="9" y="1.5" width="5.5" height="5.5" rx="1.2" fill="currentColor"/><rect x="1.5" y="9" width="5.5" height="5.5" rx="1.2" fill="currentColor"/><rect x="9" y="9" width="5.5" height="5.5" rx="1.2" fill="currentColor"/></svg></button><button type="button" class="libviewbtn" data-view="list" title="列表视图" aria-label="列表视图"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="2.2" rx="1.1" fill="currentColor"/><rect x="1.5" y="6.9" width="13" height="2.2" rx="1.1" fill="currentColor"/><rect x="1.5" y="11.3" width="13" height="2.2" rx="1.1" fill="currentColor"/></svg></button></div><select id="libsort" class="libsort" title="排序方式"><option value="ingested_desc">最近纳入 ↓</option><option value="ingested_asc">最近纳入 ↑</option><option value="stage_desc">研究深度 ↓</option><option value="stage_asc">研究深度 ↑</option><option value="added_desc">最近添加 ↓</option><option value="added_asc">最近添加 ↑</option><option value="year_desc">年份 ↓</option><option value="year_asc">年份 ↑</option><option value="pagerank_desc">关联度 ↓</option><option value="author">作者 A-Z</option><option value="title">标题 A-Z</option><option value="added">扫描顺序</option></select><div class="libsearch-wrap" id="libsearch_wrap"><input type="search" class="libsearch" id="libsearch" placeholder="搜索标题、作者、标签…" autocomplete="off"></div></div><div class="libgroupbar" id="libgroupbar"></div><div class="libstagebar" id="libstagebar"></div><div class="dropzone" id="dropzone">🌷 拖放 PDF / Word / Markdown 到此处，或点击「添加文献」开始整理</div><div class="grid" id="libgrid"></div></section>
+  <section id="libview" class="view active"><div class="libtoolbar"><div class="libfilt" id="libfilt"></div><div class="libviewtog" id="libviewtog"><button type="button" class="libviewbtn active" data-view="card" title="卡片视图" aria-label="卡片视图"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="1.5" width="5.5" height="5.5" rx="1.2" fill="currentColor"/><rect x="9" y="1.5" width="5.5" height="5.5" rx="1.2" fill="currentColor"/><rect x="1.5" y="9" width="5.5" height="5.5" rx="1.2" fill="currentColor"/><rect x="9" y="9" width="5.5" height="5.5" rx="1.2" fill="currentColor"/></svg></button><button type="button" class="libviewbtn" data-view="list" title="列表视图" aria-label="列表视图"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="2.2" rx="1.1" fill="currentColor"/><rect x="1.5" y="6.9" width="13" height="2.2" rx="1.1" fill="currentColor"/><rect x="1.5" y="11.3" width="13" height="2.2" rx="1.1" fill="currentColor"/></svg></button></div><select id="libsort" class="libsort" title="排序方式"><option value="ingested_desc">最近纳入 ↓</option><option value="ingested_asc">最近纳入 ↑</option><option value="stage_desc">研究深度 ↓</option><option value="stage_asc">研究深度 ↑</option><option value="added_desc">最近添加 ↓</option><option value="added_asc">最近添加 ↑</option><option value="year_desc">年份 ↓</option><option value="year_asc">年份 ↑</option><option value="pagerank_desc">关联度 ↓</option><option value="author">作者 A-Z</option><option value="title">标题 A-Z</option><option value="added">扫描顺序</option></select><div class="libsearch-wrap" id="libsearch_wrap"><input type="search" class="libsearch" id="libsearch" name="yanzhan-lib-q" placeholder="搜索标题、作者、标签…" autocomplete="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-form-type="other"></div></div><div class="libgroupbar" id="libgroupbar"></div><div class="libstagebar" id="libstagebar"></div><div class="dropzone" id="dropzone">🌷 拖放 PDF / Word / Markdown 到此处，或点击「添加文献」开始整理</div><div class="grid" id="libgrid"></div></section>
   <section id="graphview" class="view"><canvas id="graphcanvas"></canvas><div class="legend" id="legend"></div><div class="graphegobadge" id="graphegobadge"><span id="graphego_lbl"></span><span class="x" onclick="ClearGraphFocus()" title="返回全局">×</span></div><div class="graphstats" id="graphstats"></div><div class="graphfilter"><div class="graphrow"><label>搜索</label><input id="graph_search" type="search" placeholder="标题 / ID" oninput="OnGraphSearchInput()" onkeydown="if(event.key==='Enter')FocusGraphSearch()"></div><div class="graphrow"><label>节点</label><select id="graph_filter" onchange="ApplyGraphFilter()"><option value="">全部类型</option></select></div><div class="graphrow"><label>关系</label><select id="graph_edge_filter" onchange="ApplyGraphFilter()"><option value="">全部关系</option></select></div><div class="graphlayouttog"><button type="button" id="graph_mode_flow" class="active" onclick="SetGraphLayoutMode('flow')">脉络</button><button type="button" id="graph_mode_free" onclick="SetGraphLayoutMode('free')">探索</button></div><button type="button" onclick="ApplyGraphThreadView()">🧭 梳理主脉络</button><button type="button" onclick="FocusGraphSearch()">⌖ 定位节点</button><button type="button" onclick="ExportGraphPng()">📷 导出 PNG</button><button type="button" onclick="ExportGraphJson()">⬇ 导出 JSON</button></div><div id="graphtooltip"></div><div class="graphempty" id="graphempty" style="display:none">当前筛选下无可见节点，请调整关系或节点类型</div><div class="hint">滚轮缩放 · 拖拽平移 · 拖动节点 · 点击查看详情 · 悬停高亮邻域</div></section>
   <section id="listview" class="view"></section>
   <section id="progressview" class="view"></section>
@@ -2019,6 +2020,7 @@ const SERVERMODE = /*__SERVERMODE__*/;
 const DESKTOPMODE = /*__DESKTOPMODE__*/;
 const CLOUDMODE = /*__CLOUDMODE__*/;
 const CSRF_TOKEN = /*__CSRF__*/;
+const CLOUD_USERNAME = /*__CLOUD_USER__*/;
 let DATA = /*__DATA__*/;
 let TC = DATA.typeconfig;
 let NODEMAP = {};
@@ -2151,9 +2153,21 @@ function RenderStats(){
 function SanitizeLibSearch(sq){
   sq=(sq||"").trim();
   if(!sq)return "";
+  if(CLOUD_USERNAME&&sq===CLOUD_USERNAME)return "";
   if(/^https?:\/\//i.test(sq))return "";
   if(/^api\./i.test(sq)||sq.includes("/v1")||sq.includes("/api/"))return "";
   return sq;
+}
+function ApplyLibSearchFromInput(){
+  const osearch=document.getElementById("libsearch");
+  if(!osearch)return;
+  const sclean=SanitizeLibSearch(osearch.value||"");
+  if(sclean!==(osearch.value||""))osearch.value=sclean;
+  if(sclean!==LIB_SEARCH){
+    LIB_SEARCH=sclean;
+    SaveLibUiState();
+  }
+  UpdateLibSearchClearBtn();
 }
 function LoadLibUiState(){
   try{
@@ -2287,10 +2301,6 @@ function RefreshLibSummaryBars(){
   RenderLibFilters();
   RenderLibStageBar();
 }
-function SyncLibSearchFromInput(){
-  const osearch=document.getElementById("libsearch");
-  if(osearch)LIB_SEARCH=SanitizeLibSearch(osearch.value||"");
-}
 function ClearLibUiFilters(){
   LIB_SEARCH="";LIB_GROUP_TAB="all";LIB_GROUP_ID="";
   SaveLibUiState();
@@ -2317,7 +2327,6 @@ function LibBaseFilter(n){
   return true;
 }
 function LibFilterMatch(n){
-  SyncLibSearchFromInput();
   if(!LibBaseFilter(n))return false;
   if(LIB_FILTER==="all")return true;
   if(LIB_FILTER==="pending")return LibIsPending(n);
@@ -2328,7 +2337,6 @@ function LibFilterMatch(n){
   return true;
 }
 function LibFilterCounts(){
-  SyncLibSearchFromInput();
   const vs=LibSources().filter(n=>LibBaseFilter(n));
   return {
     all:vs.length,
@@ -2521,6 +2529,16 @@ function RenderLibToolbar(){
   RenderLibStageBar();
   InitLibSort();
   InitLibViewToggle();
+  InitLibSearchField();
+}
+function InitLibSearchField(){
+  const osearch=document.getElementById("libsearch");
+  if(!osearch)return;
+  LIB_SEARCH=SanitizeLibSearch(LIB_SEARCH);
+  const spolluted=SanitizeLibSearch(osearch.value||"");
+  if(spolluted!==(osearch.value||""))osearch.value=spolluted;
+  if(osearch.value!==LIB_SEARCH)osearch.value=LIB_SEARCH;
+  UpdateLibSearchClearBtn();
 }
 function RenderLibFilters(){
   const bar=document.getElementById("libfilt");if(!bar)return;
@@ -2528,11 +2546,15 @@ function RenderLibFilters(){
   bar.innerHTML=LIB_FILTERS.map(f=>`<button type="button" class="libfiltbtn${f.id===LIB_FILTER?" active":""}" data-id="${Attr(f.id)}">${Esc(f.label)}<span class="cnt">${oc[f.id]||0}</span></button>`).join("");
   bar.querySelectorAll(".libfiltbtn").forEach(el=>{el.onclick=()=>SetLibFilter(el.dataset.id)});
   const osearch=document.getElementById("libsearch");
-  if(osearch&&osearch.value!==LIB_SEARCH)osearch.value=LIB_SEARCH;
+  if(osearch){
+    const sclean=SanitizeLibSearch(osearch.value||"");
+    if(sclean!==(osearch.value||""))osearch.value=sclean;
+    if(osearch.value!==LIB_SEARCH)osearch.value=LIB_SEARCH;
+  }
   if(osearch&&!osearch._bound){
     osearch._bound=true;
     let ot=null;
-    osearch.oninput=()=>{clearTimeout(ot);ot=setTimeout(()=>{LIB_SEARCH=SanitizeLibSearch(osearch.value);if(LIB_SEARCH!==osearch.value)osearch.value=LIB_SEARCH;SaveLibUiState();AnimateRenderLibrary()},220)};
+    osearch.oninput=()=>{clearTimeout(ot);ot=setTimeout(()=>{ApplyLibSearchFromInput();AnimateRenderLibrary()},220)};
   }
   UpdateLibSearchClearBtn();
 }
@@ -2593,7 +2615,6 @@ function LibGroupBadges(n){
 function PickLibTopic(nid){PickTopic(nid)}
 function RenderLibGrid(){
   ResetLibGridAnim();
-  SyncLibSearchFromInput();
   SyncLibSortFromSelect();
   const vs=LibSources();
   const sources=SortLibSources(vs.filter(LibFilterMatch));
@@ -2734,7 +2755,6 @@ function OpenDrawer(id){
   CloseReport();
   if(DRAWER_STACK[DRAWER_STACK.length-1]!==id)DRAWER_STACK.push(id);
   RenderDrawer(id);
-  RefreshLibSummaryBars();
 }
 function DrawerBack(){
   if(DRAWER_STACK.length<=1){CloseDrawer();return;}
@@ -2891,7 +2911,7 @@ function CloseDrawerShell(sshellid){
   opanel.addEventListener("animationend",fend);
 }
 function IsDrawerOpen(sshellid){const s=document.getElementById(sshellid);return s&&(s.classList.contains("is-open")||s.classList.contains("is-closing"))}
-function CloseDrawer(){DRAWER_STACK=[];UpdateDrawerNav();CloseDrawerShell("drawer_shell");RefreshLibSummaryBars()}
+function CloseDrawer(){DRAWER_STACK=[];UpdateDrawerNav();CloseDrawerShell("drawer_shell")}
 async function OpenPaperUrl(surl){
   surl=SafeUrl(surl);
   if(!surl){Toast("链接无效");return}
