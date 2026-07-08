@@ -15,8 +15,11 @@ import sys
 import time
 import socket
 import signal
+import logging
 import threading
 import subprocess
+
+logger = logging.getLogger(__name__)
 
 lockhost = "127.0.0.1"
 lockport = 18765
@@ -43,10 +46,10 @@ def _HandleConnection(oconn):
                 try:
                     fcb()
                 except Exception:
-                    pass
+                    logger.debug("单实例唤醒回调失败", exc_info=True)
             oconn.sendall(_oktoken)
     except Exception:
-        pass
+        logger.debug("单实例连接处理失败", exc_info=True)
     finally:
         try:
             oconn.close()
@@ -111,8 +114,8 @@ def _PingExisting():
     finally:
         try:
             oclient.close()
-        except Exception:
-            pass
+        except OSError:
+            logger.debug("关闭唤醒客户端 socket 失败", exc_info=True)
 
 
 def _FindPortPids():
@@ -139,8 +142,8 @@ def _FindPortPids():
             for line in (r.stdout or "").splitlines():
                 if line.strip().isdigit():
                     vpids.append(int(line.strip()))
-    except Exception:
-        pass
+    except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired):
+        logger.debug("查找锁端口占用进程失败", exc_info=True)
     return list(set(vpids))
 
 
@@ -157,8 +160,8 @@ def _KillStalePids(vpids):
                 )
             else:
                 os.kill(npid, signal.SIGKILL)
-        except Exception:
-            pass
+        except OSError:
+            logger.debug("清理僵尸进程 pid=%s 失败", npid, exc_info=True)
 
 
 def Acquire():

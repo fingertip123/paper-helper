@@ -69,7 +69,12 @@ def OpenExternalUrl(oqurl):
 
 
 def MakeWebPage(oview):
-    """创建 Web 页并拦截外部链接（勿子类化 QWebEnginePage，PySide6 会崩溃）。"""
+    """创建 Web 页并拦截外部链接。
+
+    勿子类化 QWebEnginePage：PySide6 6.6.x–6.8.x 在 macOS 上子类化后
+    acceptNavigationRequest 可能触发段错误；改用 QWebEnginePage 实例 + 信号拦截。
+    升级 PySide6 后应回归验证是否仍需要此 workaround。
+    """
     opage = QWebEnginePage(QWebEngineProfile.defaultProfile(), oview)
 
     def OnNavigation(orequest):

@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@500;600;700&display=swap" rel="stylesheet">
-<script>try{var _phTheme=/*__INIT_THEME__*/;document.documentElement.setAttribute("data-theme",_phTheme||(localStorage.getItem("ph_theme")||"girly"))}catch(e){}</script>
+<script>try{var _phTheme=$INIT_THEME;document.documentElement.setAttribute("data-theme",_phTheme||(localStorage.getItem("ph_theme")||"girly"))}catch(e){}</script>
 <style>
   :root{--radius:14px;--radius-sm:10px;--radius-lg:20px;--font-body:"Noto Sans SC","PingFang SC","Hiragino Sans GB","Microsoft YaHei UI","Microsoft YaHei",sans-serif;--font-display:"Noto Serif SC","Songti SC","STSong","PingFang SC",serif;--font-ui:var(--font-body);--font-mono:"JetBrains Mono","SF Mono",Menlo,Consolas,monospace;--font-graph:500 12px var(--font-body);--ls-title:.06em;--ls-btn:.04em;--ls-ui:.025em;--fw-display:600;--fw-btn:600;--fw-ui:500}
   [data-theme="girly"]{--font-display:"Noto Serif SC","Songti SC","STSong","PingFang SC",serif;--ls-title:.1em;--ls-btn:.05em;--fw-display:600}
@@ -503,7 +503,7 @@
     <input type="file" id="bibinput" accept=".bib" style="display:none">
   </div>
   <span class="meta" id="metainfo"></span>
-  <!--__USERCHIP__-->
+  $USERCHIP
   <div class="tabs">
     <div class="tab active" data-view="libview">论文库</div>
     <div class="tab" data-view="graphview">知识图谱</div>
@@ -751,13 +751,13 @@
 </div>
 <div id="toast"></div>
 <script>
-/*__APP_STATE_JS__*/
-const SERVERMODE = /*__SERVERMODE__*/;
-const DESKTOPMODE = /*__DESKTOPMODE__*/;
-const CLOUDMODE = /*__CLOUDMODE__*/;
-const CSRF_TOKEN = /*__CSRF__*/;
-const CLOUD_USERNAME = /*__CLOUD_USER__*/;
-AppState.initWikiData(/*__DATA__*/);
+$APP_STATE_JS
+const SERVERMODE = $SERVERMODE;
+const DESKTOPMODE = $DESKTOPMODE;
+const CLOUDMODE = $CLOUDMODE;
+const CSRF_TOKEN = $CSRF;
+const CLOUD_USERNAME = $CLOUD_USER;
+AppState.initWikiData($DATA);
 function ReindexNodes(){AppState.rebuildNodeMap()}
 ReindexNodes();
 
@@ -799,7 +799,7 @@ const THEMES=[
   {id:"boyish",icon:"🌊",name:"沧澜",desc:"沧海长风，沉稳俊逸；靛蓝与琥珀，疏朗有度",swatches:["#3d7dd6","#c8a060","#f0f4fa"]},
   {id:"cool",icon:"✦",name:"玄曜",desc:"星夜幽光，深邃明净；暗色底与霓虹，静而不冷",swatches:["#6ec8e0","#9b7fd4","#161b22"]}
 ];
-const INIT_THEME=/*__INIT_THEME__*/;
+const INIT_THEME=$INIT_THEME;
 function LoadSavedThemeId(){
   if(INIT_THEME&&THEMES.some(t=>t.id===INIT_THEME))return INIT_THEME;
   try{
@@ -1743,7 +1743,7 @@ document.addEventListener("keydown",e=>{if(e.key==="Escape"){
 document.addEventListener("click",e=>{const pick=document.getElementById("topic_pick");if(pick&&!pick.contains(e.target))CloseTopicMenu()});
 
 /* ---------- 选题管理 ---------- */
-const INIT_TOPICS=/*__INIT_TOPICS__*/;
+const INIT_TOPICS=$INIT_TOPICS;
 let TOPICS=INIT_TOPICS.topics||[],CURRENT_TOPIC=INIT_TOPICS.current||"",PURPOSE_FIELDS=INIT_TOPICS.purpose_fields||[],RULES_CACHE={},ACTIVE_RULE_TAB="purpose",NEW_TOPIC_IMPORT_FROM="";
 function TopicLabel(t){if(!t)return"";return (t.working_title||t.name||t.id||"").trim()}
 function ApplyCurrentTopic(nid,sdisplay){
@@ -2054,7 +2054,7 @@ function NeedLlmKey(){
   return false;
 }
 
-const STARTCMD="/*__STARTCMD__*/";
+const STARTCMD="$STARTCMD";
 function CloseStart(){const m=document.getElementById("startmodal");if(m)m.classList.remove("open")}
 function CopyStart(){const b=document.getElementById("startcmdbox");if(!b)return;b.select();try{document.execCommand("copy")}catch(e){}if(navigator.clipboard)navigator.clipboard.writeText(b.value).catch(()=>{});Toast("已复制启动命令")}
 

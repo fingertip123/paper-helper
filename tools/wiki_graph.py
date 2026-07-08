@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Wiki 图谱巡检服务（P2）：孤立页、死链、知识空白检测与自动清理。"""
+import logging
 import re
 from datetime import datetime
 
 import topic_manager as topics
+
+logger = logging.getLogger(__name__)
 
 _LINT_KEEP_TYPES = frozenset({"source", "purpose", "rq"})
 
@@ -48,8 +51,8 @@ def RunLintQuick(vnodes, vedges, ndeadlinks=0):
             srqid = smatch.group(1) if smatch else ""
             if srqid and srqid not in onodeids:
                 nknowledge_gaps += 1
-    except Exception:
-        pass
+    except (OSError, ValueError, TypeError):
+        logger.debug("Lint 知识空白检测失败", exc_info=True)
     return {
         "orphans": norphans,
         "dead_links": ndeadlinks,

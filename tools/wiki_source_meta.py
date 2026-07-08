@@ -1,18 +1,26 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""文献 URL 与 source_meta.json 管理。"""
+"""文献 URL 与 source_meta 管理（SQLite，从 source_meta.json 自动迁移）。"""
 
 import json
 import os
 import re
+import sqlite3
 import threading
+import logging
+from contextlib import contextmanager
 
 import io_utils
 import topic_manager as topics
 import wiki_paths as paths
 import wiki_markdown as md
 
+logger = logging.getLogger(__name__)
+
 frontmatterpattern = md.frontmatterpattern
+LIB_TAG_PREFIX = "@id:"
+_sourcemetalock = threading.Lock()
+_dbready = False
 
 
 def SourceMetaPath():
@@ -20,23 +28,120 @@ def SourceMetaPath():
     return os.path.join(ResolveConfigDir(topics.GetTopicDir()), "source_meta.json")
 
 
-_sourcemetalock = threading.Lock()
+def SourceMetaDbPath():
+    from app_meta import ResolveConfigDir
+    return os.path.join(ResolveConfigDir(topics.GetTopicDir()), "source_meta.db")
+
+
+def _Db():
+    odb = sqlite3.connect(SourceMetaDbPath(), timeout=10)
+    odb.execute("PRAGMA journal_mode=WAL")
+    odb.row_factory = sqlite3.Row
+    return odb
+
+
+@contextmanager
+def _DbConn():
+    odb = _Db()
+    try:
+        yield odb
+        odb.commit()
+    finally:
+        odb.close()
+
+
+def _EnsureSchema():
+    global _dbready
+    if _dbready:
+        return
+    with _sourcemetalock:
+        if _dbready:
+            return
+        sdir = os.path.dirname(SourceMetaDbPath())
+        os.makedirs(sdir, exist_ok=True)
+        with _DbConn() as odb:
+            odb.executescript(
+                "CREATE TABLE IF NOT EXISTS pending_url("
+                " rawfile TEXT PRIMARY KEY, url TEXT NOT NULL DEFAULT '');"
+                "CREATE TABLE IF NOT EXISTS source_entry("
+                " skey TEXT PRIMARY KEY, data TEXT NOT NULL);"
+            )
+            ncount = odb.execute("SELECT COUNT(*) FROM pending_url").fetchone()[0]
+            ncount += odb.execute("SELECT COUNT(*) FROM source_entry").fetchone()[0]
+            if ncount == 0:
+                _MigrateFromJson(odb)
+        _dbready = True
+
+
+def _MigrateFromJson(odb):
+    spath = SourceMetaPath()
+    if not os.path.isfile(spath):
+        return
+    try:
+        with open(spath, "r", encoding="utf-8") as f:
+            ometa = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        logger.warning("source_meta.json 迁移失败: %s", e)
+        return
+    if not isinstance(ometa, dict):
+        return
+    for skey, oentry in ometa.items():
+        if skey.startswith(LIB_TAG_PREFIX):
+            sskey = skey[len(LIB_TAG_PREFIX):]
+            if isinstance(oentry, dict) and oentry:
+                odb.execute(
+                    "INSERT OR REPLACE INTO source_entry(skey, data) VALUES(?,?)",
+                    (sskey, json.dumps(oentry, ensure_ascii=False)),
+                )
+        elif isinstance(oentry, dict):
+            surl = (oentry.get("url") or "").strip()
+            if surl:
+                odb.execute(
+                    "INSERT OR REPLACE INTO pending_url(rawfile, url) VALUES(?,?)",
+                    (skey, surl),
+                )
+    logger.info("已从 source_meta.json 迁移 %d 条记录到 SQLite", len(ometa))
 
 
 def ReadSourceMeta():
-    spath = SourceMetaPath()
-    if not os.path.isfile(spath):
-        return {}
-    with _sourcemetalock:
-        with open(spath, "r", encoding="utf-8") as f:
-            return json.load(f)
+    """读取完整元数据字典（兼容旧 JSON 结构）。"""
+    _EnsureSchema()
+    ometa = {}
+    with _sourcemetalock, _DbConn() as odb:
+        for orow in odb.execute("SELECT rawfile, url FROM pending_url"):
+            ometa[orow["rawfile"]] = {"url": orow["url"]}
+        for orow in odb.execute("SELECT skey, data FROM source_entry"):
+            try:
+                oentry = json.loads(orow["data"])
+            except json.JSONDecodeError:
+                oentry = {}
+            if isinstance(oentry, dict):
+                ometa[LIB_TAG_PREFIX + orow["skey"]] = oentry
+    return ometa
 
 
 def WriteSourceMeta(odata):
-    spath = SourceMetaPath()
-    os.makedirs(os.path.dirname(spath), exist_ok=True)
-    with _sourcemetalock:
-        io_utils.AtomicWriteJson(spath, odata)
+    """全量写入（供删除文献等批量更新场景）。"""
+    _EnsureSchema()
+    odata = odata or {}
+    with _sourcemetalock, _DbConn() as odb:
+        odb.execute("DELETE FROM pending_url")
+        odb.execute("DELETE FROM source_entry")
+        for skey, oentry in odata.items():
+            if skey.startswith(LIB_TAG_PREFIX):
+                sskey = skey[len(LIB_TAG_PREFIX):]
+                if isinstance(oentry, dict) and oentry:
+                    odb.execute(
+                        "INSERT INTO source_entry(skey, data) VALUES(?,?)",
+                        (sskey, json.dumps(oentry, ensure_ascii=False)),
+                    )
+            elif isinstance(oentry, dict):
+                surl = (oentry.get("url") or "").strip()
+                if surl:
+                    odb.execute(
+                        "INSERT INTO pending_url(rawfile, url) VALUES(?,?)",
+                        (skey, surl),
+                    )
 
 
 def NormalizeUrl(surl):
@@ -49,16 +154,24 @@ def NormalizeUrl(surl):
 
 
 def GetPendingSourceUrl(srawfile):
-    return ReadSourceMeta().get(srawfile, {}).get("url", "")
+    _EnsureSchema()
+    with _sourcemetalock, _DbConn() as odb:
+        orow = odb.execute(
+            "SELECT url FROM pending_url WHERE rawfile=?", (srawfile,)
+        ).fetchone()
+    return (orow["url"] if orow else "") or ""
 
 
 def SetPendingSourceUrl(srawfile, surl):
-    ometa = ReadSourceMeta()
-    if surl:
-        ometa[srawfile] = {"url": surl}
-    elif srawfile in ometa:
-        del ometa[srawfile]
-    WriteSourceMeta(ometa)
+    _EnsureSchema()
+    with _sourcemetalock, _DbConn() as odb:
+        if surl:
+            odb.execute(
+                "INSERT OR REPLACE INTO pending_url(rawfile, url) VALUES(?,?)",
+                (srawfile, surl),
+            )
+        else:
+            odb.execute("DELETE FROM pending_url WHERE rawfile=?", (srawfile,))
 
 
 def FindSourcePagePath(skey):
@@ -112,12 +225,22 @@ def ListSources():
             if fn.lower().endswith((".pdf", ".docx", ".md", ".txt")) and not fn.startswith(".")]
 
 
-LIB_TAG_PREFIX = "@id:"
-
-
 def GetSourceMetaEntry(skey):
-    """读取单篇文献在 source_meta.json 中的条目。"""
-    oentry = ReadSourceMeta().get(LIB_TAG_PREFIX + (skey or ""), {})
+    """读取单篇文献元数据条目。"""
+    skey = (skey or "").strip()
+    if not skey:
+        return {}
+    _EnsureSchema()
+    with _sourcemetalock, _DbConn() as odb:
+        orow = odb.execute(
+            "SELECT data FROM source_entry WHERE skey=?", (skey,)
+        ).fetchone()
+    if not orow:
+        return {}
+    try:
+        oentry = json.loads(orow["data"])
+    except json.JSONDecodeError:
+        return {}
     return oentry if isinstance(oentry, dict) else {}
 
 
@@ -126,13 +249,15 @@ def SaveSourceMetaEntry(skey, oentry):
     skey = (skey or "").strip()
     if not skey:
         raise ValueError("缺少文献 id")
-    ometa = ReadSourceMeta()
-    smeta = LIB_TAG_PREFIX + skey
-    if oentry:
-        ometa[smeta] = oentry
-    elif smeta in ometa:
-        del ometa[smeta]
-    WriteSourceMeta(ometa)
+    _EnsureSchema()
+    with _sourcemetalock, _DbConn() as odb:
+        if oentry:
+            odb.execute(
+                "INSERT OR REPLACE INTO source_entry(skey, data) VALUES(?,?)",
+                (skey, json.dumps(oentry, ensure_ascii=False)),
+            )
+        else:
+            odb.execute("DELETE FROM source_entry WHERE skey=?", (skey,))
 
 
 def GetLibTags(skey):

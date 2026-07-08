@@ -54,9 +54,9 @@ def AcquireSingleInstance():
     if nresult is False:
         # 已有健康实例并已被唤醒到前台，本进程安静退出
         return False
-        NativeAlert(
-            APP_NAME,
-            "应用可能已在运行，但无法唤醒窗口。\n\n"
+    NativeAlert(
+        APP_NAME,
+        "应用可能已在运行，但无法唤醒窗口。\n\n"
         "请在任务管理器（Windows）或活动监视器（macOS）中\n"
         "结束所有 python / pythonw 进程后，重新启动。",
         "caution",

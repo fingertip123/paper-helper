@@ -5,7 +5,7 @@
   wiki_paths      — 数据根与选题路径
   wiki_config     — 图谱/页面类型配置
   wiki_markdown   — Markdown 解析与边推断
-  wiki_source_meta — source_meta.json 与 URL
+  wiki_source_meta — source_meta.db 与 URL
   wiki_library    — 论文库去重、阶段元数据
   wiki_scan       — Wiki 扫描与选题统计
   wiki_data       — 页面读取、日志、待纳入列表

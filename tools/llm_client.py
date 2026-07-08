@@ -2,11 +2,15 @@
 # -*- coding: utf-8 -*-
 """OpenAI 兼容 LLM 客户端（与 app / research_deep 解耦，避免循环导入）。"""
 import json
+import logging
 import re
 import threading
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlparse
+
+logger = logging.getLogger(__name__)
 
 apikeymask = "***"
 
@@ -86,8 +90,25 @@ def _RetryAfterSeconds(oerr, ndefault):
     return ndefault
 
 
+def ValidateBaseUrl(sbase):
+    """校验 LLM base_url，返回去掉末尾斜杠的规范 URL。"""
+    sbase = (sbase or "").strip()
+    if not sbase:
+        raise ValueError("未配置 base_url，请在「偏好设置」中填写 API 地址")
+    ourl = urlparse(sbase)
+    if ourl.scheme not in ("http", "https"):
+        raise ValueError("base_url 须以 http:// 或 https:// 开头，当前：%s" % sbase)
+    if not ourl.netloc:
+        raise ValueError("base_url 格式无效（缺少主机名）：%s" % sbase)
+    return sbase.rstrip("/")
+
+
+def BuildChatUrl(oconfig):
+    return ValidateBaseUrl(oconfig.get("base_url")) + "/chat/completions"
+
+
 def CallLlm(oconfig, vmessages, bjson=True, fcancel=None):
-    url = oconfig["base_url"].rstrip("/") + "/chat/completions"
+    url = BuildChatUrl(oconfig)
     nbaseurl = oconfig.get("base_url") or ""
     bnoauth = not HasUsableApiKey(oconfig)
     payload = {
@@ -152,7 +173,7 @@ def CallLlmStream(oconfig, vmessages, fcancel=None, fonchunk=None):
             fonchunk(sfull)
         return sfull
 
-    url = oconfig["base_url"].rstrip("/") + "/chat/completions"
+    url = BuildChatUrl(oconfig)
     payload = {
         "model": oconfig.get("model") or "gpt-4o-mini",
         "messages": vmessages,

@@ -4,19 +4,25 @@
 import os
 import re
 import json
-import time
 import logging
-import threading
 
 import wiki_core as core
-import topic_manager as topics
 import wiki_workflow as wflow
-from io_utils import SafeName
 from paper_io import ExtractPaperText
 from paper_sections import PackForDeep
-from llm_client import CallLlm, ParseLlmJson, IngestCancelled
+from research_shared import (
+    Now as _Now,
+    ReadSourcePage as _ReadSourcePage,
+    ReadPurposeRqs as _ReadPurposeRqs,
+    PdfMissingMsg,
+    NotIngestedMsg,
+    ResolvePdfPath,
+    LlmJson,
+    RunAnalysisJob,
+    StartAnalysisJob,
+)
 from job_state import (
-    ResetJobDict, ReleaseLlm, TryAcquireLlm, LlmBusyPayload,
+    ResetJobDict,
     BeginStandardJob, GetStandardJob, GetStandardJobStatus, GetStandardActiveUid,
     StandardJobAlive, IsStandardCancelled, UpdateStandardProgress, standardlock,
 )
@@ -25,53 +31,16 @@ logger = logging.getLogger(__name__)
 
 STANDARD_TIMEOUT_SEC = 900
 
-PDF_MISSING_MSG = "找不到原始 PDF 文件。标准分析需要 PDF 原文，请重新上传后再试。"
-NOT_INGESTED_MSG = "该文献尚未「纳入研究」，请先纳入后再进行标准分析。"
-
-
-def _Now():
-    from datetime import datetime
-    return datetime.now().strftime("%Y-%m-%d")
-
-
-def _ReadSourcePage(skey):
-    spath = os.path.join(core.wikidir, "sources", skey + ".md")
-    if os.path.isfile(spath):
-        with open(spath, "r", encoding="utf-8") as f:
-            return f.read()
-    return ""
+PDF_MISSING_MSG = PdfMissingMsg("标准分析")
+NOT_INGESTED_MSG = NotIngestedMsg("标准分析")
 
 
 def _ResolvePdfPath(nfilename, skey=None):
-    sfile = SafeName(nfilename or "")
-    if not sfile and skey:
-        sfile = SafeName(core.ResolveRawfileForKey(skey))
-    if not sfile:
-        raise FileNotFoundError(PDF_MISSING_MSG)
-    fullpath = os.path.join(core.rawsourcesdir, sfile)
-    if not os.path.isfile(fullpath):
-        raise FileNotFoundError(PDF_MISSING_MSG)
-    return fullpath, sfile
-
-
-def _ReadPurposeRqs():
-    sp = topics.ReadText(topics.RulePath("purpose.md"))
-    ofields = topics.ParsePurposeFields(sp or "")
-    vrqlines = []
-    for skey in ("rq1", "rq2", "rq3", "rq4"):
-        sval = (ofields.get(skey) or "").strip()
-        if sval and sval not in ("（待填写）", "（未填写）"):
-            vrqlines.append(sval)
-    sthesis = (ofields.get("thesis") or "").strip()[:1200]
-    return "\n".join(vrqlines) if vrqlines else "（尚未填写具体研究问题）", sthesis
+    return ResolvePdfPath(nfilename, skey, PDF_MISSING_MSG)
 
 
 def _LlmJson(oconfig, system, user, nmaxuser=10000):
-    content = CallLlm(oconfig, [
-        {"role": "system", "content": system},
-        {"role": "user", "content": user[:nmaxuser] if len(user) > nmaxuser else user},
-    ], bjson=True, fcancel=IsStandardCancelled)
-    return ParseLlmJson(content) if isinstance(content, str) else content
+    return LlmJson(oconfig, system, user, nmaxuser, IsStandardCancelled)
 
 
 def _LoadPriorSources():
@@ -216,10 +185,11 @@ def _WriteComparisonDraft(skey, stitle, orq):
 
 
 def StandardAnalyzePaper(oconfig, nfilename, sroot=None, skey=None):
-    import app as appmod
+    import app_scope
+    from app_scope import UserScope
 
     UpdateStandardProgress(8, "准备")
-    with appmod.UserScope(sroot):
+    with UserScope(sroot):
         fullpath, sfile = _ResolvePdfPath(nfilename, skey)
         meta = core.ParseSourceFilename(sfile)
         rkey = skey or meta["key"]
@@ -250,7 +220,7 @@ def StandardAnalyzePaper(oconfig, nfilename, sroot=None, skey=None):
     else:
         ssummary = "完整报告：[[%s-standard]]" % rkey
 
-    with appmod.UserScope(sroot):
+    with UserScope(sroot):
         srel = _WriteStandardReport(rkey, stitle, omethod, orq)
         scomp = _WriteComparisonDraft(rkey, stitle, orq)
         _AppendStandardSummaryToSource(rkey, ssummary)
@@ -269,58 +239,26 @@ def StandardAnalyzePaper(oconfig, nfilename, sroot=None, skey=None):
 
 
 def _RunStandardJob(oconfig, nfilename, sroot=None, skey=None, nuid=0, ngen=0):
-    try:
-        oresult = StandardAnalyzePaper(oconfig, nfilename or "", sroot=sroot, skey=skey)
-        with standardlock:
-            if StandardJobAlive(nuid, ngen):
-                ojob = GetStandardJob(nuid)
-                ojob["result"] = oresult
-                ojob["finished"] = True
-                ojob["progress"] = 100
-                ojob["error"] = ""
-    except IngestCancelled as e:
-        with standardlock:
-            if StandardJobAlive(nuid, ngen):
-                ojob = GetStandardJob(nuid)
-                nstart = ojob.get("started_at") or 0
-                btimeout = nstart > 0 and (time.time() - nstart) > STANDARD_TIMEOUT_SEC
-                ojob["error"] = (
-                    "标准分析已超时（%d 分钟）" % (STANDARD_TIMEOUT_SEC // 60) if btimeout
-                    else (str(e).strip() or "已取消")
-                )
-                ojob["finished"] = True
-                ojob["progress"] = -1
-    except Exception as e:
-        logger.exception("标准分析失败 uid=%s gen=%s key=%s", nuid, ngen, skey)
-        with standardlock:
-            if StandardJobAlive(nuid, ngen):
-                ojob = GetStandardJob(nuid)
-                ojob["error"] = str(e)
-                ojob["finished"] = True
-                ojob["progress"] = -1
-    finally:
-        ReleaseLlm("standard", nuid)
-        with standardlock:
-            if StandardJobAlive(nuid, ngen):
-                GetStandardJob(nuid)["running"] = False
+    RunAnalysisJob(
+        StandardAnalyzePaper,
+        oconfig, nfilename, sroot=sroot, skey=skey, nuid=nuid, ngen=ngen,
+        slabel="标准分析",
+        ntimeout_sec=STANDARD_TIMEOUT_SEC,
+        olock=standardlock,
+        fjob_alive=StandardJobAlive,
+        fget_job=GetStandardJob,
+        skind="standard",
+    )
 
 
 def StartStandardAnalysis(oconfig, nfilename, sroot=None, skey=None, nuid=0):
-    with standardlock:
-        if GetStandardJob(nuid).get("running"):
-            return {"error": "标准分析正在进行中，请等待完成"}
-    if not TryAcquireLlm("standard", skey or nfilename or "", nuid):
-        return LlmBusyPayload(nuid) or {"error": "大模型正忙，请稍后再试"}
-    ngen = BeginStandardJob(
-        nuid,
-        current=nfilename or skey or "",
-        key=skey or "",
+    return StartAnalysisJob(
+        oconfig, nfilename, sroot=sroot, skey=skey, nuid=nuid,
+        skind="standard",
+        sbusy_msg="标准分析正在进行中，请等待完成",
+        fanalyze=StandardAnalyzePaper,
+        frun_job=_RunStandardJob,
+        olock=standardlock,
+        fget_job=GetStandardJob,
+        fbegin_job=BeginStandardJob,
     )
-    t = threading.Thread(
-        target=_RunStandardJob,
-        args=(oconfig, nfilename, sroot),
-        kwargs={"skey": skey, "nuid": nuid, "ngen": ngen},
-        daemon=True,
-    )
-    t.start()
-    return {"status": "started", "file": nfilename or skey or ""}

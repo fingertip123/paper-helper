@@ -5,6 +5,11 @@
 import json
 import re
 
+try:
+    import yaml
+except ImportError:
+    yaml = None
+
 import wiki_config as cfg
 
 wikilinkpattern = cfg.wikilinkpattern
@@ -18,39 +23,19 @@ def ParseFrontmatter(ntext):
     if not omatch:
         return {}, ntext
     sblock = omatch.group(1)
+    if yaml is None:
+        raise ImportError("缺少 PyYAML 依赖，请执行：pip install PyYAML")
     try:
-        import yaml
         oparsed = yaml.safe_load(sblock)
-        if isinstance(oparsed, dict):
-            return oparsed, ntext[omatch.end():]
-    except Exception:
-        pass
-    oresult = {}
-    for line in omatch.group(1).split("\n"):
-        if ":" not in line:
-            continue
-        key, _, value = line.partition(":")
-        key = key.strip()
-        value = value.strip()
-        if value.startswith("[") and value.endswith("]"):
-            try:
-                oresult[key] = json.loads(value)
-                if not isinstance(oresult[key], list):
-                    oresult[key] = [str(oresult[key])]
-                continue
-            except (json.JSONDecodeError, TypeError):
-                inner = value[1:-1].strip()
-                oresult[key] = [x.strip().strip('"').strip("'") for x in inner.split(",") if x.strip()] if inner else []
-        else:
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
-                value = value[1:-1]
-            if value in ("true", "True"):
-                oresult[key] = True
-            elif value in ("false", "False"):
-                oresult[key] = False
-            else:
-                oresult[key] = value
-    return oresult, ntext[omatch.end():]
+    except yaml.YAMLError as e:
+        raise ValueError(
+            "frontmatter YAML 解析失败，请检查格式（缩进、引号、嵌套值）：%s" % e
+        ) from e
+    if oparsed is None:
+        return {}, ntext[omatch.end():]
+    if not isinstance(oparsed, dict):
+        raise ValueError("frontmatter 须为 YAML 映射（key: value），当前类型：%s" % type(oparsed).__name__)
+    return oparsed, ntext[omatch.end():]
 
 
 def SourcePageIngested(ofm, nbody=""):

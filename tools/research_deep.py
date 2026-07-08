@@ -9,18 +9,26 @@
 import os
 import re
 import json
-import time
 import logging
-import threading
 
 import wiki_core as core
 import topic_manager as topics
-from io_utils import SafeName
 from paper_io import ExtractPaperText
 from paper_sections import PackForDeep
-from llm_client import CallLlm, ParseLlmJson, IngestCancelled
+from research_shared import (
+    Now as _Now,
+    ReadSourcePage as _ReadSourcePage,
+    ReadPurposeRqs as _ReadPurposeRqs,
+    PdfMissingMsg,
+    NotIngestedMsg,
+    ResolvePdfPath,
+    LlmJson,
+    LlmText,
+    RunAnalysisJob,
+    StartAnalysisJob,
+)
 from job_state import (
-    ResetJobDict, ReleaseLlm, TryAcquireLlm, LlmBusyPayload,
+    ResetJobDict,
     BeginDeepJob, GetDeepJob, GetDeepJobStatus, GetDeepActiveUid,
     DeepJobAlive, IsDeepCancelled, UpdateDeepProgress, deeplock,
 )
@@ -29,13 +37,8 @@ logger = logging.getLogger(__name__)
 
 DEEP_TIMEOUT_SEC = 1800
 
-PDF_MISSING_MSG = "找不到原始 PDF 文件。深度研究需要 PDF 原文，请重新上传后再试。"
-NOT_INGESTED_MSG = "该文献尚未「纳入研究」，请先纳入后再进行深度分析。"
-
-
-def _Now():
-    from datetime import datetime
-    return datetime.now().strftime("%Y-%m-%d")
+PDF_MISSING_MSG = PdfMissingMsg("深度研究")
+NOT_INGESTED_MSG = NotIngestedMsg("深度分析")
 
 
 def _LoadExistingWikiContext():
@@ -59,52 +62,16 @@ def _ReadPurpose():
     return (sp or "")[:4000]
 
 
-def _ReadPurposeRqs():
-    sp = topics.ReadText(topics.RulePath("purpose.md"))
-    ofields = topics.ParsePurposeFields(sp or "")
-    vrqlines = []
-    for skey in ("rq1", "rq2", "rq3", "rq4"):
-        sval = (ofields.get(skey) or "").strip()
-        if sval and sval not in ("（待填写）", "（未填写）"):
-            vrqlines.append(sval)
-    sthesis = (ofields.get("thesis") or "").strip()[:1200]
-    return "\n".join(vrqlines) if vrqlines else "（尚未填写具体研究问题）", sthesis
-
-
-def _ReadSourcePage(skey):
-    spath = os.path.join(core.wikidir, "sources", skey + ".md")
-    if os.path.isfile(spath):
-        with open(spath, "r", encoding="utf-8") as f:
-            return f.read()
-    return ""
-
-
 def _ResolvePdfPath(nfilename, skey=None):
-    """解析 PDF 路径；缺失时抛出带指引的异常。"""
-    sfile = SafeName(nfilename or "")
-    if not sfile and skey:
-        sfile = SafeName(core.ResolveRawfileForKey(skey))
-    if not sfile:
-        raise FileNotFoundError(PDF_MISSING_MSG)
-    fullpath = os.path.join(core.rawsourcesdir, sfile)
-    if not os.path.isfile(fullpath):
-        raise FileNotFoundError(PDF_MISSING_MSG)
-    return fullpath, sfile
+    return ResolvePdfPath(nfilename, skey, PDF_MISSING_MSG)
 
 
 def _LlmJson(oconfig, system, user, nmaxuser=8000):
-    content = CallLlm(oconfig, [
-        {"role": "system", "content": system},
-        {"role": "user", "content": user[:nmaxuser] if len(user) > nmaxuser else user},
-    ], bjson=True, fcancel=IsDeepCancelled)
-    return ParseLlmJson(content) if isinstance(content, str) else content
+    return LlmJson(oconfig, system, user, nmaxuser, IsDeepCancelled)
 
 
 def _LlmText(oconfig, system, user, nmaxuser=12000):
-    return CallLlm(oconfig, [
-        {"role": "system", "content": system},
-        {"role": "user", "content": user[:nmaxuser] if len(user) > nmaxuser else user},
-    ], bjson=False, fcancel=IsDeepCancelled)
+    return LlmText(oconfig, system, user, nmaxuser, IsDeepCancelled)
 
 
 # ---- 阶段① 结构解剖 ----
@@ -408,11 +375,12 @@ def DeepAnalyzePaper(oconfig, nfilename, sroot=None, skey=None):
     锁策略（与「纳入研究」一致）：仅在读文件 / 写文件的短临界区内持 datalock，
     耗时数分钟的 LLM 调用在锁外进行，绝不阻塞 /api/deep/progress 与 /api/data。
     """
-    import app as appmod  # noqa: E402
+    import app_scope
+    from app_scope import UserScope
 
     # ---- 阶段 0：读取上下文（持锁，绑定该用户数据根） ----
     update_callback(5, "准备")
-    with appmod.UserScope(sroot):
+    with UserScope(sroot):
         fullpath, sfile = _ResolvePdfPath(nfilename, skey)
         meta = core.ParseSourceFilename(sfile)
         rkey = skey or meta["key"]
@@ -462,7 +430,7 @@ def DeepAnalyzePaper(oconfig, nfilename, sroot=None, skey=None):
         + report_md
     )
     sbrief = _BriefFromStages(rkey, ostruct, ored, orq)
-    with appmod.UserScope(sroot):
+    with UserScope(sroot):
         analysis_dir = os.path.join(core.wikidir, "analysis")
         os.makedirs(analysis_dir, exist_ok=True)
         report_path = os.path.join(analysis_dir, "%s-report.md" % rkey)
@@ -496,63 +464,33 @@ def DeepAnalyzePaper(oconfig, nfilename, sroot=None, skey=None):
 update_callback = UpdateDeepProgress
 
 
-def _RunDeepJob(oconfig, nfilename, sroot=None, skey=None, nuid=0, ngen=0):
-    """后台线程：执行深度分析。LLM 互斥锁已在 StartDeepAnalysis 内获取，此处仅负责释放。"""
+def _BindDeepProgress():
     global update_callback
     update_callback = UpdateDeepProgress
-    try:
-        oresult = DeepAnalyzePaper(oconfig, nfilename or "", sroot=sroot, skey=skey)
-        with deeplock:
-            if DeepJobAlive(nuid, ngen):
-                ojob = GetDeepJob(nuid)
-                ojob["result"] = oresult
-                ojob["finished"] = True
-                ojob["progress"] = 100
-                ojob["error"] = ""
-    except IngestCancelled as e:
-        with deeplock:
-            if DeepJobAlive(nuid, ngen):
-                ojob = GetDeepJob(nuid)
-                nstart = ojob.get("started_at") or 0
-                btimeout = nstart > 0 and (time.time() - nstart) > DEEP_TIMEOUT_SEC
-                ojob["error"] = (
-                    "深度分析已超时（%d 分钟）" % (DEEP_TIMEOUT_SEC // 60) if btimeout
-                    else (str(e).strip() or "已取消")
-                )
-                ojob["finished"] = True
-                ojob["progress"] = -1
-    except Exception as e:
-        logger.exception("深度分析失败 uid=%s gen=%s key=%s", nuid, ngen, skey)
-        with deeplock:
-            if DeepJobAlive(nuid, ngen):
-                ojob = GetDeepJob(nuid)
-                ojob["error"] = str(e)
-                ojob["finished"] = True
-                ojob["progress"] = -1
-    finally:
-        ReleaseLlm("deep", nuid)
-        with deeplock:
-            if DeepJobAlive(nuid, ngen):
-                GetDeepJob(nuid)["running"] = False
+
+
+def _RunDeepJob(oconfig, nfilename, sroot=None, skey=None, nuid=0, ngen=0):
+    RunAnalysisJob(
+        DeepAnalyzePaper,
+        oconfig, nfilename, sroot=sroot, skey=skey, nuid=nuid, ngen=ngen,
+        slabel="深度分析",
+        ntimeout_sec=DEEP_TIMEOUT_SEC,
+        olock=deeplock,
+        fjob_alive=DeepJobAlive,
+        fget_job=GetDeepJob,
+        skind="deep",
+        fbefore=_BindDeepProgress,
+    )
 
 
 def StartDeepAnalysis(oconfig, nfilename, sroot=None, skey=None, nuid=0):
-    """启动深度分析。与「纳入研究 / 知识查询」共用同一把 LLM 互斥锁。"""
-    with deeplock:
-        if GetDeepJob(nuid).get("running"):
-            return {"error": "深度分析正在进行中，请等待完成"}
-    if not TryAcquireLlm("deep", skey or nfilename or "", nuid):
-        return LlmBusyPayload(nuid) or {"error": "大模型正忙，请稍后再试"}
-    ngen = BeginDeepJob(
-        nuid,
-        current=nfilename or skey or "",
-        key=skey or "",
+    return StartAnalysisJob(
+        oconfig, nfilename, sroot=sroot, skey=skey, nuid=nuid,
+        skind="deep",
+        sbusy_msg="深度分析正在进行中，请等待完成",
+        fanalyze=DeepAnalyzePaper,
+        frun_job=_RunDeepJob,
+        olock=deeplock,
+        fget_job=GetDeepJob,
+        fbegin_job=BeginDeepJob,
     )
-    t = threading.Thread(
-        target=_RunDeepJob,
-        args=(oconfig, nfilename, sroot),
-        kwargs={"skey": skey, "nuid": nuid, "ngen": ngen},
-        daemon=True,
-    )
-    t.start()
-    return {"status": "started", "file": nfilename or skey or ""}

@@ -61,9 +61,29 @@ def ListWikiPages():
 
 
 def RunLintQuick(vnodes, vedges, ndeadlinks=0):
-    """轻量巡检摘要（委托 wiki_graph）。"""
+    """已迁移至 wiki_graph.RunLintQuick（保留别名）。"""
     import wiki_graph as graph
     return graph.RunLintQuick(vnodes, vedges, ndeadlinks=ndeadlinks)
+
+
+def RunLintWithOdata(odata):
+    """已迁移至 wiki_graph（保留别名）。"""
+    import wiki_graph as graph
+    graph.Init(wikidir, rawsourcesdir, rootdir)
+    return graph.RunLintWithOdata(odata)
+
+
+def RunLint():
+    import wiki_graph as graph
+    graph.Init(wikidir, rawsourcesdir, rootdir)
+    return graph.RunLint()
+
+
+def FixLintIssues():
+    """已迁移至 wiki_graph.FixLint（保留别名）。"""
+    import wiki_graph as graph
+    graph.Init(wikidir, rawsourcesdir, rootdir)
+    return graph.FixLint()
 
 
 def EscapeBibtex(sval):
@@ -90,19 +110,6 @@ def ExportBibtex():
         vlines.append("@article{%s,\n  author = {%s},\n  title = {%s},\n  year = {%s},\n  journal = {%s},\n  url = {%s}\n}" % (
             skey, sauthor, stitle, syear, svenue, surl))
     return "\n\n".join(vlines)
-
-
-def RunLintWithOdata(odata):
-    """完整巡检（委托 wiki_graph）。"""
-    import wiki_graph as graph
-    graph.Init(wikidir, rawsourcesdir, rootdir)
-    return graph.RunLintWithOdata(odata)
-
-
-def RunLint():
-    import wiki_graph as graph
-    graph.Init(wikidir, rawsourcesdir, rootdir)
-    return graph.RunLint()
 
 
 def WriteOverview(odata):
@@ -349,13 +356,6 @@ def RepairOrphanQueries():
         io_utils.AtomicWriteText(p["path"], "---\n" + "\n".join(vfm) + "\n---\n\n" + nbody.lstrip())
         vfixed.append({"id": p["id"], "links": vcited})
     return vfixed
-
-
-def FixLintIssues():
-    """巡检并清理（委托 wiki_graph）。"""
-    import wiki_graph as graph
-    graph.Init(wikidir, rawsourcesdir, rootdir)
-    return graph.FixLint()
 
 
 def SnapshotTopic():

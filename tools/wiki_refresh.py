@@ -6,6 +6,7 @@ import os
 import threading
 
 import wiki_core as core
+import wiki_graph as wgraph
 import wiki_ops as wops
 import topic_manager as topics
 
@@ -66,7 +67,7 @@ def BuildDataFromScan(vnodes, vedges, ndeadlinks=0):
     ostats = {}
     for n in vnodes:
         ostats[n["type"]] = ostats.get(n["type"], 0) + 1
-    olint = wops.RunLintQuick(vnodes, vedges, ndeadlinks=ndeadlinks)
+    olint = wgraph.RunLintQuick(vnodes, vedges, ndeadlinks=ndeadlinks)
     from datetime import datetime
     oprogress = {}
     try:
