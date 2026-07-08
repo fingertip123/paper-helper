@@ -73,6 +73,16 @@ _CTX_FIELDS = frozenset({
 })
 
 
+def SyncCtxGlobals():
+    """将 AppContext 字段同步到模块 globals，供 app.py 内 LOAD_GLOBAL 解析。"""
+    omod = sys.modules[__name__]
+    for sname in _CTX_FIELDS:
+        dict.__setitem__(omod.__dict__, sname, getattr(actx.ctx, sname))
+
+
+SyncCtxGlobals()
+
+
 def __getattr__(name):
     if name in _CTX_FIELDS:
         return getattr(actx.ctx, name)
@@ -82,10 +92,10 @@ def __getattr__(name):
 def __setattr__(name, value):
     if name in _CTX_FIELDS:
         setattr(actx.ctx, name, value)
+        dict.__setitem__(sys.modules[__name__].__dict__, name, value)
         if name == "multiuser":
             app_scope.InitScope(bool(value), actx.ctx.baseroot or core.rootdir)
         return
-    import sys
     dict.__setitem__(sys.modules[__name__].__dict__, name, value)
 
 

@@ -38,5 +38,12 @@ class TestTaskQueue(unittest.TestCase):
         self.assertIsNone(task_queue.GetTaskProgress("invalid", 0))
 
 
+class TestAppCtxGlobals(unittest.TestCase):
+    def testMaxBodyBytesInModule(self):
+        import app as appmod
+        self.assertGreater(appmod.max_body_bytes, 0)
+        self.assertGreater(appmod.max_upload_bytes, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
