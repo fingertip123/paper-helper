@@ -2509,13 +2509,10 @@ function RenderLintReport(r){
   UpdateLintBadge({orphans:r.orphans?r.orphans.length:0,stale_pipelines:CountLibStale()});
 }
 function CountLibStale(){return LibSources().filter(LibHasStale).length}
-function ClearLintBadge(){
-  const ob=document.getElementById("lint_badge");if(!ob)return;
-  ob.classList.remove("show");
-  ob.textContent="";
-}
-function UpdateLintBadge(olint){
-  const ob=document.getElementById("lint_badge");if(!ob)return;
+function LintSeenKey(){return "lint_seen_"+(CLOUD_USERNAME||"local")+"_"+(CURRENT_TOPIC||"")}
+function GetLintSeen(){const v=parseInt(localStorage.getItem(LintSeenKey())||"0",10);return isNaN(v)?0:Math.max(0,v)}
+function SetLintSeen(n){try{localStorage.setItem(LintSeenKey(),String(Math.max(0,n|0)))}catch(e){}}
+function LintTotal(olint){
   const nor=Math.max(0,Number(olint&&olint.orphans)||0);
   let nst;
   if(olint&&Object.prototype.hasOwnProperty.call(olint,"stale_pipelines")){
@@ -2523,8 +2520,25 @@ function UpdateLintBadge(olint){
   }else{
     nst=CountLibStale();
   }
-  const ntotal=nor+nst;
-  if(ntotal>0){ob.textContent=String(ntotal);ob.classList.add("show")}else{ob.classList.remove("show");ob.textContent=""}
+  return nor+nst;
+}
+function ClearLintBadge(){
+  const ob=document.getElementById("lint_badge");if(!ob)return;
+  ob.classList.remove("show");
+  ob.textContent="";
+}
+function AckLintBadge(olint){
+  // 记录当前问题数为“已确认基线”，让徽标持久消失（跨刷新/重登），仅在问题新增时再提示。
+  SetLintSeen(LintTotal(olint||(DATA&&DATA.lint)||{}));
+  ClearLintBadge();
+}
+function UpdateLintBadge(olint){
+  const ob=document.getElementById("lint_badge");if(!ob)return;
+  const ntotal=LintTotal(olint);
+  let seen=GetLintSeen();
+  if(ntotal<seen){seen=ntotal;SetLintSeen(seen);}  // 问题减少时同步下调基线
+  const nshow=Math.max(0,ntotal-seen);              // 只提示“未确认的新增问题”
+  if(nshow>0){ob.textContent=String(nshow);ob.classList.add("show")}else{ob.classList.remove("show");ob.textContent=""}
 }
 async function FixLintIssues(){return RunLintCleanup()}
 async function RunLintCleanup(){
@@ -2546,13 +2560,7 @@ async function RunLintCleanup(){
       Toast("✓ 巡检无异常，知识库状态良好");
     }
     await Refresh(true);
-    if(DATA.lint){
-      DATA.lint.orphans=0;
-      DATA.lint.dead_links=0;
-      DATA.lint.knowledge_gaps=0;
-      DATA.lint.stale_pipelines=0;
-    }
-    ClearLintBadge();
+    AckLintBadge(DATA.lint);
   }catch(e){CloseLint();Toast("巡检失败："+e.message)}
 }
 async function RunLint(){
