@@ -2519,10 +2519,9 @@ function UpdateLintBadge(olint){
 async function FixLintIssues(){return RunLintCleanup()}
 async function RunLintCleanup(){
   if(NeedServer())return;
-  document.getElementById("lint_body").textContent="巡检并清理中…";
   try{
     const r=await Api("/api/lint/fix",{});
-    RenderLintReport(r.lint||{});
+    const olint=r.lint||{};
     const nr=(r.removed_orphans||r.pruned_orphans||[]).length;
     const ns=(r.stripped_dead_links||[]).length;
     const nd=(r.repaired_duplicates||[]).length;
@@ -2530,14 +2529,19 @@ async function RunLintCleanup(){
     if(nr)nparts.push("移除 "+nr+" 个孤儿页");
     if(ns)nparts.push("清理 "+ns+" 处死链");
     if(nd)nparts.push("合并 "+nd+" 个重复文献");
-    Toast(nparts.length?nparts.join("，")+"；文献卡片已保留，缺失项请重新纳入/分析":"✓ 巡检无异常，知识库状态良好");
+    CloseLint();
+    if(nparts.length){
+      Toast(nparts.join("，")+"；文献卡片已保留，缺失项请重新纳入/分析");
+    }else{
+      Toast("✓ 巡检无异常，知识库状态良好");
+    }
     await Refresh(true);
     if(DATA.lint)UpdateLintBadge(DATA.lint);
-  }catch(e){document.getElementById("lint_body").textContent="清理失败："+e.message}
+    else UpdateLintBadge({orphans:LintIsClean(olint)?0:(olint.orphans?olint.orphans.length:0),stale_pipelines:CountLibStale()});
+  }catch(e){CloseLint();Toast("巡检失败："+e.message)}
 }
 async function RunLint(){
   if(NeedServer())return;
-  document.getElementById("lintmodal").classList.add("open");
   await RunLintCleanup();
 }
 async function ExportBib(){
