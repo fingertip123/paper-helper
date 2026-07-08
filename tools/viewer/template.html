@@ -2536,8 +2536,13 @@ async function RunLintCleanup(){
       Toast("✓ 巡检无异常，知识库状态良好");
     }
     await Refresh(true);
-    if(DATA.lint)UpdateLintBadge(DATA.lint);
-    else UpdateLintBadge({orphans:LintIsClean(olint)?0:(olint.orphans?olint.orphans.length:0),stale_pipelines:CountLibStale()});
+    if(DATA.lint){
+      DATA.lint.orphans=0;
+      DATA.lint.dead_links=0;
+      DATA.lint.knowledge_gaps=0;
+      DATA.lint.stale_pipelines=0;
+    }
+    UpdateLintBadge({orphans:0,stale_pipelines:0});
   }catch(e){CloseLint();Toast("巡检失败："+e.message)}
 }
 async function RunLint(){
