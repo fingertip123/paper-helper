@@ -52,7 +52,10 @@
   main{flex:1;overflow:hidden;position:relative}
   .view{position:absolute;inset:0;display:none;overflow:auto;padding:22px}
   .view.active{display:block;animation:viewIn .26s cubic-bezier(.22,1,.36,1) both}
-  #graphview.active{display:block;padding:0;animation:none}
+  #graphview.active{display:block;padding:0;animation:none;overflow:hidden}
+  #graphcanvas{position:relative;z-index:1}
+  #graphview.graph-drawer-focus #graphcanvas{pointer-events:none}
+  #graphview.graph-drawer-focus .legend,#graphview.graph-drawer-focus .graphstats,#graphview.graph-drawer-focus .graphfilter,#graphview.graph-drawer-focus .graphegobadge,#graphview.graph-drawer-focus .hint{z-index:11}
   .stats{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px}
   .statcard{padding:14px 20px;min-width:90px;border-radius:22px}
   .statcard .num{font-family:var(--font-display);font-size:24px;font-weight:var(--fw-display);letter-spacing:var(--ls-title);color:var(--accent);position:relative;z-index:2}
@@ -113,10 +116,12 @@
   .hint{position:absolute;right:18px;bottom:18px;color:var(--muted);font-size:12px}
   .drawer-shell{position:absolute;inset:0;z-index:9;pointer-events:none}
   .drawer-shell.is-open,.drawer-shell.is-closing{pointer-events:auto}
-  .drawer-scrim{position:absolute;inset:0;background:var(--overlay-backdrop);backdrop-filter:blur(3px);opacity:0;transition:opacity .3s ease}
+  .drawer-scrim{position:absolute;inset:0;background:var(--overlay-backdrop);backdrop-filter:blur(3px);opacity:0;transition:opacity .3s ease;z-index:1}
   .drawer-shell.is-open .drawer-scrim{opacity:1}
   .drawer-shell.is-closing .drawer-scrim{opacity:0}
-  .drawer-panel{position:absolute;top:0;right:0;width:min(380px,92vw);height:100%;background:var(--drawer-bg);border-left:1px solid var(--border);padding:0;overflow:hidden;z-index:2;box-shadow:var(--drawer-shadow);transform:translateX(100%);will-change:transform;display:flex;flex-direction:column}
+  #graphcanvas_focus{position:absolute;inset:0;width:100%;height:100%;z-index:2;display:none;pointer-events:none;cursor:grab}
+  .drawer-shell.has-graph-focus #graphcanvas_focus{display:block;pointer-events:auto}
+  .drawer-panel{position:absolute;top:0;right:0;width:min(380px,92vw);height:100%;background:var(--drawer-bg);border-left:1px solid var(--border);padding:0;overflow:hidden;z-index:3;box-shadow:var(--drawer-shadow);transform:translateX(100%);will-change:transform;display:flex;flex-direction:column}
   .drawer-shell.is-open .drawer-panel{animation:drawerSlideIn .44s cubic-bezier(.34,1.38,.64,1) both}
   .drawer-shell.is-closing .drawer-panel{animation:drawerSlideOut .36s cubic-bezier(.45,.05,.55,.95) both}
   @keyframes drawerSlideIn{0%{transform:translateX(100%)}78%{transform:translateX(-12px)}92%{transform:translateX(4px)}100%{transform:translateX(0)}}
@@ -512,7 +517,7 @@
 <button type="button" class="theme-fab" id="theme_fab" onclick="OpenThemePicker()" title="切换界面主题">🎨</button>
 <main>
   <section id="libview" class="view active"><div class="libtoolbar"><div class="libfilt" id="libfilt"></div><div class="libviewtog" id="libviewtog"><button type="button" class="libviewbtn active" data-view="card" title="卡片视图" aria-label="卡片视图"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="1.5" width="5.5" height="5.5" rx="1.2" fill="currentColor"/><rect x="9" y="1.5" width="5.5" height="5.5" rx="1.2" fill="currentColor"/><rect x="1.5" y="9" width="5.5" height="5.5" rx="1.2" fill="currentColor"/><rect x="9" y="9" width="5.5" height="5.5" rx="1.2" fill="currentColor"/></svg></button><button type="button" class="libviewbtn" data-view="list" title="列表视图" aria-label="列表视图"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="2.2" rx="1.1" fill="currentColor"/><rect x="1.5" y="6.9" width="13" height="2.2" rx="1.1" fill="currentColor"/><rect x="1.5" y="11.3" width="13" height="2.2" rx="1.1" fill="currentColor"/></svg></button></div><select id="libsort" class="libsort" title="排序方式"><option value="ingested_desc">最近纳入 ↓</option><option value="ingested_asc">最近纳入 ↑</option><option value="stage_desc">研究深度 ↓</option><option value="stage_asc">研究深度 ↑</option><option value="added_desc">最近添加 ↓</option><option value="added_asc">最近添加 ↑</option><option value="year_desc">年份 ↓</option><option value="year_asc">年份 ↑</option><option value="pagerank_desc">关联度 ↓</option><option value="author">作者 A-Z</option><option value="title">标题 A-Z</option><option value="added">扫描顺序</option></select><div class="libsearch-wrap" id="libsearch_wrap"><input type="search" class="libsearch" id="libsearch" name="yanzhan-lib-q" placeholder="搜索标题、作者、标签…" autocomplete="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-form-type="other"></div></div><div class="libgroupbar" id="libgroupbar"></div><div class="libstagebar" id="libstagebar"></div><div class="dropzone" id="dropzone">🌷 拖放 PDF / Word / Markdown 到此处，或点击「添加文献」开始整理</div><div class="grid" id="libgrid"></div></section>
-  <section id="graphview" class="view"><canvas id="graphcanvas"></canvas><div class="legend" id="legend"></div><div class="graphegobadge" id="graphegobadge"><span id="graphego_lbl"></span><span class="x" onclick="ClearGraphFocus()" title="返回全局">×</span></div><div class="graphstats" id="graphstats"></div><div class="graphfilter"><div class="graphrow"><label>搜索</label><input id="graph_search" type="search" placeholder="标题 / ID" oninput="OnGraphSearchInput()" onkeydown="if(event.key==='Enter')FocusGraphSearch()"></div><div class="graphrow"><label>节点</label><select id="graph_filter" onchange="ApplyGraphFilter()"><option value="">全部类型</option></select></div><div class="graphrow"><label>关系</label><select id="graph_edge_filter" onchange="ApplyGraphFilter()"><option value="">全部关系</option></select></div><div class="graphlayouttog"><button type="button" id="graph_mode_flow" class="active" onclick="SetGraphLayoutMode('flow')">脉络</button><button type="button" id="graph_mode_free" onclick="SetGraphLayoutMode('free')">探索</button></div><button type="button" onclick="ApplyGraphThreadView()">🧭 梳理主脉络</button><button type="button" onclick="FocusGraphSearch()">⌖ 定位节点</button><button type="button" onclick="ExportGraphPng()">📷 导出 PNG</button><button type="button" onclick="ExportGraphJson()">⬇ 导出 JSON</button></div><div id="graphtooltip"></div><div class="graphempty" id="graphempty" style="display:none">当前筛选下无可见节点，请调整关系或节点类型</div><div class="hint">滚轮缩放 · 拖拽平移 · 拖动节点 · 点击查看详情 · 悬停高亮邻域</div></section>
+  <section id="graphview" class="view"><canvas id="graphcanvas"></canvas><div class="legend" id="legend"></div><div class="graphegobadge" id="graphegobadge"><span id="graphego_lbl"></span><span class="x" onclick="ClearGraphFocus()" title="返回全局">×</span></div><div class="graphstats" id="graphstats"></div><div class="graphfilter"><div class="graphrow"><label>搜索</label><input id="graph_search" type="search" placeholder="标题 / ID" oninput="OnGraphSearchInput()" onkeydown="if(event.key==='Enter')FocusGraphSearch()"></div><div class="graphrow"><label>节点</label><select id="graph_filter" onchange="ApplyGraphFilter()"><option value="">全部类型</option></select></div><div class="graphrow"><label>关系</label><select id="graph_edge_filter" onchange="ApplyGraphFilter()"><option value="">全部关系</option></select></div><div class="graphlayouttog"><button type="button" id="graph_mode_flow" class="active" onclick="SetGraphLayoutMode('flow')">脉络</button><button type="button" id="graph_mode_free" onclick="SetGraphLayoutMode('free')">探索</button></div><button type="button" onclick="ApplyGraphThreadView()">🧭 梳理主脉络</button><button type="button" onclick="FocusGraphSearch()">⌖ 定位节点</button><button type="button" onclick="ExportGraphPng()">📷 导出 PNG</button><button type="button" onclick="ExportGraphJson()">⬇ 导出 JSON</button></div><div id="graphtooltip"></div><div class="graphempty" id="graphempty" style="display:none">当前筛选下无可见节点，请调整关系或节点类型</div><div class="hint">滚轮缩放 · 拖拽平移 · 单击节点查看详情 · 悬停显示邻域标签 · 选中后关联节点浮于遮罩上</div></section>
   <section id="listview" class="view"></section>
   <section id="progressview" class="view"></section>
   <section id="docview" class="view">
@@ -548,6 +553,7 @@
   </section>
   <div id="drawer_shell" class="drawer-shell" data-drawer-shell>
     <div class="drawer-scrim" aria-hidden="true"></div>
+    <canvas id="graphcanvas_focus"></canvas>
     <aside id="drawer" class="drawer-panel"><div class="drawer-head"><button type="button" class="drawer-back" id="drawer_back" onclick="DrawerBack()">‹ 返回</button><span class="close" onclick="CloseDrawer()">×</span></div><div id="drawerbody"></div></aside>
   </div>
   <div id="pdfmodal"><div class="bar"><span class="name" id="pdfname"></span><a class="btn ghost" id="pdfnewtab" target="_blank">在新标签打开 ↗</a><span class="x" onclick="ClosePdf()">×</span></div><iframe id="pdfframe"></iframe></div>
@@ -1569,6 +1575,8 @@ function RenderDrawer(id){
   obody.scrollTop=0;
   UpdateDrawerNav();
   OpenDrawerShell("drawer_shell");
+  if(document.getElementById("graphview").classList.contains("active"))SetGraphDrawerFocus(id);
+  else ClearGraphDrawerFocus();
 }
 function OpenReport(reportId){
   const n=NODEMAP[reportId];
@@ -1635,7 +1643,7 @@ function CloseDrawerShell(sshellid){
   opanel.addEventListener("animationend",fend);
 }
 function IsDrawerOpen(sshellid){const s=document.getElementById(sshellid);return s&&(s.classList.contains("is-open")||s.classList.contains("is-closing"))}
-function CloseDrawer(){DRAWER_STACK=[];UpdateDrawerNav();CloseDrawerShell("drawer_shell")}
+function CloseDrawer(){DRAWER_STACK=[];UpdateDrawerNav();ClearGraphDrawerFocus();CloseDrawerShell("drawer_shell")}
 async function OpenPaperUrl(surl){
   surl=SafeUrl(surl);
   if(!surl){Toast("链接无效");return}
@@ -3409,6 +3417,7 @@ async function ConfirmDocExport(){
 }
 /* ---------- 力导向知识图谱 ---------- */
 let canvas,ctx,nodes=[],links=[],view={x:0,y:0,scale:1},dragnode=null,dragging=false,last={x:0,y:0},hover=null,hoverLink=null,rafid=null;
+let canvasFocus=null,ctxFocus=null,hoverFocus=null,hoverLinkFocus=null,GRAPH_DRAWER_FOCUS=null;
 let GRAPH_FILTER="",GRAPH_EDGE_FILTER="",GRAPH_EGO=null,GRAPH_SEARCH="",GRAPH_THREAD=false,GRAPH_LAYOUT_MODE="flow";
 let graphTick=0,graphStable=false,graphLayoutRaf=null,graphPulsePhase=0;
 let GRAPH_NEIGHBORS=null,GRAPH_THEME={},graphDrawRaf=null;
@@ -3431,7 +3440,8 @@ function ForceGraphRedraw(){
   if(!canvas||!ctx)return;
   ResizeCanvas();
   DrawGraph();
-  requestAnimationFrame(()=>{if(!canvas||!ctx)return;ResizeCanvas();DrawGraph();});
+  if(GRAPH_DRAWER_FOCUS)DrawGraphFocus();
+  requestAnimationFrame(()=>{if(!canvas||!ctx)return;ResizeCanvas();DrawGraph();if(GRAPH_DRAWER_FOCUS)DrawGraphFocus();});
 }
 function SetGraphLayoutMode(mode){
   GRAPH_LAYOUT_MODE=mode==="free"?"free":"flow";
@@ -3471,7 +3481,129 @@ function BuildGraphNeighbors(){
 }
 function ScheduleDrawGraph(){
   if(graphDrawRaf)return;
-  graphDrawRaf=requestAnimationFrame(()=>{graphDrawRaf=null;DrawGraph();});
+  graphDrawRaf=requestAnimationFrame(()=>{graphDrawRaf=null;DrawGraph();if(GRAPH_DRAWER_FOCUS)DrawGraphFocus();});
+}
+function GraphFocusIds(sid){
+  if(!sid)return null;
+  const vids=new Set([sid]);
+  const neigh=GRAPH_NEIGHBORS&&GRAPH_NEIGHBORS[sid];
+  if(neigh)neigh.forEach(x=>vids.add(x));
+  return vids;
+}
+function SetGraphDrawerFocus(sid){
+  GRAPH_DRAWER_FOCUS=sid||null;
+  const gv=document.getElementById("graphview");
+  const ds=document.getElementById("drawer_shell");
+  if(!gv||!ds)return;
+  if(sid&&gv.classList.contains("active")){
+    gv.classList.add("graph-drawer-focus");
+    ds.classList.add("has-graph-focus");
+    InitGraphFocusCanvas();
+    DrawGraphFocus();
+  }else ClearGraphDrawerFocus();
+}
+function ClearGraphDrawerFocus(){
+  GRAPH_DRAWER_FOCUS=null;
+  hoverFocus=null;hoverLinkFocus=null;
+  const gv=document.getElementById("graphview");
+  const ds=document.getElementById("drawer_shell");
+  if(gv)gv.classList.remove("graph-drawer-focus");
+  if(ds)ds.classList.remove("has-graph-focus");
+  if(ctxFocus&&canvasFocus)ctxFocus.clearRect(0,0,canvasFocus.clientWidth,canvasFocus.clientHeight);
+  if(canvas)DrawGraph();
+}
+function InitGraphFocusCanvas(){
+  canvasFocus=document.getElementById("graphcanvas_focus");
+  if(!canvasFocus||!canvas)return;
+  const dpr=window.devicePixelRatio||1;
+  const w=canvas.clientWidth,h=canvas.clientHeight;
+  canvasFocus.width=w*dpr;
+  canvasFocus.height=h*dpr;
+  canvasFocus.style.width=w+"px";
+  canvasFocus.style.height=h+"px";
+  ctxFocus=canvasFocus.getContext("2d");
+  ctxFocus.setTransform(dpr,0,0,dpr,0,0);
+  BindGraphFocus();
+}
+function DrawGraphFocus(){
+  if(!canvasFocus||!ctxFocus||!GRAPH_DRAWER_FOCUS)return;
+  const vfocus=GraphFocusIds(GRAPH_DRAWER_FOCUS);
+  if(!vfocus)return;
+  ctxFocus.clearRect(0,0,canvasFocus.clientWidth,canvasFocus.clientHeight);
+  ctxFocus.save();ctxFocus.translate(view.x,view.y);ctxFocus.scale(view.scale,view.scale);
+  const ot=GRAPH_THEME;
+  const slinka=ot.slinka,slabel=ot.slabel,sring=ot.sring,sglow=ot.sglow;
+  const vfnodes=nodes.filter(n=>vfocus.has(n.id));
+  const vflinks=links.filter(l=>vfocus.has(l.s.id)&&vfocus.has(l.t.id));
+  const ncenter=NODEMAP[GRAPH_DRAWER_FOCUS];
+  vflinks.forEach(l=>{
+    const active=hoverFocus&&(l.s.id===hoverFocus.id||l.t.id===hoverFocus.id)||hoverLinkFocus===l||ncenter&&(l.s.id===ncenter.id||l.t.id===ncenter.id);
+    const sc=active?slinka:EdgeColor(l.type);
+    DrawGraphLinkOn(ctxFocus,l.s.x,l.s.y,l.t.x,l.t.y,l.s.r,l.t.r,sc,active?2.8:(l.explicit?2.2:1.6),active,!!l.explicit);
+  });
+  const sfont=window.__graphFont||"500 12px sans-serif";
+  let bfont=false;
+  vfnodes.forEach(n=>{
+    const bsel=n.id===GRAPH_DRAWER_FOCUS;
+    const bhover=n===hoverFocus;
+    if(bsel||bhover){
+      ctxFocus.beginPath();ctxFocus.arc(n.x,n.y,n.r+3,0,6.2832);
+      ctxFocus.fillStyle=sglow;ctxFocus.globalAlpha=0.22;ctxFocus.fill();
+    }
+    ctxFocus.globalAlpha=1;
+    ctxFocus.beginPath();ctxFocus.arc(n.x,n.y,n.r,0,6.2832);ctxFocus.fillStyle=TypeColor(n.type);ctxFocus.fill();
+    if(bsel){ctxFocus.lineWidth=2.5;ctxFocus.strokeStyle=slinka;ctxFocus.setLineDash([]);ctxFocus.stroke()}
+    if(!n.ingested){ctxFocus.lineWidth=1.5;ctxFocus.strokeStyle=sring;ctxFocus.setLineDash([3,3]);ctxFocus.stroke();ctxFocus.setLineDash([])}
+    if(!bfont){ctxFocus.font=sfont;ctxFocus.textAlign="center";bfont=true}
+    ctxFocus.fillStyle=slabel;ctxFocus.globalAlpha=0.95;
+    const lbl=n.title.length>22?n.title.slice(0,21)+"…":n.title;
+    ctxFocus.fillText(lbl,n.x,n.y+n.r+13);
+  });
+  ctxFocus.globalAlpha=1;ctxFocus.restore();
+  UpdateGraphFocusTooltip();
+}
+function UpdateGraphFocusTooltip(e){
+  const ot=document.getElementById("graphtooltip");if(!ot||!GRAPH_DRAWER_FOCUS)return;
+  if(hoverLinkFocus){
+    let stxt=EdgeLabel(hoverLinkFocus.type)+"："+(hoverLinkFocus.s.title||"")+" → "+(hoverLinkFocus.t.title||"");
+    if(hoverLinkFocus.explicit)stxt+=" · 显式关系";
+    ot.innerHTML=stxt;ot.classList.add("show");
+    if(e){ot.style.left=(e.clientX+14)+"px";ot.style.top=(e.clientY+14)+"px";}
+    return;
+  }
+  if(hoverFocus){
+    const nd=hoverFocus.degree||0,npr=hoverFocus.pagerank||0;
+    ot.innerHTML=`<div style="font-weight:600;color:var(--text)">${Esc(hoverFocus.title||hoverFocus.id)}</div>`+
+      `<div>${TypeLabel(hoverFocus.type)} · 连接 ${nd} · 关联度 ${(npr*100).toFixed(1)}%</div>`+
+      `<div style="color:var(--muted);margin-top:2px">单击查看详情 · 双击聚焦邻域</div>`;
+    ot.classList.add("show");
+    if(e){ot.style.left=(e.clientX+14)+"px";ot.style.top=(e.clientY+14)+"px";}
+    return;
+  }
+  ot.classList.remove("show");
+}
+function PickFocusNode(p){
+  const vfocus=GraphFocusIds(GRAPH_DRAWER_FOCUS);
+  if(!vfocus)return null;
+  return nodes.find(n=>{
+    if(!vfocus.has(n.id))return false;
+    const dx=n.x-p.x,dy=n.y-p.y;
+    return dx*dx+dy*dy<=n.r*n.r+36;
+  });
+}
+function PickFocusLink(p){
+  const vfocus=GraphFocusIds(GRAPH_DRAWER_FOCUS);
+  if(!vfocus)return null;
+  let obest=null,bdist=999;
+  links.forEach(l=>{
+    if(!vfocus.has(l.s.id)||!vfocus.has(l.t.id))return;
+    const dx=l.t.x-l.s.x,dy=l.t.y-l.s.y,len2=dx*dx+dy*dy||1;
+    const t=Math.max(0,Math.min(1,((p.x-l.s.x)*dx+(p.y-l.s.y)*dy)/len2));
+    const px=l.s.x+t*dx,py=l.s.y+t*dy;
+    const d=Math.hypot(p.x-px,p.y-py);
+    if(d<14&&d<bdist){bdist=d;obest=l}
+  });
+  return obest;
 }
 function EdgeColor(etype){return (EC[etype]||EC["链接"]||{}).color||"#b0a4ad"}
 function EdgeLabel(etype){return (EC[etype]||{}).label||etype||"链接"}
@@ -3668,8 +3800,13 @@ function StartGraphIdlePulse(){
   rafid=requestAnimationFrame(pulse);
 }
 function CenterGraphView(){CenterGraphOnNodes(nodes)}
-function ResizeCanvas(){const dpr=window.devicePixelRatio||1;canvas.width=canvas.clientWidth*dpr;canvas.height=canvas.clientHeight*dpr;ctx.setTransform(dpr,0,0,dpr,0,0)}
-function RedrawGraph(){if(!canvas||!ctx)return;ResizeCanvas();DrawGraph()}
+function ResizeCanvas(){
+  const dpr=window.devicePixelRatio||1;
+  canvas.width=canvas.clientWidth*dpr;canvas.height=canvas.clientHeight*dpr;
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  if(canvasFocus&&GRAPH_DRAWER_FOCUS)InitGraphFocusCanvas();
+}
+function RedrawGraph(){if(!canvas||!ctx)return;ResizeCanvas();DrawGraph();if(GRAPH_DRAWER_FOCUS)DrawGraphFocus()}
 function RenderLegend(){
   const used=[...new Set(DATA.nodes.map(n=>n.type))];
   let h=used.map(t=>`<div class="row"><span class="dot" style="background:${TypeColor(t)}"></span>${TypeLabel(t)}</div>`).join("");
@@ -3722,26 +3859,29 @@ function StepGraphPhysics(bidle){
   return nenergy;
 }
 function DrawGraphLink(sx,sy,tx,ty,sr,tr,color,nwidth,bactive,bexplicit){
+  DrawGraphLinkOn(ctx,sx,sy,tx,ty,sr,tr,color,nwidth,bactive,bexplicit);
+}
+function DrawGraphLinkOn(oc,sx,sy,tx,ty,sr,tr,color,nwidth,bactive,bexplicit){
   const dx=tx-sx,dy=ty-sy,len=Math.sqrt(dx*dx+dy*dy)||1;
   const ux=dx/len,uy=dy/len;
   const fx=sx+ux*sr,fy=sy+uy*sr;
   const ex=tx-ux*(tr+7),ey=ty-uy*(tr+7);
-  ctx.strokeStyle=color;ctx.lineWidth=nwidth;ctx.globalAlpha=bactive?1:(bexplicit?0.72:0.38);
+  oc.strokeStyle=color;oc.lineWidth=nwidth;oc.globalAlpha=bactive?1:(bexplicit?0.72:0.38);
   if(!bactive&&len>60){
     const mx=(fx+ex)/2,my=(fy+ey)/2;
     const px=-uy,py=ux;
     const bend=Math.min(len*0.12,36)*(bexplicit?1:0.7);
-    ctx.beginPath();ctx.moveTo(fx,fy);ctx.quadraticCurveTo(mx+px*bend,my+py*bend,ex,ey);ctx.stroke();
+    oc.beginPath();oc.moveTo(fx,fy);oc.quadraticCurveTo(mx+px*bend,my+py*bend,ex,ey);oc.stroke();
   }else{
-    ctx.beginPath();ctx.moveTo(fx,fy);ctx.lineTo(ex,ey);ctx.stroke();
+    oc.beginPath();oc.moveTo(fx,fy);oc.lineTo(ex,ey);oc.stroke();
   }
   const ang=Math.atan2(ey-fy,ex-fx),ah=bactive?8:6;
-  ctx.fillStyle=color;
-  ctx.beginPath();ctx.moveTo(ex,ey);
-  ctx.lineTo(ex-ah*Math.cos(ang-0.45),ey-ah*Math.sin(ang-0.45));
-  ctx.lineTo(ex-ah*Math.cos(ang+0.45),ey-ah*Math.sin(ang+0.45));
-  ctx.closePath();ctx.fill();
-  ctx.globalAlpha=1;
+  oc.fillStyle=color;
+  oc.beginPath();oc.moveTo(ex,ey);
+  oc.lineTo(ex-ah*Math.cos(ang-0.45),ey-ah*Math.sin(ang-0.45));
+  oc.lineTo(ex-ah*Math.cos(ang+0.45),ey-ah*Math.sin(ang+0.45));
+  oc.closePath();oc.fill();
+  oc.globalAlpha=1;
 }
 function DrawGraph(){
   if(!canvas||!ctx)return;
@@ -3749,13 +3889,16 @@ function DrawGraph(){
   const ot=GRAPH_THEME;
   const hoverNeigh=hover&&GRAPH_NEIGHBORS?GRAPH_NEIGHBORS[hover.id]:null;
   const bsearch=!!(GRAPH_SEARCH||"").trim();
+  const bdrawer=!!GRAPH_DRAWER_FOCUS;
   const slinka=ot.slinka,slabel=ot.slabel,sring=ot.sring,ssearch=ot.ssearch,sglow=ot.sglow;
   links.forEach(l=>{
     const active=hover&&(l.s.id===hover.id||l.t.id===hover.id)||hoverLink===l;
-    const dim=hover&&!active;
-    if(dim)return;
+    const dim=(hover||bdrawer)&&!active;
+    if(dim&&!bdrawer)return;
     const sc=active?slinka:EdgeColor(l.type);
+    if(bdrawer)ctx.globalAlpha=0.14;
     DrawGraphLink(l.s.x,l.s.y,l.t.x,l.t.y,l.s.r,l.t.r,sc,active?2.8:(l.explicit?2:1.4),active,!!l.explicit);
+    ctx.globalAlpha=1;
   });
   const sfont=window.__graphFont||"500 12px sans-serif";
   let bfont=false;
@@ -3763,9 +3906,10 @@ function DrawGraph(){
   const bcrowded=nodes.length>22;
   nodes.forEach(n=>{
     const bmatch=!bsearch||GraphNodeMatch(n);
-    const dim=(hover&&n!==hover&&!(hoverNeigh&&hoverNeigh.has(n.id)))||(bsearch&&!bmatch);
+    const bneigh=hover&&(n===hover||(hoverNeigh&&hoverNeigh.has(n.id)));
+    const dim=bdrawer||((hover&&!bneigh)||(bsearch&&!bmatch));
     const bcore=(n.pagerank||0)>=npmax*0.45;
-    ctx.globalAlpha=dim?0.18:1;
+    ctx.globalAlpha=dim?(bdrawer?0.1:0.18):1;
     if((bcore||n===hover)&&!dim){
       ctx.beginPath();ctx.arc(n.x,n.y,n.r+2,0,6.2832);
       ctx.fillStyle=sglow;ctx.globalAlpha=dim?0.08:0.12;ctx.fill();ctx.globalAlpha=dim?0.18:1;
@@ -3773,15 +3917,15 @@ function DrawGraph(){
     ctx.beginPath();ctx.arc(n.x,n.y,n.r,0,6.2832);ctx.fillStyle=TypeColor(n.type);ctx.fill();
     if(bmatch&&bsearch){ctx.lineWidth=2.5;ctx.strokeStyle=ssearch;ctx.setLineDash([]);ctx.stroke()}
     if(!n.ingested){ctx.lineWidth=1.5;ctx.strokeStyle=sring;ctx.setLineDash([3,3]);ctx.stroke();ctx.setLineDash([])}
-    const blabel=n===hover||(bmatch&&bsearch)||(!bcrowded&&(bcore||view.scale>0.62||(n.degree||0)>2));
-    if(blabel){
+    const blabel=bneigh||(bmatch&&bsearch)||(!bcrowded&&!hover&&(bcore||view.scale>0.62||(n.degree||0)>2));
+    if(blabel&&!bdrawer){
       if(!bfont){ctx.font=sfont;ctx.textAlign="center";bfont=true}
       ctx.globalAlpha=dim?0.3:0.92;ctx.fillStyle=slabel;
       const lbl=n.title.length>18?n.title.slice(0,17)+"…":n.title;ctx.fillText(lbl,n.x,n.y+n.r+12);
     }
   });
   ctx.globalAlpha=1;ctx.restore();
-  UpdateGraphTooltip();
+  if(!GRAPH_DRAWER_FOCUS)UpdateGraphTooltip();
 }
 function UpdateGraphTooltip(e){
   const ot=document.getElementById("graphtooltip");if(!ot)return;
@@ -3836,7 +3980,7 @@ function GraphPointerMove(e){
   hover=nhover;hoverLink=nlink;
   canvas.style.cursor=hover||hoverLink?"pointer":"grab";
   UpdateGraphTooltip(e);
-  if(!dragging){if(bchanged)DrawGraph();return}
+  if(!dragging){if(bchanged)ScheduleDrawGraph();return}
   view.x+=e.clientX-last.x;view.y+=e.clientY-last.y;last={x:e.clientX,y:e.clientY};
   ScheduleDrawGraph();
 }
@@ -3850,6 +3994,50 @@ function GraphPointerDblClick(e){
   const p=ToWorld(e);const n=PickNode(p);
   if(!n)return;
   GRAPH_EGO=n.id;CancelGraphLayout();InitGraph();
+}
+function GraphFocusPointerDown(e){
+  const p=ToWorld(e);dragnode=PickFocusNode(p);dragging=true;last={x:e.clientX,y:e.clientY};
+  if(dragnode){hoverFocus=dragnode;DrawGraphFocus();}
+}
+function GraphFocusPointerMove(e){
+  if(dragging&&dragnode){
+    const p=ToWorld(e);
+    dragnode.x=p.x;dragnode.y=p.y;dragnode.vx=0;dragnode.vy=0;
+    ScheduleDrawGraph();
+    return;
+  }
+  const p=ToWorld(e);
+  const nhover=PickFocusNode(p),nlink=nhover?null:PickFocusLink(p);
+  const bchanged=nhover!==hoverFocus||nlink!==hoverLinkFocus;
+  hoverFocus=nhover;hoverLinkFocus=nlink;
+  if(canvasFocus)canvasFocus.style.cursor=hoverFocus||hoverLinkFocus?"pointer":"grab";
+  UpdateGraphFocusTooltip(e);
+  if(!dragging){if(bchanged)DrawGraphFocus();return}
+  view.x+=e.clientX-last.x;view.y+=e.clientY-last.y;last={x:e.clientX,y:e.clientY};
+  ScheduleDrawGraph();
+}
+function GraphFocusPointerUp(e){
+  const pmoved=Math.abs(e.clientX-last.x)>=4||Math.abs(e.clientY-last.y)>=4;
+  if(dragnode&&!pmoved){
+    if(dragnode.id!==GRAPH_DRAWER_FOCUS)OpenDrawer(dragnode.id);
+    else DrawGraphFocus();
+  }else if(!pmoved&&!PickFocusNode(ToWorld(e))&&!PickFocusLink(ToWorld(e)))CloseDrawer();
+  dragging=false;dragnode=null;
+}
+function GraphFocusPointerDblClick(e){
+  const p=ToWorld(e);const n=PickFocusNode(p);
+  if(!n)return;
+  GRAPH_EGO=n.id;CancelGraphLayout();ClearGraphDrawerFocus();CloseDrawer();InitGraph();
+}
+function BindGraphFocus(){
+  if(!canvasFocus||canvasFocus._graphBound)return;
+  canvasFocus._graphBound=true;
+  canvasFocus.onpointerdown=e=>{canvasFocus.setPointerCapture(e.pointerId);GraphFocusPointerDown(e)};
+  canvasFocus.onpointermove=GraphFocusPointerMove;
+  canvasFocus.onpointerup=e=>{try{canvasFocus.releasePointerCapture(e.pointerId)}catch(x){}GraphFocusPointerUp(e)};
+  canvasFocus.onpointerleave=()=>{hoverFocus=null;hoverLinkFocus=null;UpdateGraphFocusTooltip();DrawGraphFocus()};
+  canvasFocus.ondblclick=GraphFocusPointerDblClick;
+  canvasFocus.onwheel=e=>{e.preventDefault();const f=e.deltaY<0?1.1:0.9;const r=canvas.getBoundingClientRect();const mx=e.clientX-r.left,my=e.clientY-r.top;view.x=mx-(mx-view.x)*f;view.y=my-(my-view.y)*f;view.scale=Math.max(0.15,Math.min(4,view.scale*f));RedrawGraph()};
 }
 function BindGraph(){
   if(canvas._graphBound)return;
@@ -3892,7 +4080,8 @@ function SwitchView(vid){
     void view.offsetWidth;
     view.classList.add("active");
   }
-  if(vid==="graphview"){CancelGraphLayout();if(!canvas||!nodes.length)InitGraph();else requestAnimationFrame(()=>ForceGraphRedraw())}
+  if(vid==="graphview"){CancelGraphLayout();if(!canvas||!nodes.length)InitGraph();else requestAnimationFrame(()=>ForceGraphRedraw());if(IsDrawerOpen("drawer_shell")&&DRAWER_STACK.length)SetGraphDrawerFocus(DRAWER_STACK[DRAWER_STACK.length-1])}
+  if(vid!=="graphview")ClearGraphDrawerFocus();
   if(vid==="docview")LoadDocsList();
   if(vid==="progressview")RenderProgress();
   if(vid==="libview")setTimeout(()=>AnimateRenderLibrary(),40);
