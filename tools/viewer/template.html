@@ -721,7 +721,7 @@
   <div id="lintmodal" class="ph-modal"><div class="setbox" style="width:min(640px,94vw);max-height:88vh;overflow:auto">
     <h2>🌿 知识库巡检</h2>
     <div id="lint_body" class="lintlist">加载中…</div>
-    <div class="row"><button class="btn ghost" onclick="CloseLint()">关闭</button><button class="btn sec" onclick="FixLintIssues()">🔧 一键修复</button><button class="btn" onclick="RunLint()">重新巡检</button></div>
+    <div class="row"><button class="btn ghost" onclick="CloseLint()">关闭</button><button class="btn" onclick="RunLint()">巡检并清理</button></div>
   </div></div>
   <div id="onboardmodal" class="ph-modal"><div class="setbox" style="width:min(520px,94vw)">
     <h2>🌱 欢迎使用研栈</h2>
@@ -2090,7 +2090,7 @@ async function Refresh(silent){
   try{
     DATA=await Api("/api/data");RenderAll();UpdateLintBadge(DATA.lint);
     if(!silent)Toast("已刷新");
-    if(!silent&&DATA.lint&&DATA.lint.orphans>0)Toast("巡检："+DATA.lint.orphans+" 个孤立页面，可点「健康巡检」修复",4500);
+    if(!silent&&DATA.lint&&DATA.lint.orphans>0)Toast("巡检：发现 "+DATA.lint.orphans+" 个孤立页面，点「健康巡检」可自动清理",4500);
     if(!silent&&DATA.stale_analysis&&DATA.stale_analysis.length){
       const ocnt={};
       DATA.stale_analysis.forEach(x=>{ocnt[x.kind]=(ocnt[x.kind]||0)+1});
@@ -2490,7 +2490,7 @@ function RenderLintReport(r){
   if(r.orphans&&r.orphans.length)h+=" — "+r.orphans.slice(0,8).map(x=>Esc(x.id)).join(", ");
   h+="</li>";
   if(r.prunable_orphans&&r.prunable_orphans.length){
-    h+="<li>可清理的孤立 concept/comparison："+r.prunable_orphans.length;
+    h+="<li>将自动移除的孤儿页："+r.prunable_orphans.length;
     h+=" — "+r.prunable_orphans.slice(0,6).map(x=>Esc(x.id)).join(", ");
     h+="</li>";
   }
@@ -2498,7 +2498,7 @@ function RenderLintReport(r){
   if(r.dead_links&&r.dead_links.length)h+="<br>"+r.dead_links.slice(0,6).map(x=>Esc(x.page)+"→"+Esc(x.link)).join("<br>");
   h+="</li><li>页面信息（标题/标签等）缺失："+(r.frontmatter_issues?r.frontmatter_issues.length:0)+"</li>";
   h+="<li>知识空白："+(r.knowledge_gaps?r.knowledge_gaps.length:0)+"</li></ul>";
-  h+='<p class="note" style="margin-top:10px;font-size:12px">「一键修复」将：补全 query 关联、模糊修复死链、为 concept 补链、合并重复 source 页、删除孤立 concept/comparison 页。</p>';
+  h+='<p class="note" style="margin-top:10px;font-size:12px">巡检将直接移除孤儿页（memo/概念/问答等），剥离正文中的死链，保留论文库文献卡片。缺失 PDF 或需重做的分析请在卡片上重新纳入/分析。</p>';
   document.getElementById("lint_body").innerHTML=h;
   UpdateLintBadge({orphans:r.orphans?r.orphans.length:0,stale_pipelines:CountLibStale()});
 }
@@ -2510,32 +2510,28 @@ function UpdateLintBadge(olint){
   const ntotal=nor+nst;
   if(ntotal>0){ob.textContent=ntotal;ob.classList.add("show")}else{ob.classList.remove("show");ob.textContent=""}
 }
-async function FixLintIssues(){
+async function FixLintIssues(){return RunLintCleanup()}
+async function RunLintCleanup(){
   if(NeedServer())return;
-  document.getElementById("lint_body").textContent="修复中…";
+  document.getElementById("lint_body").textContent="巡检并清理中…";
   try{
     const r=await Api("/api/lint/fix",{});
     RenderLintReport(r.lint||{});
-    const n=(r.repaired_queries||[]).length;
-    const nd=(r.repaired_dead_links||[]).length;
-    const no=(r.repaired_orphans||[]).length;
-    const ndup=(r.repaired_duplicates||[]).length;
-    const npr=(r.pruned_orphans||[]).length;
+    const nr=(r.removed_orphans||r.pruned_orphans||[]).length;
+    const ns=(r.stripped_dead_links||[]).length;
+    const nd=(r.repaired_duplicates||[]).length;
     const nparts=[];
-    if(n)nparts.push(n+" 个 query");
-    if(nd)nparts.push(nd+" 处死链");
-    if(no)nparts.push(no+" 个 concept 补链");
-    if(ndup)nparts.push(ndup+" 个重复 source 合并");
-    if(npr)nparts.push(npr+" 个孤儿页归档");
-    Toast(nparts.length?"已修复："+nparts.join("、"):"暂无可自动修复项");
+    if(nr)nparts.push("移除 "+nr+" 个孤儿页");
+    if(ns)nparts.push("清理 "+ns+" 处死链");
+    if(nd)nparts.push("合并 "+nd+" 个重复文献");
+    Toast(nparts.length?nparts.join("，")+"；文献卡片已保留，缺失项请重新纳入/分析":"知识库状态良好，无需清理");
     await Refresh(true);
-  }catch(e){document.getElementById("lint_body").textContent="修复失败："+e.message}
+  }catch(e){document.getElementById("lint_body").textContent="清理失败："+e.message}
 }
 async function RunLint(){
   if(NeedServer())return;
   document.getElementById("lintmodal").classList.add("open");
-  document.getElementById("lint_body").textContent="巡检中…";
-  try{const r=await Api("/api/lint");RenderLintReport(r)}catch(e){document.getElementById("lint_body").textContent="失败："+e.message}
+  await RunLintCleanup();
 }
 async function ExportBib(){
   if(NeedServer())return;
@@ -3417,6 +3413,15 @@ let GRAPH_FILTER="",GRAPH_EDGE_FILTER="",GRAPH_EGO=null,GRAPH_SEARCH="",GRAPH_TH
 let graphTick=0,graphStable=false,graphLayoutRaf=null,graphPulsePhase=0;
 let GRAPH_NEIGHBORS=null,GRAPH_THEME={},graphDrawRaf=null;
 const GRAPH_REPEL_DIST=320,GRAPH_MAX_TICKS=900;
+function GraphNodeRadius(n,ncount){
+  const ndeg=n.degree||0,npr=n.pagerank||0;
+  const nbase=5+Math.min(ndeg*0.55,5)+Math.min(Math.sqrt(Math.max(npr,0))*10,6);
+  const nscale=ncount>45?0.75:ncount>30?0.85:ncount>18?0.92:1;
+  return Math.min(14,Math.max(5,nbase*nscale));
+}
+function GraphCollisionGap(a,b){
+  return a.r+b.r+(nodes.length>30?14:10);
+}
 let EC=DATA.edgeconfig||{},GL=DATA.graphlayers||{};
 function CancelGraphLayout(){
   if(graphLayoutRaf){cancelAnimationFrame(graphLayoutRaf);graphLayoutRaf=null;}
@@ -3475,14 +3480,17 @@ function LayoutLayerPositions(vraw,w,hh){
   const olayers={};
   vraw.forEach(n=>{const st=n.type||"unknown";if(!olayers[st])olayers[st]=[];olayers[st].push(n);});
   const opos={};
-  const nspread=Math.min(w,hh)*0.68;
   Object.keys(olayers).forEach(st=>{
     const vitems=olayers[st].slice().sort((a,b)=>(b.pagerank||0)-(a.pagerank||0)||(a.id||"").localeCompare(b.id||""));
     const ncount=vitems.length,nlayer=GraphLayerY(st,hh);
-    const nslot=ncount>1?nspread/(ncount-1):0,nstart=w*0.5-nspread/2;
+    const ngap=Math.max(44,Math.min(96,(w*0.92)/Math.max(ncount-1,1)));
+    const nused=ncount>1?(ncount-1)*ngap:0;
+    const nstart=w*0.5-nused/2;
+    const njitter=ncount>8?22:ncount>4?14:0;
     vitems.forEach((n,i)=>{
-      const nx=ncount===1?w*0.5:nstart+i*nslot;
-      opos[n.id]={x:nx,y:nlayer,targetY:nlayer,targetX:nx};
+      const nx=ncount===1?w*0.5:nstart+i*ngap;
+      const ny=nlayer+((i%3)-1)*njitter;
+      opos[n.id]={x:nx,y:ny,targetY:nlayer,targetX:nx};
     });
   });
   return opos;
@@ -3534,7 +3542,7 @@ function CenterGraphOnNodes(vsubset){
   const gw=Math.max(maxx-minx,1),gh=Math.max(maxy-miny,1);
   const w=canvas.clientWidth,hh=canvas.clientHeight;
   const cx=(minx+maxx)/2,cy=(miny+maxy)/2;
-  view.scale=Math.min(1.5,Math.min((w-100)/gw,(hh-100)/gh));
+  view.scale=Math.min(1.35,Math.min((w-120)/gw,(hh-120)/gh));
   view.x=w/2-cx*view.scale;view.y=hh/2-cy*view.scale;
 }
 function FocusGraphSearch(){
@@ -3605,9 +3613,7 @@ function InitGraph(){
   const opos=LayoutLayerPositions(vraw,w,hh);
   nodes=vraw.map(n=>{
     const op=opos[n.id]||{x:w*0.5,y:hh*0.5,targetY:hh*0.5,targetX:w*0.5};
-    const npr=n.pagerank||0;
-    const ndeg=n.degree||0;
-    return {...n,x:op.x,y:op.y,targetY:op.targetY,targetX:op.targetX,vx:0,vy:0,r:7+Math.min(ndeg*1.8,12)+Math.min(npr*16,14)};
+    return {...n,x:op.x,y:op.y,targetY:op.targetY,targetX:op.targetX,vx:0,vy:0,r:GraphNodeRadius(n,vraw.length)};
   });
   const nm={};nodes.forEach(n=>nm[n.id]=n);
   const vids=new Set(nodes.map(n=>n.id));
@@ -3675,7 +3681,9 @@ function RenderLegend(){
 }
 function StepGraphPhysics(bidle){
   const w=canvas.clientWidth,hh=canvas.clientHeight,cx=w/2,cy=hh/2;
-  const nrepel=GRAPH_REPEL_DIST;
+  const ncount=nodes.length;
+  const nrepel=GRAPH_REPEL_DIST+(ncount>25?60:0)+(ncount>40?60:0);
+  const nrepelF=(bidle?900:2600)*(ncount>20?1.35:1)*(ncount>35?1.2:1);
   const bflow=GRAPH_LAYOUT_MODE==="flow";
   const nyStr=bflow?0.006:0.003,nxStr=bflow?0.005:0.002;
   for(let i=0;i<nodes.length;i++){
@@ -3686,15 +3694,21 @@ function StepGraphPhysics(bidle){
     for(let j=i+1;j<nodes.length;j++){
       const b=nodes[j];
       const dx=a.x-b.x,dy=a.y-b.y;
-      if(Math.abs(dx)>nrepel&&Math.abs(dy)>nrepel)continue;
       const d2=dx*dx+dy*dy||1,d=Math.sqrt(d2);
-      const f=(bidle?900:2600)/d2;const fx=dx/d*f,fy=dy/d*f;
-      a.vx+=fx;a.vy+=fy;b.vx-=fx;b.vy-=fy;
+      const ngap=GraphCollisionGap(a,b);
+      if(d<ngap){
+        const f=(ngap-d)/d*(bidle?0.55:0.85);
+        const fx=dx*f,fy=dy*f;
+        a.vx+=fx;a.vy+=fy;b.vx-=fx;b.vy-=fy;
+      }else if(Math.abs(dx)<=nrepel&&Math.abs(dy)<=nrepel){
+        const f=nrepelF/d2;const fx=dx/d*f,fy=dy/d*f;
+        a.vx+=fx;a.vy+=fy;b.vx-=fx;b.vy-=fy;
+      }
     }
   }
   links.forEach(l=>{
     let dx=l.t.x-l.s.x,dy=l.t.y-l.s.y,d=Math.sqrt(dx*dx+dy*dy)||1;
-    const ideal=bflow?130:105;
+    const ideal=bflow?Math.max(110,l.s.r+l.t.r+52):Math.max(88,l.s.r+l.t.r+42);
     const f=(d-ideal)*(bidle?0.004:0.012);dx/=d;dy/=d;
     l.s.vx+=dx*f;l.s.vy+=dy*f;l.t.vx-=dx*f;l.t.vy-=dy*f;
   });
@@ -3746,22 +3760,24 @@ function DrawGraph(){
   const sfont=window.__graphFont||"500 12px sans-serif";
   let bfont=false;
   const npmax=Math.max(...nodes.map(n=>n.pagerank||0),0.001);
+  const bcrowded=nodes.length>22;
   nodes.forEach(n=>{
     const bmatch=!bsearch||GraphNodeMatch(n);
     const dim=(hover&&n!==hover&&!(hoverNeigh&&hoverNeigh.has(n.id)))||(bsearch&&!bmatch);
     const bcore=(n.pagerank||0)>=npmax*0.45;
     ctx.globalAlpha=dim?0.18:1;
     if((bcore||n===hover)&&!dim){
-      ctx.beginPath();ctx.arc(n.x,n.y,n.r+4,0,6.2832);
-      ctx.fillStyle=sglow;ctx.globalAlpha=dim?0.08:0.14;ctx.fill();ctx.globalAlpha=dim?0.18:1;
+      ctx.beginPath();ctx.arc(n.x,n.y,n.r+2,0,6.2832);
+      ctx.fillStyle=sglow;ctx.globalAlpha=dim?0.08:0.12;ctx.fill();ctx.globalAlpha=dim?0.18:1;
     }
     ctx.beginPath();ctx.arc(n.x,n.y,n.r,0,6.2832);ctx.fillStyle=TypeColor(n.type);ctx.fill();
     if(bmatch&&bsearch){ctx.lineWidth=2.5;ctx.strokeStyle=ssearch;ctx.setLineDash([]);ctx.stroke()}
     if(!n.ingested){ctx.lineWidth=1.5;ctx.strokeStyle=sring;ctx.setLineDash([3,3]);ctx.stroke();ctx.setLineDash([])}
-    if(n===hover||bcore||view.scale>0.5||n.degree>1||bmatch&&bsearch){
+    const blabel=n===hover||(bmatch&&bsearch)||(!bcrowded&&(bcore||view.scale>0.62||(n.degree||0)>2));
+    if(blabel){
       if(!bfont){ctx.font=sfont;ctx.textAlign="center";bfont=true}
       ctx.globalAlpha=dim?0.3:0.92;ctx.fillStyle=slabel;
-      const lbl=n.title.length>18?n.title.slice(0,17)+"…":n.title;ctx.fillText(lbl,n.x,n.y+n.r+14);
+      const lbl=n.title.length>18?n.title.slice(0,17)+"…":n.title;ctx.fillText(lbl,n.x,n.y+n.r+12);
     }
   });
   ctx.globalAlpha=1;ctx.restore();

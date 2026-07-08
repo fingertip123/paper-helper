@@ -32,6 +32,15 @@ class TestWikiWorkflow(unittest.TestCase):
         vstale = wflow.DetectStaleSources(oa, ob)
         self.assertIsInstance(vstale, list)
 
+    def test_fix_lint_extended_runs(self):
+        self.assertTrue(hasattr(core, "_SourceCanonicalScore"))
+        wflow.Init(core.wikidir)
+        oresult = wflow.FixLintExtended()
+        self.assertIn("lint", oresult)
+        self.assertIn("removed_orphans", oresult)
+        self.assertIn("stripped_dead_links", oresult)
+        self.assertIn("repaired_duplicates", oresult)
+
 
 if __name__ == "__main__":
     unittest.main()

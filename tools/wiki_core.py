@@ -104,6 +104,7 @@ SourceTimestamps = lib.SourceTimestamps
 EnrichSourceLibraryMeta = lib.EnrichSourceLibraryMeta
 _SameSource = lib._SameSource
 _MergeSourceMetaEntries = lib._MergeSourceMetaEntries
+_SourceCanonicalScore = lib._SourceCanonicalScore
 
 # --- 扫描 ---
 ScanWiki = scan.ScanWiki

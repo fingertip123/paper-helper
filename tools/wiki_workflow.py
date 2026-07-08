@@ -441,37 +441,104 @@ def RepairOrphanConcepts(odata):
     return vfixed
 
 
-def PruneOrphanPages(odata):
-    """将仍无链接的孤立 concept / comparison 页移入 wiki/.trash/（可恢复）。"""
-    core = _Core()
+_LINT_KEEP_TYPES = frozenset({"source", "purpose", "rq"})
+
+
+def _OrphanIds(odata):
+    """返回无入链/出链的孤立节点 id 集合（不含 purpose）。"""
     vnodes = odata.get("nodes") or []
     vedges = odata.get("edges") or []
     olinked = {n["id"]: 0 for n in vnodes}
     for e in vedges:
         olinked[e["source"]] = olinked.get(e["source"], 0) + 1
         olinked[e["target"]] = olinked.get(e["target"], 0) + 1
+    vout = []
+    for n in vnodes:
+        stype = n.get("type") or "unknown"
+        if stype in ("purpose", "unknown"):
+            continue
+        if olinked.get(n["id"], 0) == 0:
+            vout.append(n)
+    return vout
+
+
+def _ArchiveWikiFile(spath, sid, stype):
+    """将 wiki 页移入 .trash/ 软删除。"""
+    if not spath or not os.path.isfile(spath):
+        return None
+    strashroot = os.path.join(wikidir, ".trash")
+    srelpath = os.path.relpath(spath, wikidir)
+    strashpath = os.path.join(strashroot, srelpath)
+    os.makedirs(os.path.dirname(strashpath), exist_ok=True)
+    shutil.move(spath, strashpath)
+    return {"id": sid, "type": stype, "action": "removed", "trash_path": srelpath}
+
+
+def RemoveOrphanWikiPages(odata):
+    """移除孤立 wiki 页，仅保留论文库 source 卡片与 purpose/rq 结构页。"""
+    core = _Core()
     import wiki_ops as wops
     wops.Init(core.wikidir, core.rawsourcesdir, core.rootdir)
-    strashroot = os.path.join(wikidir, ".trash")
     vremoved = []
-    for p in wops.ListWikiPages():
-        if p["type"] not in ("comparison", "concept"):
+    for n in _OrphanIds(odata):
+        stype = n.get("type") or "unknown"
+        if stype in _LINT_KEEP_TYPES:
             continue
-        if olinked.get(p["id"], 0) > 0:
-            continue
-        if not os.path.isfile(p["path"]):
-            continue
-        srelpath = os.path.relpath(p["path"], wikidir)
-        strashpath = os.path.join(strashroot, srelpath)
-        os.makedirs(os.path.dirname(strashpath), exist_ok=True)
-        shutil.move(p["path"], strashpath)
-        vremoved.append({
-            "id": p["id"],
-            "type": p["type"],
-            "action": "orphan_archived",
-            "trash_path": srelpath,
-        })
+        spath = core.ResolveWikiPagePath(n["id"])
+        if not spath:
+            for p in wops.ListWikiPages():
+                if p["id"] == n["id"]:
+                    spath = p["path"]
+                    break
+        orec = _ArchiveWikiFile(spath, n["id"], stype)
+        if orec:
+            vremoved.append(orec)
     return vremoved
+
+
+def _StripWikilink(ntext, starget):
+    spat = re.escape(starget.strip())
+    ntext = re.sub(r"\[\[" + spat + r"(?:\|[^\]]+)?\]\]", "", ntext)
+    ntext = re.sub(r"\n{3,}", "\n\n", ntext)
+    return ntext
+
+
+def StripDeadLinks(odata):
+    """从现存页面删除指向不存在节点的 wikilink（不补链、不新建页）。"""
+    core = _Core()
+    import wiki_ops as wops
+    wops.Init(core.wikidir, core.rawsourcesdir, core.rootdir)
+    onodeindex = core.BuildNodeIndex(odata.get("nodes") or [])
+    vstripped = []
+    for p in wops.ListWikiPages():
+        nbody = p["body"]
+        vdead = []
+        for starget in core.ExtractLinks(nbody):
+            if starget.strip().lower() not in onodeindex:
+                vdead.append(starget)
+        if not vdead:
+            continue
+        for starget in vdead:
+            nbody = _StripWikilink(nbody, starget)
+        ofm = dict(p["frontmatter"])
+        ofm["updated"] = datetime.now().strftime("%Y-%m-%d")
+        vfm = []
+        for k, v in ofm.items():
+            if isinstance(v, list):
+                vfm.append("%s: [%s]" % (k, ", ".join(str(x) for x in v)))
+            else:
+                vfm.append("%s: %s" % (k, v))
+        io_utils.AtomicWriteText(
+            p["path"],
+            "---\n" + "\n".join(vfm) + "\n---\n\n" + nbody.lstrip(),
+        )
+        vstripped.append({"page": p["id"], "links": vdead, "action": "dead_link_stripped"})
+    return vstripped
+
+
+def PruneOrphanPages(odata):
+    """兼容旧名：等同 RemoveOrphanWikiPages。"""
+    return RemoveOrphanWikiPages(odata)
 
 
 def RepairDuplicateSources(odata):
@@ -499,6 +566,7 @@ def RepairDuplicateSources(odata):
 
 
 def FixLintExtended(odata=None):
+    """巡检清理：移除孤儿页、剥离死链、合并重复 source，仅保留论文库与研究问题骨架。"""
     core = _Core()
     import wiki_refresh as refresh
     import wiki_ops as wops
@@ -506,31 +574,25 @@ def FixLintExtended(odata=None):
     Init(core.wikidir)
     if odata is None:
         odata = refresh.GetWikiData()
-    vrep_queries = wops.RepairOrphanQueries()
-    vrep_dead = RepairDeadLinks()
-    vrep_orphan = RepairOrphanConcepts(odata)
     vrep_dup = RepairDuplicateSources(odata)
-    vpruned = PruneOrphanPages(odata)
+    vremoved = RemoveOrphanWikiPages(odata)
+    odata = refresh.GetWikiData(bforce=True)
+    vstripped = StripDeadLinks(odata)
     refresh.RefreshWiki(bwrite_files=True, bforce=True)
     olint = wops.RunLint()
     vparts = []
-    if vrep_queries:
-        vparts.append("query 补链 %d" % len(vrep_queries))
-    if vrep_dead:
-        vparts.append("死链修复 %d" % len(vrep_dead))
-    if vrep_orphan:
-        vparts.append("孤立补链 %d" % len(vrep_orphan))
+    if vremoved:
+        vparts.append("移除孤儿页 %d" % len(vremoved))
+    if vstripped:
+        vparts.append("清理死链 %d 处" % len(vstripped))
     if vrep_dup:
-        vparts.append("重复 source 合并 %d" % len(vrep_dup))
-    if vpruned:
-        vparts.append("孤儿页归档 %d" % len(vpruned))
+        vparts.append("合并重复 source %d" % len(vrep_dup))
     if vparts:
         core.AppendLog("[lint-fix] " + "；".join(vparts))
     return {
-        "repaired_queries": vrep_queries,
-        "repaired_dead_links": vrep_dead,
-        "repaired_orphans": vrep_orphan,
+        "removed_orphans": vremoved,
+        "stripped_dead_links": vstripped,
         "repaired_duplicates": vrep_dup,
-        "pruned_orphans": vpruned,
+        "pruned_orphans": vremoved,
         "lint": olint,
     }

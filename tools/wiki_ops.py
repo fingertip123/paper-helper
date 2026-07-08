@@ -152,7 +152,7 @@ def RunLintWithOdata(odata):
         if srqid and srqid not in onodeids:
             vgaps.append({"kind": "rq", "field": skey, "text": sval, "missing_page": srqid})
 
-    vprunable = [x for x in vorphans if x.get("type") in ("comparison", "concept")]
+    vprunable = [x for x in vorphans if x.get("type") not in ("source", "purpose", "rq")]
 
     return {
         "orphans": vorphans,
@@ -417,7 +417,7 @@ def RepairOrphanQueries():
 
 
 def FixLintIssues():
-    """一键修复可自动处理的巡检项。"""
+    """巡检并清理：移除孤儿页、剥离死链、合并重复 source，保留论文库卡片。"""
     import wiki_workflow as wflow
     wflow.Init(wikidir)
     return wflow.FixLintExtended()
