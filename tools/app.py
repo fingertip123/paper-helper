@@ -12,6 +12,7 @@
 import logging
 import sys
 import threading
+import types
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -53,20 +54,30 @@ def SyncCtxGlobals():
 SyncCtxGlobals()
 
 
-def __getattr__(name):
-    if name in _CTX_FIELDS:
-        return getattr(actx.ctx, name)
-    raise AttributeError("module %r has no attribute %r" % (__name__, name))
+class _AppModule(types.ModuleType):
+    """把 app.* 上下文字段的读写代理到 AppContext（actx.ctx）。
+
+    注意：Python 模块并不支持模块级 `__setattr__` 钩子（PEP 562 只提供 `__getattr__`），
+    因此必须替换模块对象的类，`appmod.multiuser = X` 之类的赋值才会真正同步到 actx.ctx，
+    否则处理器读取的 actx.ctx.multiuser 会一直是默认值 False（登录网关与多用户隔离失效）。
+    """
+
+    def __getattr__(self, name):
+        if name in _CTX_FIELDS:
+            return getattr(actx.ctx, name)
+        raise AttributeError("module %r has no attribute %r" % (__name__, name))
+
+    def __setattr__(self, name, value):
+        if name in _CTX_FIELDS:
+            setattr(actx.ctx, name, value)
+            self.__dict__[name] = value
+            if name == "multiuser":
+                app_scope.InitScope(bool(value), actx.ctx.baseroot or core.rootdir)
+            return
+        self.__dict__[name] = value
 
 
-def __setattr__(name, value):
-    if name in _CTX_FIELDS:
-        setattr(actx.ctx, name, value)
-        dict.__setitem__(sys.modules[__name__].__dict__, name, value)
-        if name == "multiuser":
-            app_scope.InitScope(bool(value), actx.ctx.baseroot or core.rootdir)
-        return
-    dict.__setitem__(sys.modules[__name__].__dict__, name, value)
+sys.modules[__name__].__class__ = _AppModule
 
 
 class Handler(
