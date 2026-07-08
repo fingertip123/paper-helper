@@ -41,6 +41,13 @@ def EnrichResponse(body, nhttp=200):
     oout = dict(body)
     if "schema_version" not in oout:
         oout["schema_version"] = SCHEMA_VERSION
+    try:
+        import request_log
+        srid = request_log.CurrentId()
+        if srid and "request_id" not in oout:
+            oout["request_id"] = srid
+    except Exception:
+        pass
     if nhttp >= 400 and "error" in oout and "code" not in oout:
         oout["code"] = InferErrorCode(nhttp, oout.get("error", ""), oout.get("status", ""))
     elif "status" in oout and "code" not in oout:

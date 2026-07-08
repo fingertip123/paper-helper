@@ -241,6 +241,29 @@ def MigrateLegacy():
     SaveCurrentTopic(nid)
 
 
+def PruneLegacyRootData():
+    """选题已迁入 topics/default 后，将根目录遗留 wiki/raw 移至 .legacy/。"""
+    ndefault = os.path.join(TopicsDir(), "default")
+    if not os.path.isdir(ndefault):
+        return
+    slegacy = os.path.join(_datadir, ".legacy")
+    for sname in ("wiki", "raw"):
+        ssrc = os.path.join(_datadir, sname)
+        sactive = os.path.join(ndefault, sname)
+        if not os.path.isdir(ssrc) or not os.path.isdir(sactive):
+            continue
+        sbackup = os.path.join(slegacy, sname)
+        if os.path.exists(sbackup):
+            continue
+        try:
+            if not os.listdir(sactive):
+                continue
+        except OSError:
+            continue
+        os.makedirs(slegacy, exist_ok=True)
+        shutil.move(ssrc, sbackup)
+
+
 def EnsureLayout():
     global _layout_ready
     if _layout_ready:
@@ -248,6 +271,7 @@ def EnsureLayout():
     os.makedirs(TopicsDir(), exist_ok=True)
     os.makedirs(ConfigDir(), exist_ok=True)
     MigrateLegacy()
+    PruneLegacyRootData()
     SyncAllTopicMetaNames()
     _layout_ready = True
 

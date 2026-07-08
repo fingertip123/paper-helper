@@ -10,6 +10,7 @@ import concurrent.futures
 import wiki_core as core
 import topic_manager as topics
 import wiki_refresh as refresh
+import request_log
 from io_utils import SafeName
 from paper_io import ExtractPaperText
 from paper_sections import PackForIngest
@@ -178,6 +179,7 @@ def IngestFinalize(nfilename, content, nuid=0, ngen=0):
 
 def RunIngestJob(oconfig, vtargets, sroot=None, nuid=0, ngen=0):
     """后台线程：逐篇摄入并实时更新 ingestjob 进度。"""
+    logger.info("纳入研究开始 uid=%s gen=%s rid=%s targets=%d", nuid, ngen, request_log.CurrentId() or "-", len(vtargets or []))
     if not TryAcquireLlm("ingest", vtargets[0] if vtargets else "", nuid):
         with ingestlock:
             if IngestJobAlive(nuid, ngen):

@@ -264,6 +264,7 @@ def SaveConfig(oconfig):
 
 def RunQueryJob(oconfig, squestion, bsave, sroot=None, nuid=0, ngen=0):
     """后台线程：知识库问答，不阻塞网页其他操作。文件读写阶段绑定提交者的数据根。"""
+    logger.info("知识查询开始 uid=%s gen=%s rid=%s", nuid, ngen, request_log.CurrentId() or "-")
     if not TryAcquireLlm("query", squestion[:48], nuid):
         with querylock:
             if QueryJobAlive(nuid, ngen):
@@ -332,10 +333,15 @@ def RunQueryJob(oconfig, squestion, bsave, sroot=None, nuid=0, ngen=0):
 
 
 class Handler(BaseHTTPRequestHandler):
+    _last_code = 200
+    _req_method = ""
+    _req_path = ""
+
     def log_message(self, *a):
         pass
 
     def _send(self, code, body, ctype="application/json; charset=utf-8", vheaders=None):
+        self._last_code = code
         if isinstance(body, dict):
             body = api_response.EnrichResponse(body, code)
             body = json.dumps(body, ensure_ascii=False).encode("utf-8")
@@ -343,6 +349,10 @@ class Handler(BaseHTTPRequestHandler):
             body = json.dumps(body, ensure_ascii=False).encode("utf-8")
         elif isinstance(body, str):
             body = body.encode("utf-8")
+        vheaders = list(vheaders or [])
+        srid = request_log.CurrentId()
+        if srid:
+            vheaders.append(("X-Request-Id", srid))
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
@@ -474,21 +484,31 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
+        self._req_method = "GET"
+        self._req_path = path
         request_log.BeginRequest("GET", path)
-        if actx.ctx.multiuser and self._AuthGet(path):
-            return
-        ouser = getattr(self, "_user", None)
-        with UserScope(ouser["root"] if ouser else None):
-            return self._HandleGet(path)
+        try:
+            if actx.ctx.multiuser and self._AuthGet(path):
+                return
+            ouser = getattr(self, "_user", None)
+            with UserScope(ouser["root"] if ouser else None):
+                return self._HandleGet(path)
+        finally:
+            request_log.LogDone("GET", path, self._last_code)
 
     def do_POST(self):
         self.path = self.path.split("?", 1)[0]
+        self._req_method = "POST"
+        self._req_path = self.path
         request_log.BeginRequest("POST", self.path)
-        if actx.ctx.multiuser and self._AuthPost():
-            return
-        ouser = getattr(self, "_user", None)
-        with UserScope(ouser["root"] if ouser else None):
-            return self._HandlePost()
+        try:
+            if actx.ctx.multiuser and self._AuthPost():
+                return
+            ouser = getattr(self, "_user", None)
+            with UserScope(ouser["root"] if ouser else None):
+                return self._HandlePost()
+        finally:
+            request_log.LogDone("POST", self.path, self._last_code)
 
     def _DispatchRoute(self, spec):
         fn = getattr(self, spec.handler)
@@ -1050,7 +1070,7 @@ class Handler(BaseHTTPRequestHandler):
             finished=False, saved=None, status="running", qid=sqid,
         )
         threading.Thread(
-            target=RunQueryJob,
+            target=request_log.WrapTarget(RunQueryJob, request_log.CurrentId()),
             args=(oconfig, squestion, bsave, ouser["root"] if ouser else None, nuid, ngen),
             daemon=True,
         ).start()
@@ -1275,7 +1295,7 @@ class Handler(BaseHTTPRequestHandler):
             ingested=[], failed=[], briefs=[], finished=False, cancelled=False,
         )
         threading.Thread(
-            target=RunIngestJob,
+            target=request_log.WrapTarget(RunIngestJob, request_log.CurrentId()),
             args=(oconfig, targets, ouser["root"] if ouser else None, nuid, ngen),
             daemon=True,
         ).start()

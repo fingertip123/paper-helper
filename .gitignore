@@ -37,6 +37,10 @@ raw/sources/*
 
 # 运行时知识库（Ingest 自动生成，不提交）
 /wiki/
+wiki/
+
+# 迁移后备份（根目录遗留 wiki/raw）
+.legacy/
 
 # 主题下的运行时数据
 topics/*/wiki/
@@ -48,3 +52,5 @@ topics/*/progress.json
 
 # CodeGraph 工具缓存
 .codegraph/
+.codegraph/**
+

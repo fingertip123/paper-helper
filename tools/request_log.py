@@ -24,6 +24,18 @@ def CurrentId():
     return _rid.get() or ""
 
 
+def WrapTarget(ftarget, srid=None):
+    """后台线程入口：继承父请求的 request_id。"""
+    sparent = srid or CurrentId()
+
+    def _inner(*args, **kwargs):
+        if sparent:
+            _rid.set(sparent)
+        return ftarget(*args, **kwargs)
+
+    return _inner
+
+
 def LogDone(smethod, spath, ncode):
     nms = int((time.monotonic() - _t0.get()) * 1000) if _t0.get() else 0
     logger.info("%s %s -> %d rid=%s %dms", smethod, spath, ncode, CurrentId(), nms)

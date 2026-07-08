@@ -18,6 +18,12 @@ class TestApiResponse(unittest.TestCase):
         self.assertEqual(oout["schema_version"], 1)
         self.assertEqual(oout["code"], "OK")
 
+    def testEnrichRequestId(self):
+        import request_log
+        request_log.BeginRequest("GET", "/api/test")
+        oout = api_response.EnrichResponse({"status": "ok"}, 200)
+        self.assertTrue(oout.get("request_id"))
+
     def testErrorCode(self):
         oout = api_response.EnrichResponse({"error": "缺少参数"}, 400)
         self.assertEqual(oout["code"], "BAD_REQUEST")
