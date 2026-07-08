@@ -1627,7 +1627,10 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
   .libfiltbtn.active{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;border-color:transparent;box-shadow:var(--tab-shadow);font-weight:600}
   .libfiltbtn .cnt{font-size:10px;margin-left:5px;padding:1px 6px;border-radius:999px;background:rgba(255,255,255,.2)}
   .libfiltbtn:not(.active) .cnt{background:var(--panel);color:var(--muted)}
-  .libsearch{flex:1;min-width:180px;max-width:360px;padding:8px 14px;border-radius:999px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:13px;outline:none;transition:border-color .2s,box-shadow .2s}
+  .libsearch-wrap{position:relative;flex:1;min-width:180px;max-width:360px;display:flex;align-items:center}
+  .libsearch{flex:1;min-width:0;width:100%;padding:8px 14px;border-radius:999px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:13px;outline:none;transition:border-color .2s,box-shadow .2s}
+  .libsearch-clear{position:absolute;right:6px;top:50%;transform:translateY(-50%);width:22px;height:22px;border:none;border-radius:50%;background:var(--panel2);color:var(--muted);cursor:pointer;font-size:15px;line-height:1;padding:0}
+  .libsearch-clear:hover{color:var(--accent);background:var(--border)}
   .libsearch:focus{border-color:var(--focus-border);box-shadow:0 0 0 3px var(--focus-shadow)}
   .libsort{padding:6px 12px;border-radius:999px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:12px;cursor:pointer}
   .libviewtog{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--border);border-radius:10px;padding:4px;background:var(--panel2)}
@@ -1776,7 +1779,7 @@ HTMLTEMPLATE = r"""<!DOCTYPE html>
 </header>
 <button type="button" class="theme-fab" id="theme_fab" onclick="OpenThemePicker()" title="切换界面主题">🎨</button>
 <main>
-  <section id="libview" class="view active"><div class="libtoolbar"><div class="libfilt" id="libfilt"></div><div class="libviewtog" id="libviewtog"><button type="button" class="libviewbtn active" data-view="card" title="卡片视图" aria-label="卡片视图"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="1.5" width="5.5" height="5.5" rx="1.2" fill="currentColor"/><rect x="9" y="1.5" width="5.5" height="5.5" rx="1.2" fill="currentColor"/><rect x="1.5" y="9" width="5.5" height="5.5" rx="1.2" fill="currentColor"/><rect x="9" y="9" width="5.5" height="5.5" rx="1.2" fill="currentColor"/></svg></button><button type="button" class="libviewbtn" data-view="list" title="列表视图" aria-label="列表视图"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="2.2" rx="1.1" fill="currentColor"/><rect x="1.5" y="6.9" width="13" height="2.2" rx="1.1" fill="currentColor"/><rect x="1.5" y="11.3" width="13" height="2.2" rx="1.1" fill="currentColor"/></svg></button></div><select id="libsort" class="libsort" title="排序方式"><option value="ingested_desc">最近纳入 ↓</option><option value="ingested_asc">最近纳入 ↑</option><option value="stage_desc">研究深度 ↓</option><option value="stage_asc">研究深度 ↑</option><option value="added_desc">最近添加 ↓</option><option value="added_asc">最近添加 ↑</option><option value="year_desc">年份 ↓</option><option value="year_asc">年份 ↑</option><option value="pagerank_desc">关联度 ↓</option><option value="author">作者 A-Z</option><option value="title">标题 A-Z</option><option value="added">扫描顺序</option></select><input type="search" class="libsearch" id="libsearch" placeholder="搜索标题、作者、标签…" autocomplete="off"></div><div class="libgroupbar" id="libgroupbar"></div><div class="libstagebar" id="libstagebar"></div><div class="dropzone" id="dropzone">🌷 拖放 PDF / Word / Markdown 到此处，或点击「添加文献」开始整理</div><div class="grid" id="libgrid"></div></section>
+  <section id="libview" class="view active"><div class="libtoolbar"><div class="libfilt" id="libfilt"></div><div class="libviewtog" id="libviewtog"><button type="button" class="libviewbtn active" data-view="card" title="卡片视图" aria-label="卡片视图"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="1.5" width="5.5" height="5.5" rx="1.2" fill="currentColor"/><rect x="9" y="1.5" width="5.5" height="5.5" rx="1.2" fill="currentColor"/><rect x="1.5" y="9" width="5.5" height="5.5" rx="1.2" fill="currentColor"/><rect x="9" y="9" width="5.5" height="5.5" rx="1.2" fill="currentColor"/></svg></button><button type="button" class="libviewbtn" data-view="list" title="列表视图" aria-label="列表视图"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="2.2" rx="1.1" fill="currentColor"/><rect x="1.5" y="6.9" width="13" height="2.2" rx="1.1" fill="currentColor"/><rect x="1.5" y="11.3" width="13" height="2.2" rx="1.1" fill="currentColor"/></svg></button></div><select id="libsort" class="libsort" title="排序方式"><option value="ingested_desc">最近纳入 ↓</option><option value="ingested_asc">最近纳入 ↑</option><option value="stage_desc">研究深度 ↓</option><option value="stage_asc">研究深度 ↑</option><option value="added_desc">最近添加 ↓</option><option value="added_asc">最近添加 ↑</option><option value="year_desc">年份 ↓</option><option value="year_asc">年份 ↑</option><option value="pagerank_desc">关联度 ↓</option><option value="author">作者 A-Z</option><option value="title">标题 A-Z</option><option value="added">扫描顺序</option></select><div class="libsearch-wrap" id="libsearch_wrap"><input type="search" class="libsearch" id="libsearch" placeholder="搜索标题、作者、标签…" autocomplete="off"></div></div><div class="libgroupbar" id="libgroupbar"></div><div class="libstagebar" id="libstagebar"></div><div class="dropzone" id="dropzone">🌷 拖放 PDF / Word / Markdown 到此处，或点击「添加文献」开始整理</div><div class="grid" id="libgrid"></div></section>
   <section id="graphview" class="view"><canvas id="graphcanvas"></canvas><div class="legend" id="legend"></div><div class="graphegobadge" id="graphegobadge"><span id="graphego_lbl"></span><span class="x" onclick="ClearGraphFocus()" title="返回全局">×</span></div><div class="graphstats" id="graphstats"></div><div class="graphfilter"><div class="graphrow"><label>搜索</label><input id="graph_search" type="search" placeholder="标题 / ID" oninput="OnGraphSearchInput()" onkeydown="if(event.key==='Enter')FocusGraphSearch()"></div><div class="graphrow"><label>节点</label><select id="graph_filter" onchange="ApplyGraphFilter()"><option value="">全部类型</option></select></div><div class="graphrow"><label>关系</label><select id="graph_edge_filter" onchange="ApplyGraphFilter()"><option value="">全部关系</option></select></div><div class="graphlayouttog"><button type="button" id="graph_mode_flow" class="active" onclick="SetGraphLayoutMode('flow')">脉络</button><button type="button" id="graph_mode_free" onclick="SetGraphLayoutMode('free')">探索</button></div><button type="button" onclick="ApplyGraphThreadView()">🧭 梳理主脉络</button><button type="button" onclick="FocusGraphSearch()">⌖ 定位节点</button><button type="button" onclick="ExportGraphPng()">📷 导出 PNG</button><button type="button" onclick="ExportGraphJson()">⬇ 导出 JSON</button></div><div id="graphtooltip"></div><div class="graphempty" id="graphempty" style="display:none">当前筛选下无可见节点，请调整关系或节点类型</div><div class="hint">滚轮缩放 · 拖拽平移 · 拖动节点 · 点击查看详情 · 悬停高亮邻域</div></section>
   <section id="listview" class="view"></section>
   <section id="progressview" class="view"></section>
@@ -2145,13 +2148,20 @@ function RenderStats(){
   const bar=document.getElementById("statsbar");
   if(bar)bar.innerHTML=h;
 }
+function SanitizeLibSearch(sq){
+  sq=(sq||"").trim();
+  if(!sq)return "";
+  if(/^https?:\/\//i.test(sq))return "";
+  if(/^api\./i.test(sq)||sq.includes("/v1")||sq.includes("/api/"))return "";
+  return sq;
+}
 function LoadLibUiState(){
   try{
     if(localStorage.getItem("lib_filter"))LIB_FILTER=localStorage.getItem("lib_filter");
     if(localStorage.getItem("lib_group_tab"))LIB_GROUP_TAB=localStorage.getItem("lib_group_tab");
     if(localStorage.getItem("lib_group_id")!=null)LIB_GROUP_ID=localStorage.getItem("lib_group_id")||"";
     else if(localStorage.getItem("lib_tag")){LIB_GROUP_TAB="folder";LIB_GROUP_ID=localStorage.getItem("lib_tag")||"";}
-    if(localStorage.getItem("lib_search")!=null)LIB_SEARCH=localStorage.getItem("lib_search")||"";
+    if(localStorage.getItem("lib_search")!=null)LIB_SEARCH=SanitizeLibSearch(localStorage.getItem("lib_search")||"");
     if(localStorage.getItem("lib_sort"))LIB_SORT=localStorage.getItem("lib_sort");
     if(localStorage.getItem("lib_view"))LIB_VIEW=localStorage.getItem("lib_view");
   }catch(e){}
@@ -2162,7 +2172,7 @@ function SaveLibUiState(){
     localStorage.setItem("lib_group_tab",LIB_GROUP_TAB);
     localStorage.setItem("lib_group_id",LIB_GROUP_ID);
     localStorage.removeItem("lib_tag");
-    localStorage.setItem("lib_search",LIB_SEARCH);
+    localStorage.setItem("lib_search",SanitizeLibSearch(LIB_SEARCH));
     localStorage.setItem("lib_sort",LIB_SORT);
     localStorage.setItem("lib_view",LIB_VIEW);
   }catch(e){}
@@ -2245,14 +2255,14 @@ function ClearLibUiFilters(){
   SaveLibUiState();
   const osearch=document.getElementById("libsearch");
   if(osearch)osearch.value="";
+  UpdateLibSearchClearBtn();
 }
 function ResetLibGridAnim(){
   clearTimeout(_libAnimTimer);_libAnimTimer=null;
   const grid=document.getElementById("libgrid");
   if(grid)grid.classList.remove("lib-fade-out","lib-fade-in");
 }
-function LibFilterMatch(n){
-  SyncLibSearchFromInput();
+function LibFilterMatch(n,bapplysearch=true){
   if(LIB_GROUP_ID&&LIB_GROUP_TAB!=="all"){
     if(LIB_GROUP_TAB==="rq"){
       if(!(n.lib_rq||[]).includes(LIB_GROUP_ID))return false;
@@ -2262,7 +2272,7 @@ function LibFilterMatch(n){
       if(!(n.lib_tags||[]).includes(LIB_GROUP_ID))return false;
     }
   }
-  if(!LibFuzzyMatch(n,LIB_SEARCH))return false;
+  if(bapplysearch&&!LibFuzzyMatch(n,LIB_SEARCH))return false;
   if(LIB_FILTER==="all")return true;
   if(LIB_FILTER==="pending")return LibIsPending(n);
   if(LIB_FILTER==="await_deep")return LibIsAwaitDeep(n)&&!LibIsStandard(n);
@@ -2272,7 +2282,8 @@ function LibFilterMatch(n){
   return true;
 }
 function LibFilterCounts(){
-  const vs=LibSources();
+  SyncLibSearchFromInput();
+  const vs=LibSources().filter(n=>LibFilterMatch(n,true));
   return {
     all:vs.length,
     pending:vs.filter(LibIsPending).length,
@@ -2475,8 +2486,24 @@ function RenderLibFilters(){
   if(osearch&&!osearch._bound){
     osearch._bound=true;
     let ot=null;
-    osearch.oninput=()=>{clearTimeout(ot);ot=setTimeout(()=>{LIB_SEARCH=osearch.value;SaveLibUiState();AnimateRenderLibrary()},220)};
+    osearch.oninput=()=>{clearTimeout(ot);ot=setTimeout(()=>{LIB_SEARCH=SanitizeLibSearch(osearch.value);if(LIB_SEARCH!==osearch.value)osearch.value=LIB_SEARCH;SaveLibUiState();AnimateRenderLibrary()},220)};
   }
+  UpdateLibSearchClearBtn();
+}
+function UpdateLibSearchClearBtn(){
+  const owrap=document.getElementById("libsearch_wrap");
+  const osearch=document.getElementById("libsearch");
+  if(!owrap||!osearch)return;
+  let obtn=document.getElementById("libsearch_clear");
+  if(LIB_SEARCH){
+    if(!obtn){
+      obtn=document.createElement("button");
+      obtn.id="libsearch_clear";obtn.type="button";obtn.className="libsearch-clear";
+      obtn.title="清除搜索";obtn.textContent="×";
+      obtn.onclick=()=>{ClearLibUiFilters();AnimateRenderLibrary()};
+      owrap.appendChild(obtn);
+    }
+  }else if(obtn){obtn.remove()}
 }
 function SetLibFilter(sid){
   if(!sid)return;
@@ -2532,7 +2559,8 @@ function RenderLibGrid(){
     return;
   }
   if(!sources.length){
-    const shint=(LIB_SEARCH||LIB_GROUP_ID)?"试试清除搜索词或分组筛选":"试试切换分类";
+    let shint=(LIB_SEARCH||LIB_GROUP_ID)?"试试清除搜索词或分组筛选":"试试切换分类";
+    if(LIB_SEARCH)shint=`当前搜索「${LIB_SEARCH}」无匹配文献。点击搜索框右侧 × 清除`;
     grid.innerHTML=`<div class="libempty-wrap"><div class="libempty"><div class="hint-title">🔍 无匹配文献</div>${Esc(shint)}</div></div>`;
     return;
   }
