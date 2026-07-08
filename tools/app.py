@@ -1186,6 +1186,9 @@ class Handler(BaseHTTPRequestHandler):
             os.remove(stmp)
             return self._send(400, {"error": "文件为空或上传数据损坏"})
         os.replace(stmp, spath)
+        sid = (body.get("id") or "").strip()
+        if sid:
+            core.BindRawfileToSource(sid, name)
         surl = wops.ResolveDoiUrl((body.get("url") or "").strip())
         if surl:
             core.SetPaperUrl(surl, srawfile=name)

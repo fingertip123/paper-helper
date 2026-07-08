@@ -534,23 +534,63 @@ def ListSources():
             if fn.lower().endswith((".pdf", ".docx", ".md", ".txt")) and not fn.startswith(".")]
 
 
+def _NormalizeSourceKey(skey):
+    """归一化 source key，便于 vaswani-2017 与 vaswani2017 等变体互认。"""
+    return re.sub(r"[^\w]", "", (skey or "").lower())
+
+
+def BindRawfileToSource(skey, srawfile):
+    """将 raw 文件名显式绑定到 source id（重新上传时文件名可能与 id 不一致）。"""
+    skey = (skey or "").strip()
+    srawfile = io_utils.SafeName(srawfile or "")
+    if not skey or not srawfile:
+        return
+    spath = os.path.join(rawsourcesdir, srawfile)
+    if not os.path.isfile(spath):
+        return
+    oentry = GetSourceMetaEntry(skey)
+    if oentry.get("rawfile") == srawfile:
+        return
+    oentry["rawfile"] = srawfile
+    SaveSourceMetaEntry(skey, oentry)
+
+
 def ResolveRawfileForKey(skey):
     """按 source id 在 raw/sources 中查找原始文件名（wiki 页通常不存 rawfile）。"""
     if not skey:
         return ""
+    sbound = GetSourceMetaEntry(skey).get("rawfile", "")
+    if sbound:
+        spath = os.path.join(rawsourcesdir, sbound)
+        if os.path.isfile(spath):
+            return sbound
     for fn in ListSources():
         if ParseSourceFilename(fn)["key"] == skey:
             return fn
+    snorm = _NormalizeSourceKey(skey)
+    if snorm:
+        for fn in ListSources():
+            if _NormalizeSourceKey(ParseSourceFilename(fn)["key"]) == snorm:
+                return fn
     return ""
 
 
 def EnsureNodeRawfile(onode):
-    """已纳入的 source 节点若缺 rawfile，尝试从 raw/sources 按 id 补全。"""
+    """已纳入的 source 节点若缺 rawfile，尝试从 raw/sources 按 id/别名 补全。"""
     if onode.get("type") != "source" or onode.get("rawfile"):
         return
-    sfile = ResolveRawfileForKey(onode.get("id", ""))
-    if sfile:
-        onode["rawfile"] = sfile
+    vkeys = [onode.get("id", "")]
+    vkeys.extend(onode.get("aliases") or [])
+    vseen = set()
+    for skey in vkeys:
+        skey = (skey or "").strip()
+        if not skey or skey in vseen:
+            continue
+        vseen.add(skey)
+        sfile = ResolveRawfileForKey(skey)
+        if sfile:
+            onode["rawfile"] = sfile
+            return
 
 
 LIB_TAG_PREFIX = "@id:"
@@ -2267,7 +2307,7 @@ function LibAwaitDeepDrawerActions(n){
   let h="";
   if(!n.rawfile){
     h+=`<div class="field"><div class="research-txt" style="color:var(--rose)">未检测到原始 PDF。进阶分析需要 PDF 原文，请重新上传后再试。</div></div>`;
-    h+=`<div class="field"><button class="btn ghost" onclick="document.getElementById('file').click()">📎 重新上传 PDF</button></div>`;
+    h+=`<div class="field"><button class="btn ghost" onclick="ReuploadPdf('${Attr(n.id)}')">📎 重新上传 PDF</button></div>`;
     return h;
   }
   if(!LibIsStandard(n)){
@@ -3376,28 +3416,38 @@ async function Refresh(silent){
     RefreshOnboardingState();
   }catch(e){Toast("刷新失败："+e.message)}
 }
-function AddPaper(){if(NeedServer())return;document.getElementById("fileinput").click()}
+function AddPaper(){if(NeedServer())return;REUPLOAD_TARGET_ID="";document.getElementById("fileinput").click()}
+let REUPLOAD_TARGET_ID="";
+function ReuploadPdf(sid){
+  if(NeedServer())return;
+  REUPLOAD_TARGET_ID=sid||"";
+  document.getElementById("fileinput").click();
+}
 document.getElementById("fileinput").onchange=async function(){
   const files=[...this.files];this.value="";
   if(!files.length)return;
+  const sid=REUPLOAD_TARGET_ID||"";
+  REUPLOAD_TARGET_ID="";
   ShowOverlay(`正在上传 ${files.length} 个文件…`);
   try{
     for(const f of files){
       const b64=await FileToBase64(f);
-      await Api("/api/upload",{name:f.name,data:b64});
+      await Api("/api/upload",{name:f.name,data:b64,id:sid||null});
     }
     await Refresh(true);
     await LoadTopics();
-    HideOverlay();Toast(`已添加 ${files.length} 篇文献，点「纳入研究」编译进知识库`);
+    HideOverlay();Toast(sid?`已为该文献关联 PDF`:`已添加 ${files.length} 篇文献，点「纳入研究」编译进知识库`);
   }catch(e){HideOverlay();Toast("上传失败："+e.message)}
 };
 function FileToBase64(file){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(",")[1]);r.onerror=rej;r.readAsDataURL(file)})}
 async function UploadFiles(vfiles){
   if(!vfiles.length)return;
+  const sid=REUPLOAD_TARGET_ID||"";
+  REUPLOAD_TARGET_ID="";
   ShowOverlay(`正在上传 ${vfiles.length} 个文件…`);
   try{
-    for(const f of vfiles){const b64=await FileToBase64(f);await Api("/api/upload",{name:f.name,data:b64})}
-    await Refresh(true);await LoadTopics();HideOverlay();Toast(`已添加 ${vfiles.length} 篇文献`);
+    for(const f of vfiles){const b64=await FileToBase64(f);await Api("/api/upload",{name:f.name,data:b64,id:sid||null})}
+    await Refresh(true);await LoadTopics();HideOverlay();Toast(sid?`已为该文献关联 PDF`:`已添加 ${vfiles.length} 篇文献`);
   }catch(e){HideOverlay();Toast("上传失败："+e.message)}
 }
 function InitDropzone(){
