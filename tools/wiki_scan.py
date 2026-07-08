@@ -38,7 +38,9 @@ def ScanWiki():
         })
 
     skipfiles = {"index.md", "log.md", "overview.md"}
-    for dirpath, _, filenames in os.walk(paths.wikidir):
+    for dirpath, vdirs, filenames in os.walk(paths.wikidir):
+        if ".trash" in vdirs:
+            vdirs.remove(".trash")
         for fn in sorted(filenames):
             if not fn.endswith(".md") or fn.startswith("_") or fn in skipfiles:
                 continue

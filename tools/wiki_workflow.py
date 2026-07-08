@@ -578,8 +578,8 @@ def FixLintExtended(odata=None):
     vremoved = RemoveOrphanWikiPages(odata)
     odata = refresh.GetWikiData(bforce=True)
     vstripped = StripDeadLinks(odata)
-    refresh.RefreshWiki(bwrite_files=True, bforce=True)
-    olint = wops.RunLint()
+    odata = refresh.RefreshWiki(bwrite_files=True, bforce=True)
+    olint = wops.RunLintWithOdata(odata)
     vparts = []
     if vremoved:
         vparts.append("移除孤儿页 %d" % len(vremoved))

@@ -32,10 +32,15 @@ def MetaSkipFiles():
     return {"index.md", "log.md", "overview.md"}
 
 
+def _PruneTrashDirs(vdirs):
+    vdirs[:] = [d for d in vdirs if d != ".trash"]
+
+
 def ListWikiPages():
     core = _ImportCore()
     vpages = []
-    for sroot, _, vfiles in os.walk(wikidir):
+    for sroot, vdirs, vfiles in os.walk(wikidir):
+        _PruneTrashDirs(vdirs)
         for sname in vfiles:
             if not sname.endswith(".md") or sname.startswith("_") or sname in MetaSkipFiles():
                 continue

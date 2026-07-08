@@ -2492,7 +2492,18 @@ function SubmitQueryTurn(nturnid){
   });
 }
 function CloseLint(){document.getElementById("lintmodal").classList.remove("open")}
+function LintIsClean(r){
+  if(!r)return true;
+  return !(r.orphans&&r.orphans.length)&&!(r.prunable_orphans&&r.prunable_orphans.length)&&
+    !(r.dead_links&&r.dead_links.length)&&!(r.frontmatter_issues&&r.frontmatter_issues.length)&&
+    !(r.knowledge_gaps&&r.knowledge_gaps.length);
+}
 function RenderLintReport(r){
+  if(LintIsClean(r)){
+    document.getElementById("lint_body").innerHTML='<p style="text-align:center;padding:28px 0;color:var(--sage);font-size:14px">✓ 巡检无异常，知识库状态良好</p>';
+    UpdateLintBadge({orphans:0,stale_pipelines:CountLibStale()});
+    return;
+  }
   let h="<ul>";
   h+="<li>无链接的孤立页面："+(r.orphans?r.orphans.length:0);
   if(r.orphans&&r.orphans.length)h+=" — "+r.orphans.slice(0,8).map(x=>Esc(x.id)).join(", ");
@@ -2532,8 +2543,9 @@ async function RunLintCleanup(){
     if(nr)nparts.push("移除 "+nr+" 个孤儿页");
     if(ns)nparts.push("清理 "+ns+" 处死链");
     if(nd)nparts.push("合并 "+nd+" 个重复文献");
-    Toast(nparts.length?nparts.join("，")+"；文献卡片已保留，缺失项请重新纳入/分析":"知识库状态良好，无需清理");
+    Toast(nparts.length?nparts.join("，")+"；文献卡片已保留，缺失项请重新纳入/分析":"✓ 巡检无异常，知识库状态良好");
     await Refresh(true);
+    if(DATA.lint)UpdateLintBadge(DATA.lint);
   }catch(e){document.getElementById("lint_body").textContent="清理失败："+e.message}
 }
 async function RunLint(){

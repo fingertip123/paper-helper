@@ -35,7 +35,8 @@ def WikiSignature():
     _AppendMtime(parts, topics.RulePath("purpose.md"))
     _AppendMtime(parts, core.SourceMetaPath())
     if os.path.isdir(core.wikidir):
-        for sroot, _, vfiles in os.walk(core.wikidir):
+        for sroot, vdirs, vfiles in os.walk(core.wikidir):
+            vdirs[:] = [d for d in vdirs if d != ".trash"]
             for sname in sorted(vfiles):
                 if not sname.endswith(".md") or sname.startswith("_") or sname in _META_SKIP:
                     continue
