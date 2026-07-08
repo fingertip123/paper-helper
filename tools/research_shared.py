@@ -154,7 +154,7 @@ def StartAnalysisJob(
             return {"error": sbusy_msg}
     if not TryAcquireLlm(skind, skey or nfilename or "", nuid):
         return LlmBusyPayload(nuid) or {"error": "大模型正忙，请稍后再试"}
-    ngen = fbegin_job(
+    _, ngen = fbegin_job(
         nuid,
         current=nfilename or skey or "",
         key=skey or "",

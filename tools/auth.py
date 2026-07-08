@@ -140,12 +140,29 @@ def _RecordRate(skey, nwindow):
 
 
 def ThrottleRegister(sip):
-    """注册限流：同一 IP 每小时最多 8 次，抵御账号刷量 / 磁盘 DoS。命中即计数。"""
+    """注册限流：同一 IP 每小时最多 8 次，抵御账号刷量 / 磁盘 DoS。
+
+    检查与计数在同一把 _dblock、同一 SQLite 事务内完成（读→判断→自增原子提交），
+    避免两次独立事务之间的 TOCTOU 竞态被并发请求绕过。
+    """
     if not sip:
         return
     skey = "reg:" + sip
-    _CheckRate(skey, 8, 3600, "注册过于频繁，请稍后再试")
-    _RecordRate(skey, 3600)
+    nnow = time.time()
+    with _dblock, _Db() as odb:
+        orow = odb.execute(
+            "SELECT count, window_start FROM login_fails WHERE ip=?", (skey,)
+        ).fetchone()
+        if orow and nnow - orow[1] < 3600:
+            if orow[0] >= 8:
+                raise ValueError("注册过于频繁，请稍后再试")
+            odb.execute("UPDATE login_fails SET count=count+1 WHERE ip=?", (skey,))
+        else:
+            odb.execute(
+                "INSERT INTO login_fails(ip, count, window_start) VALUES(?,?,?)"
+                " ON CONFLICT(ip) DO UPDATE SET count=1, window_start=?",
+                (skey, 1, nnow, nnow),
+            )
 
 
 def _ThrottleLogin(sip):

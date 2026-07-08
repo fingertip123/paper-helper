@@ -54,6 +54,7 @@ def AcquireSingleInstance():
     if nresult is False:
         # 已有健康实例并已被唤醒到前台，本进程安静退出
         return False
+    # nresult is None：端口被占用且无法清理/接管，提示用户手动处理
     NativeAlert(
         APP_NAME,
         "应用可能已在运行，但无法唤醒窗口。\n\n"

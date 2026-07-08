@@ -263,7 +263,7 @@ def BeginStandardJob(nuid, **fields):
         standard_active_uid = nuid
         _standard_run_uid = nuid
         _standard_run_gen = ngen
-        return ngen
+        return ojob, ngen
 
 
 def BeginDeepJob(nuid, **fields):
@@ -279,7 +279,7 @@ def BeginDeepJob(nuid, **fields):
         deep_active_uid = nuid
         _deep_run_uid = nuid
         _deep_run_gen = ngen
-        return ngen
+        return ojob, ngen
 
 
 def GetStandardJobStatus(nuid=0):
