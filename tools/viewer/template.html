@@ -2509,12 +2509,22 @@ function RenderLintReport(r){
   UpdateLintBadge({orphans:r.orphans?r.orphans.length:0,stale_pipelines:CountLibStale()});
 }
 function CountLibStale(){return LibSources().filter(LibHasStale).length}
+function ClearLintBadge(){
+  const ob=document.getElementById("lint_badge");if(!ob)return;
+  ob.classList.remove("show");
+  ob.textContent="";
+}
 function UpdateLintBadge(olint){
   const ob=document.getElementById("lint_badge");if(!ob)return;
-  const nor=(olint&&olint.orphans)||0;
-  const nst=(olint&&olint.stale_pipelines)||CountLibStale();
+  const nor=Math.max(0,Number(olint&&olint.orphans)||0);
+  let nst;
+  if(olint&&Object.prototype.hasOwnProperty.call(olint,"stale_pipelines")){
+    nst=Math.max(0,Number(olint.stale_pipelines)||0);
+  }else{
+    nst=CountLibStale();
+  }
   const ntotal=nor+nst;
-  if(ntotal>0){ob.textContent=ntotal;ob.classList.add("show")}else{ob.classList.remove("show");ob.textContent=""}
+  if(ntotal>0){ob.textContent=String(ntotal);ob.classList.add("show")}else{ob.classList.remove("show");ob.textContent=""}
 }
 async function FixLintIssues(){return RunLintCleanup()}
 async function RunLintCleanup(){
@@ -2542,7 +2552,7 @@ async function RunLintCleanup(){
       DATA.lint.knowledge_gaps=0;
       DATA.lint.stale_pipelines=0;
     }
-    UpdateLintBadge({orphans:0,stale_pipelines:0});
+    ClearLintBadge();
   }catch(e){CloseLint();Toast("巡检失败："+e.message)}
 }
 async function RunLint(){
