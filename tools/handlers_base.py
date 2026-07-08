@@ -56,7 +56,7 @@ class HandlerBaseMixin:
         self._req_path = path
         request_log.BeginRequest("GET", path)
         try:
-            if actx.ctx.actx.ctx.multiuser and self._AuthGet(path):
+            if actx.ctx.multiuser and self._AuthGet(path):
                 return
             ouser = getattr(self, "_user", None)
             with UserScope(ouser["root"] if ouser else None):
@@ -71,7 +71,7 @@ class HandlerBaseMixin:
         self._req_path = self.path
         request_log.BeginRequest("POST", self.path)
         try:
-            if actx.ctx.actx.ctx.multiuser and self._AuthPost():
+            if actx.ctx.multiuser and self._AuthPost():
                 return
             ouser = getattr(self, "_user", None)
             with UserScope(ouser["root"] if ouser else None):
@@ -107,7 +107,7 @@ class HandlerBaseMixin:
 
 
     def _HandlePost(self):
-        if actx.ctx.actx.ctx.multiuser and not self.path.startswith("/auth/") and not self._CheckCsrf():
+        if actx.ctx.multiuser and not self.path.startswith("/auth/") and not self._CheckCsrf():
             return
         spec = app_routes.MatchPost(self.path)
         if not spec:
@@ -120,6 +120,6 @@ class HandlerBaseMixin:
             return self._send(400, {"error": str(e)})
         except Exception as e:
             request_log.LogException("POST", self.path, e)
-            if actx.ctx.actx.ctx.multiuser:
+            if actx.ctx.multiuser:
                 return self._send(500, {"error": "服务器内部错误"})
             return self._send(500, {"error": str(e)})
