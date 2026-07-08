@@ -20,6 +20,9 @@ class TestWikiLibrary(unittest.TestCase):
         os.makedirs(self.raw, exist_ok=True)
         core.wikidir = self.wiki
         core.rawsourcesdir = self.raw
+        import wiki_paths as paths
+        paths.wikidir = self.wiki
+        paths.rawsourcesdir = self.raw
 
     def _Touch(self, spath, nsec):
         with open(spath, "w", encoding="utf-8") as f:
