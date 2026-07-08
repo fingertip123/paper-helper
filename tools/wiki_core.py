@@ -2246,9 +2246,50 @@ function LibFuzzyMatch(n,q){
   const vwords=q.split(/\s+/).filter(Boolean);
   return vwords.every(w=>hay.includes(w));
 }
+function LibAwaitDeepDrawerActions(n){
+  if(n.ingest_stale&&n.rawfile){
+    return `<div class="field"><button class="btn" onclick="Analyze('${Attr(n.rawfile)}')">↻ 升级纳入</button></div>`;
+  }
+  let h="";
+  if(!n.rawfile){
+    h+=`<div class="field"><div class="research-txt" style="color:var(--rose)">未检测到原始 PDF。进阶分析需要 PDF 原文，请重新上传后再试。</div></div>`;
+    h+=`<div class="field"><button class="btn ghost" onclick="document.getElementById('file').click()">📎 重新上传 PDF</button></div>`;
+    return h;
+  }
+  if(!LibIsStandard(n)){
+    h+=`<div class="field">${StandardActionBtn(n.id,"btn","std_drawer_btn_",false,n.standard_stale?"↻ 升级标准分析":"📊 标准分析")}</div>`;
+  }else if(n.standard_stale){
+    h+=`<div class="field">${StandardActionBtn(n.id,"btn","std_drawer_btn_",false,"↻ 升级标准分析")}</div>`;
+  }
+  h+=`<div class="field">${DeepActionBtn(n.id,"btn","deep_drawer_btn_",false,"📋 深度分析")}</div>`;
+  if(LibIsStandard(n)){
+    h+=`<div class="field"><button class="btn ghost" onclick="OpenReport('${Attr(n.id)}-standard')">📊 查看标准分析报告</button></div>`;
+  }
+  return h;
+}
+function LibAwaitDeepActions(n,bstop){
+  const sstop=bstop?"event.stopPropagation();":"";
+  if(n.ingest_stale&&n.rawfile){
+    return `<button class="urlbtn" onclick="${sstop}Analyze('${Attr(n.rawfile)}')">↻ 升级纳入</button>`;
+  }
+  const vacts=[];
+  if(!n.rawfile){
+    vacts.push(`<span class="badge soft" style="color:var(--rose);cursor:default" title="进阶分析需要 PDF 原文">⚠ 缺少 PDF</span>`);
+  }else{
+    if(LibIsStandard(n))vacts.push(`<button class="urlbtn" onclick="${sstop}OpenReport('${Attr(n.id)}-standard')">📊 标准报告</button>`);
+    if(!LibIsStandard(n))vacts.push(StandardActionBtn(n.id,"urlbtn","std_btn_",bstop,n.standard_stale?"↻ 升级标准":null));
+    else if(n.standard_stale)vacts.push(StandardActionBtn(n.id,"urlbtn","std_btn_",bstop,"↻ 升级标准"));
+    vacts.push(DeepActionBtn(n.id,"urlbtn","deep_btn_",bstop));
+  }
+  return vacts.join("");
+}
+function RefreshLibSummaryBars(){
+  RenderLibFilters();
+  RenderLibStageBar();
+}
 function SyncLibSearchFromInput(){
   const osearch=document.getElementById("libsearch");
-  if(osearch)LIB_SEARCH=osearch.value||"";
+  if(osearch)LIB_SEARCH=SanitizeLibSearch(osearch.value||"");
 }
 function ClearLibUiFilters(){
   LIB_SEARCH="";LIB_GROUP_TAB="all";LIB_GROUP_ID="";
@@ -2262,7 +2303,7 @@ function ResetLibGridAnim(){
   const grid=document.getElementById("libgrid");
   if(grid)grid.classList.remove("lib-fade-out","lib-fade-in");
 }
-function LibFilterMatch(n,bapplysearch=true){
+function LibBaseFilter(n){
   if(LIB_GROUP_ID&&LIB_GROUP_TAB!=="all"){
     if(LIB_GROUP_TAB==="rq"){
       if(!(n.lib_rq||[]).includes(LIB_GROUP_ID))return false;
@@ -2272,7 +2313,12 @@ function LibFilterMatch(n,bapplysearch=true){
       if(!(n.lib_tags||[]).includes(LIB_GROUP_ID))return false;
     }
   }
-  if(bapplysearch&&!LibFuzzyMatch(n,LIB_SEARCH))return false;
+  if(!LibFuzzyMatch(n,LIB_SEARCH))return false;
+  return true;
+}
+function LibFilterMatch(n){
+  SyncLibSearchFromInput();
+  if(!LibBaseFilter(n))return false;
   if(LIB_FILTER==="all")return true;
   if(LIB_FILTER==="pending")return LibIsPending(n);
   if(LIB_FILTER==="await_deep")return LibIsAwaitDeep(n)&&!LibIsStandard(n);
@@ -2283,7 +2329,7 @@ function LibFilterMatch(n,bapplysearch=true){
 }
 function LibFilterCounts(){
   SyncLibSearchFromInput();
-  const vs=LibSources().filter(n=>LibFilterMatch(n,true));
+  const vs=LibSources().filter(n=>LibBaseFilter(n));
   return {
     all:vs.length,
     pending:vs.filter(LibIsPending).length,
@@ -2579,16 +2625,7 @@ function RenderLibGrid(){
         actionbtn+=DeepActionBtn(n.id,"urlbtn","deep_btn_",true,"↻ 升级深度");
       }
     }else if(LibIsAwaitDeep(n)&&SERVERMODE){
-      const vacts=[];
-      if(n.ingest_stale&&n.rawfile){
-        vacts.push(`<button class="urlbtn" onclick="event.stopPropagation();Analyze('${Attr(n.rawfile)}')">↻ 升级纳入</button>`);
-      }else{
-        if(LibIsStandard(n))vacts.push(`<button class="urlbtn" onclick="event.stopPropagation();OpenReport('${Attr(n.id)}-standard')">📊 标准报告</button>`);
-        if(n.rawfile&&!LibIsStandard(n))vacts.push(StandardActionBtn(n.id,"urlbtn","std_btn_",true,n.standard_stale?"↻ 升级标准":null));
-        else if(n.rawfile&&n.standard_stale)vacts.push(StandardActionBtn(n.id,"urlbtn","std_btn_",true,"↻ 升级标准"));
-        if(n.rawfile)vacts.push(DeepActionBtn(n.id,"urlbtn","deep_btn_",true));
-      }
-      actionbtn=vacts.join("");
+      actionbtn=LibAwaitDeepActions(n,true);
     }else if(LibIsPending(n)&&SERVERMODE&&n.rawfile){
       actionbtn=`<button class="urlbtn" onclick="event.stopPropagation();Analyze('${Attr(n.rawfile)}')">✨ 纳入研究</button>`;
     }
@@ -2697,6 +2734,7 @@ function OpenDrawer(id){
   CloseReport();
   if(DRAWER_STACK[DRAWER_STACK.length-1]!==id)DRAWER_STACK.push(id);
   RenderDrawer(id);
+  RefreshLibSummaryBars();
 }
 function DrawerBack(){
   if(DRAWER_STACK.length<=1){CloseDrawer();return;}
@@ -2773,24 +2811,7 @@ function RenderDrawer(id){
     if(LibIsPending(n)&&n.rawfile&&SERVERMODE){
       h+=`<div class="field"><button class="btn" onclick="Analyze('${Attr(n.rawfile)}')">✨ 纳入这篇文献</button></div>`;
     }else if(LibIsAwaitDeep(n)&&SERVERMODE){
-      if(n.ingest_stale&&n.rawfile){
-        h+=`<div class="field"><button class="btn" onclick="Analyze('${Attr(n.rawfile)}')">↻ 升级纳入</button></div>`;
-      }else{
-        if(!n.rawfile){
-          h+=`<div class="field"><div class="research-txt" style="color:var(--rose)">未检测到原始 PDF。进阶分析需要 PDF 原文，请重新上传后再试。</div></div>`;
-        }
-        if(n.rawfile&&!LibIsStandard(n)){
-          h+=`<div class="field">${StandardActionBtn(n.id,"btn","std_drawer_btn_",false,n.standard_stale?"↻ 升级标准分析":"📊 标准分析")}</div>`;
-        }else if(n.rawfile&&n.standard_stale){
-          h+=`<div class="field">${StandardActionBtn(n.id,"btn","std_drawer_btn_",false,"↻ 升级标准分析")}</div>`;
-        }
-        if(n.rawfile){
-          h+=`<div class="field">${DeepActionBtn(n.id,"btn","deep_drawer_btn_",false,"📋 深度分析")}</div>`;
-        }
-        if(LibIsStandard(n)){
-          h+=`<div class="field"><button class="btn ghost" onclick="OpenReport('${Attr(n.id)}-standard')">📊 查看标准分析报告</button></div>`;
-        }
-      }
+      h+=LibAwaitDeepDrawerActions(n);
     }else if(LibIsDeep(n)){
       h+=`<div class="field"><button class="btn" onclick="OpenReport('${Attr(n.id)}-report')">📋 查看深度研究报告</button> `+
         (n.rawfile&&SERVERMODE?DeepActionBtn(n.id,"btn","deep_drawer_btn_",false,n.deep_stale?"↻ 升级深度分析":"↻ 重新分析"):"")+`</div>`;
@@ -2870,7 +2891,7 @@ function CloseDrawerShell(sshellid){
   opanel.addEventListener("animationend",fend);
 }
 function IsDrawerOpen(sshellid){const s=document.getElementById(sshellid);return s&&(s.classList.contains("is-open")||s.classList.contains("is-closing"))}
-function CloseDrawer(){DRAWER_STACK=[];UpdateDrawerNav();CloseDrawerShell("drawer_shell")}
+function CloseDrawer(){DRAWER_STACK=[];UpdateDrawerNav();CloseDrawerShell("drawer_shell");RefreshLibSummaryBars()}
 async function OpenPaperUrl(surl){
   surl=SafeUrl(surl);
   if(!surl){Toast("链接无效");return}
