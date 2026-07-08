@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""LLM 任务互斥锁与 ingest/query 进度状态（按 uid 隔离）。"""
+"""LLM 任务互斥锁与 ingest/query/standard/deep 进度状态（按 uid 隔离）。"""
 import threading
+import time
 
 ingestlock = threading.RLock()
 querylock = threading.RLock()
@@ -13,6 +14,23 @@ llmrunlock = threading.Lock()
 ollmstate = {"owner": "", "detail": ""}
 bmultiuser_mode = False
 ollm_by_uid = {}
+
+# --- 标准 / 深度分析任务（原分散在 research_* 模块）---
+standardlock = threading.RLock()
+standardjobs = {}
+standard_active_uid = 0
+_standard_run_uid = 0
+_standard_run_gen = 0
+STANDARD_TIMEOUT_SEC = 900
+
+deeplock = threading.RLock()
+deepjobs = {}
+deep_active_uid = 0
+_deep_run_uid = 0
+_deep_run_gen = 0
+DEEP_TIMEOUT_SEC = 1800
+
+TASK_KINDS = ("ingest", "query", "standard", "deep")
 
 
 def SetMultiuserMode(bmulti):
@@ -145,8 +163,7 @@ def _BusyPayloadForOwner(sowner, sdetail, nuid):
             "message": "知识查询进行中（「%s」），请稍后再纳入研究。" % sshort,
         }
     if sowner == "deep":
-        import research_deep as rdeep
-        ostatus = rdeep.GetDeepJobStatus(nuid or rdeep.GetDeepActiveUid())
+        ostatus = GetDeepJobStatus(nuid or deep_active_uid)
         scur = ostatus.get("key") or ostatus.get("current") or sdetail or "文献"
         sshort = scur if len(scur) <= 34 else scur[:33] + "…"
         return {
@@ -154,8 +171,7 @@ def _BusyPayloadForOwner(sowner, sdetail, nuid):
             "message": "深度分析进行中（%s），大模型暂无法同时处理其他任务，请稍后再试。" % sshort,
         }
     if sowner == "standard":
-        import research_standard as rstd
-        ostatus = rstd.GetStandardJobStatus(nuid or rstd.GetStandardActiveUid())
+        ostatus = GetStandardJobStatus(nuid or standard_active_uid)
         scur = ostatus.get("key") or ostatus.get("current") or sdetail or "文献"
         sshort = scur if len(scur) <= 34 else scur[:33] + "…"
         return {
@@ -180,3 +196,143 @@ def LlmBusyPayload(nuid=0):
     if not sowner:
         return None
     return _BusyPayloadForOwner(sowner, sdetail, nuid)
+
+
+def DefaultPipelineJob(nuid=0):
+    return {
+        "running": False, "finished": False, "progress": 0, "stage": "准备",
+        "current": "", "key": "", "error": "", "result": None,
+        "cancelled": False, "uid": nuid, "gen": 0, "started_at": 0,
+    }
+
+
+def GetStandardJob(nuid=0):
+    with standardlock:
+        if nuid not in standardjobs:
+            standardjobs[nuid] = DefaultPipelineJob(nuid)
+        return standardjobs[nuid]
+
+
+def GetDeepJob(nuid=0):
+    with deeplock:
+        if nuid not in deepjobs:
+            deepjobs[nuid] = DefaultPipelineJob(nuid)
+        return deepjobs[nuid]
+
+
+def StandardJobAlive(nuid, ngen):
+    with standardlock:
+        return GetStandardJob(nuid).get("gen") == ngen
+
+
+def DeepJobAlive(nuid, ngen):
+    with deeplock:
+        return GetDeepJob(nuid).get("gen") == ngen
+
+
+def GetStandardActiveUid():
+    with standardlock:
+        return standard_active_uid
+
+
+def GetDeepActiveUid():
+    with deeplock:
+        return deep_active_uid
+
+
+def GetStandardRunContext():
+    with standardlock:
+        return _standard_run_uid, _standard_run_gen
+
+
+def GetDeepRunContext():
+    with deeplock:
+        return _deep_run_uid, _deep_run_gen
+
+
+def BeginStandardJob(nuid, **fields):
+    global standard_active_uid, _standard_run_uid, _standard_run_gen
+    with standardlock:
+        ojob = GetStandardJob(nuid)
+        ngen = ojob.get("gen", 0) + 1
+        ResetJobDict(
+            ojob, ngen, uid=nuid, started_at=time.time(),
+            running=True, finished=False, progress=0, stage="准备",
+            error="", result=None, cancelled=False, **fields,
+        )
+        standard_active_uid = nuid
+        _standard_run_uid = nuid
+        _standard_run_gen = ngen
+        return ngen
+
+
+def BeginDeepJob(nuid, **fields):
+    global deep_active_uid, _deep_run_uid, _deep_run_gen
+    with deeplock:
+        ojob = GetDeepJob(nuid)
+        ngen = ojob.get("gen", 0) + 1
+        ResetJobDict(
+            ojob, ngen, uid=nuid, started_at=time.time(),
+            running=True, finished=False, progress=0, stage="准备",
+            error="", result=None, cancelled=False, **fields,
+        )
+        deep_active_uid = nuid
+        _deep_run_uid = nuid
+        _deep_run_gen = ngen
+        return ngen
+
+
+def GetStandardJobStatus(nuid=0):
+    with standardlock:
+        return dict(GetStandardJob(nuid))
+
+
+def GetDeepJobStatus(nuid=0):
+    with deeplock:
+        return dict(GetDeepJob(nuid))
+
+
+def IsStandardCancelled():
+    with standardlock:
+        nuid, ngen = _standard_run_uid, _standard_run_gen
+        ojob = GetStandardJob(nuid)
+        if not StandardJobAlive(nuid, ngen):
+            return True
+        if ojob.get("cancelled"):
+            return True
+        nstart = ojob.get("started_at") or 0
+    return nstart > 0 and (time.time() - nstart) > STANDARD_TIMEOUT_SEC
+
+
+def IsDeepCancelled():
+    with deeplock:
+        nuid, ngen = _deep_run_uid, _deep_run_gen
+        ojob = GetDeepJob(nuid)
+        if not DeepJobAlive(nuid, ngen):
+            return True
+        if ojob.get("cancelled"):
+            return True
+        nstart = ojob.get("started_at") or 0
+    return nstart > 0 and (time.time() - nstart) > DEEP_TIMEOUT_SEC
+
+
+def UpdateStandardProgress(npct, sstage=""):
+    with standardlock:
+        nuid, ngen = _standard_run_uid, _standard_run_gen
+        if not StandardJobAlive(nuid, ngen):
+            return
+        ojob = GetStandardJob(nuid)
+        ojob["progress"] = npct
+        if sstage:
+            ojob["stage"] = sstage
+
+
+def UpdateDeepProgress(npct, sstage=""):
+    with deeplock:
+        nuid, ngen = _deep_run_uid, _deep_run_gen
+        if not DeepJobAlive(nuid, ngen):
+            return
+        ojob = GetDeepJob(nuid)
+        ojob["progress"] = npct
+        if sstage:
+            ojob["stage"] = sstage

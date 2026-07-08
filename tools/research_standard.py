@@ -15,76 +15,18 @@ from io_utils import SafeName
 from paper_io import ExtractPaperText
 from paper_sections import PackForDeep
 from llm_client import CallLlm, ParseLlmJson, IngestCancelled
-from job_state import ResetJobDict, ReleaseLlm, TryAcquireLlm, LlmBusyPayload
+from job_state import (
+    ResetJobDict, ReleaseLlm, TryAcquireLlm, LlmBusyPayload,
+    BeginStandardJob, GetStandardJob, GetStandardJobStatus, GetStandardActiveUid,
+    StandardJobAlive, IsStandardCancelled, UpdateStandardProgress, standardlock,
+)
 
 logger = logging.getLogger(__name__)
 
-standardlock = threading.RLock()
-standardjobs = {}
-standard_active_uid = 0
-_standard_run_uid = 0
-_standard_run_gen = 0
 STANDARD_TIMEOUT_SEC = 900
 
 PDF_MISSING_MSG = "找不到原始 PDF 文件。标准分析需要 PDF 原文，请重新上传后再试。"
 NOT_INGESTED_MSG = "该文献尚未「纳入研究」，请先纳入后再进行标准分析。"
-
-
-def DefaultStandardJob(nuid=0):
-    return {
-        "running": False, "finished": False, "progress": 0, "stage": "准备",
-        "current": "", "key": "", "error": "", "result": None,
-        "cancelled": False, "uid": nuid, "gen": 0, "started_at": 0,
-    }
-
-
-def GetStandardJob(nuid=0):
-    with standardlock:
-        if nuid not in standardjobs:
-            standardjobs[nuid] = DefaultStandardJob(nuid)
-        return standardjobs[nuid]
-
-
-def StandardJobAlive(nuid, ngen):
-    with standardlock:
-        return GetStandardJob(nuid).get("gen") == ngen
-
-
-def GetStandardActiveUid():
-    with standardlock:
-        return standard_active_uid
-
-
-def BeginStandardJob(nuid, **fields):
-    global standard_active_uid, _standard_run_uid, _standard_run_gen
-    with standardlock:
-        ojob = GetStandardJob(nuid)
-        ngen = ojob.get("gen", 0) + 1
-        ResetJobDict(
-            ojob, ngen, uid=nuid, started_at=time.time(),
-            running=True, finished=False, progress=0, stage="准备",
-            error="", result=None, cancelled=False, **fields,
-        )
-        standard_active_uid = nuid
-        _standard_run_uid = nuid
-        _standard_run_gen = ngen
-        return ngen
-
-
-def GetStandardJobStatus(nuid=0):
-    with standardlock:
-        return dict(GetStandardJob(nuid))
-
-
-def IsStandardCancelled():
-    with standardlock:
-        ojob = GetStandardJob(_standard_run_uid)
-        if not StandardJobAlive(_standard_run_uid, _standard_run_gen):
-            return True
-        if ojob.get("cancelled"):
-            return True
-        nstart = ojob.get("started_at") or 0
-    return nstart > 0 and (time.time() - nstart) > STANDARD_TIMEOUT_SEC
 
 
 def _Now():
@@ -276,7 +218,7 @@ def _WriteComparisonDraft(skey, stitle, orq):
 def StandardAnalyzePaper(oconfig, nfilename, sroot=None, skey=None):
     import app as appmod
 
-    _DefaultUpdateCb(8, "准备")
+    UpdateStandardProgress(8, "准备")
     with appmod.UserScope(sroot):
         fullpath, sfile = _ResolvePdfPath(nfilename, skey)
         meta = core.ParseSourceFilename(sfile)
@@ -295,13 +237,13 @@ def StandardAnalyzePaper(oconfig, nfilename, sroot=None, skey=None):
         )
 
     spacked = PackForDeep(stext)
-    _DefaultUpdateCb(25, "阶段① 方法论")
+    UpdateStandardProgress(25, "阶段① 方法论")
     omethod = _Stage1Method(oconfig, spacked, rkey, stitle, ssourcepage)
 
-    _DefaultUpdateCb(60, "阶段② RQ 对齐")
+    UpdateStandardProgress(60, "阶段② RQ 对齐")
     orq = _Stage2RqDraft(oconfig, rkey, stitle, omethod, srqctx, sthesis, sprior)
 
-    _DefaultUpdateCb(88, "写入报告")
+    UpdateStandardProgress(88, "写入报告")
     ssummary = (orq.get("standard_summary") or "").strip()
     if ssummary:
         ssummary += "\n\n完整报告：[[%s-standard]]" % rkey
@@ -322,22 +264,11 @@ def StandardAnalyzePaper(oconfig, nfilename, sroot=None, skey=None):
         import wiki_refresh as refresh
         refresh.RefreshWiki(bwrite_files=True, bforce=True)
 
-    _DefaultUpdateCb(100, "完成")
+    UpdateStandardProgress(100, "完成")
     return {"key": rkey, "file": sfile, "report": srel, "draft": scomp, "title": stitle}
 
 
-def _DefaultUpdateCb(npct, sstage=""):
-    with standardlock:
-        if not StandardJobAlive(_standard_run_uid, _standard_run_gen):
-            return
-        ojob = GetStandardJob(_standard_run_uid)
-        ojob["progress"] = npct
-        if sstage:
-            ojob["stage"] = sstage
-
-
 def _RunStandardJob(oconfig, nfilename, sroot=None, skey=None, nuid=0, ngen=0):
-    global _standard_run_uid, _standard_run_gen
     try:
         oresult = StandardAnalyzePaper(oconfig, nfilename or "", sroot=sroot, skey=skey)
         with standardlock:

@@ -19,60 +19,18 @@ from io_utils import SafeName
 from paper_io import ExtractPaperText
 from paper_sections import PackForDeep
 from llm_client import CallLlm, ParseLlmJson, IngestCancelled
-from job_state import ResetJobDict
+from job_state import (
+    ResetJobDict, ReleaseLlm, TryAcquireLlm, LlmBusyPayload,
+    BeginDeepJob, GetDeepJob, GetDeepJobStatus, GetDeepActiveUid,
+    DeepJobAlive, IsDeepCancelled, UpdateDeepProgress, deeplock,
+)
 
 logger = logging.getLogger(__name__)
 
-deeplock = threading.RLock()
-deepjobs = {}
-deep_active_uid = 0
-_deep_run_uid = 0
-_deep_run_gen = 0
 DEEP_TIMEOUT_SEC = 1800
 
 PDF_MISSING_MSG = "找不到原始 PDF 文件。深度研究需要 PDF 原文，请重新上传后再试。"
 NOT_INGESTED_MSG = "该文献尚未「纳入研究」，请先纳入后再进行深度分析。"
-
-
-def DefaultDeepJob(nuid=0):
-    return {
-        "running": False, "finished": False, "progress": 0, "stage": "准备",
-        "current": "", "key": "", "error": "", "result": None,
-        "cancelled": False, "uid": nuid, "gen": 0, "started_at": 0,
-    }
-
-
-def GetDeepJob(nuid=0):
-    with deeplock:
-        if nuid not in deepjobs:
-            deepjobs[nuid] = DefaultDeepJob(nuid)
-        return deepjobs[nuid]
-
-
-def DeepJobAlive(nuid, ngen):
-    with deeplock:
-        return GetDeepJob(nuid).get("gen") == ngen
-
-
-def GetDeepActiveUid():
-    with deeplock:
-        return deep_active_uid
-
-
-def BeginDeepJob(nuid, **fields):
-    global deep_active_uid, _deep_run_uid, _deep_run_gen
-    with deeplock:
-        ojob = GetDeepJob(nuid)
-        ngen = ojob.get("gen", 0) + 1
-        ResetJobDict(
-            ojob, ngen, uid=nuid, started_at=time.time(),
-            running=True, finished=False, progress=0, stage="准备",
-            error="", result=None, cancelled=False, **fields,
-        )
-        deep_active_uid = nuid
-        _deep_run_uid = nuid
-        _deep_run_gen = ngen
-        return ngen
 
 
 def _Now():
@@ -535,41 +493,13 @@ def DeepAnalyzePaper(oconfig, nfilename, sroot=None, skey=None):
 
 
 # ---- 进度回调与线程 ----
-def _DefaultUpdateCb(npct, sstage=""):
-    with deeplock:
-        if not DeepJobAlive(_deep_run_uid, _deep_run_gen):
-            return
-        ojob = GetDeepJob(_deep_run_uid)
-        ojob["progress"] = npct
-        if sstage:
-            ojob["stage"] = sstage
-
-
-update_callback = _DefaultUpdateCb
-
-
-def GetDeepJobStatus(nuid=0):
-    with deeplock:
-        return dict(GetDeepJob(nuid))
-
-
-def IsDeepCancelled():
-    """深度分析专用取消/超时检测（与「纳入研究」相互独立）。"""
-    with deeplock:
-        ojob = GetDeepJob(_deep_run_uid)
-        if not DeepJobAlive(_deep_run_uid, _deep_run_gen):
-            return True
-        if ojob.get("cancelled"):
-            return True
-        nstart = ojob.get("started_at") or 0
-    return nstart > 0 and (time.time() - nstart) > DEEP_TIMEOUT_SEC
+update_callback = UpdateDeepProgress
 
 
 def _RunDeepJob(oconfig, nfilename, sroot=None, skey=None, nuid=0, ngen=0):
     """后台线程：执行深度分析。LLM 互斥锁已在 StartDeepAnalysis 内获取，此处仅负责释放。"""
     global update_callback
-    from job_state import ReleaseLlm
-    update_callback = _DefaultUpdateCb
+    update_callback = UpdateDeepProgress
     try:
         oresult = DeepAnalyzePaper(oconfig, nfilename or "", sroot=sroot, skey=skey)
         with deeplock:
@@ -608,7 +538,6 @@ def _RunDeepJob(oconfig, nfilename, sroot=None, skey=None, nuid=0, ngen=0):
 
 def StartDeepAnalysis(oconfig, nfilename, sroot=None, skey=None, nuid=0):
     """启动深度分析。与「纳入研究 / 知识查询」共用同一把 LLM 互斥锁。"""
-    from job_state import TryAcquireLlm, LlmBusyPayload
     with deeplock:
         if GetDeepJob(nuid).get("running"):
             return {"error": "深度分析正在进行中，请等待完成"}

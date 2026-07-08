@@ -747,15 +747,14 @@
 </div>
 <div id="toast"></div>
 <script>
+/*__APP_STATE_JS__*/
 const SERVERMODE = /*__SERVERMODE__*/;
 const DESKTOPMODE = /*__DESKTOPMODE__*/;
 const CLOUDMODE = /*__CLOUDMODE__*/;
 const CSRF_TOKEN = /*__CSRF__*/;
 const CLOUD_USERNAME = /*__CLOUD_USER__*/;
-let DATA = /*__DATA__*/;
-let TC = DATA.typeconfig;
-let NODEMAP = {};
-function ReindexNodes(){NODEMAP={};DATA.nodes.forEach(n=>NODEMAP[n.id]=n)}
+AppState.initWikiData(/*__DATA__*/);
+function ReindexNodes(){AppState.rebuildNodeMap()}
 ReindexNodes();
 
 function TypeLabel(t){return (TC[t]||TC.unknown).label}
@@ -930,12 +929,6 @@ function LibTopicCount(t){
   if(t.id===CURRENT_TOPIC)return (DATA.nodes||[]).filter(n=>n.type==="source").length;
   return t.source_count!=null?t.source_count:0;
 }
-let LIB_FILTER="all";
-let LIB_GROUP_TAB="all";
-let LIB_GROUP_ID="";
-let LIB_SEARCH="";
-let LIB_SORT="ingested_desc";
-let LIB_VIEW="card";
 let _libAnimTimer=null;
 LoadLibUiState();
 const LIB_FILTERS=[
@@ -1425,7 +1418,7 @@ function RenderList(){
   const oinp=document.getElementById("list_search");
   if(oinp){oinp.value=LIST_SEARCH;if(!oinp._bound){oinp._bound=true;let ot=null;oinp.oninput=()=>{clearTimeout(ot);ot=setTimeout(()=>RunListSearch(oinp.value),280)}}}
 }
-let LIST_SEARCH="",LIST_SEARCH_HITS=null;
+/* LIST_SEARCH / DRAWER_STACK → AppState */
 async function RunListSearch(sq){
   LIST_SEARCH=sq||"";
   if(!LIST_SEARCH.trim()){LIST_SEARCH_HITS=null;RenderList();return}
@@ -1475,7 +1468,7 @@ function RenderAll(){
 
 /* ---------- 详情抽屉 ---------- */
 function NeighborsOf(id){const ns=new Set();DATA.edges.forEach(e=>{if(e.source===id)ns.add(e.target);if(e.target===id)ns.add(e.source)});return [...ns]}
-let DRAWER_STACK=[];
+/* DRAWER_STACK → AppState */
 function UpdateDrawerNav(){
   const ohead=document.querySelector("#drawer .drawer-head");
   if(ohead)ohead.classList.toggle("has-back",DRAWER_STACK.length>1);
@@ -2108,7 +2101,6 @@ async function Refresh(silent){
   }catch(e){Toast("刷新失败："+e.message)}
 }
 function AddPaper(){if(NeedServer())return;REUPLOAD_TARGET_ID="";document.getElementById("fileinput").click()}
-let REUPLOAD_TARGET_ID="";
 function ReuploadPdf(sid){
   if(NeedServer())return;
   REUPLOAD_TARGET_ID=sid||"";

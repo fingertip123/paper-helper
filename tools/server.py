@@ -19,6 +19,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 import app as appmod  # noqa: E402
+import app_scope  # noqa: E402
 import auth  # noqa: E402
 import wiki_core as core  # noqa: E402
 import job_state  # noqa: E402
@@ -39,6 +40,7 @@ def Setup():
         job_state.SetMultiuserMode(True)
     else:
         job_state.SetMultiuserMode(False)
+    app_scope.InitScope(appmod.multiuser, sdataroot if appmod.multiuser else core.rootdir)
     return sdataroot
 
 
