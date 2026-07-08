@@ -10,6 +10,10 @@
   wiki_scan       — Wiki 扫描与选题统计
   wiki_data       — 页面读取、日志、待纳入列表
   wiki_render     — HTML 页面渲染（模板在 viewer/）
+  wiki_graph      — 图谱巡检服务（P2）
+  source_stage    — 文献阶段状态机（P2）
+  data_context    — 数据根绑定与缓存失效（P2）
+  health_check    — 服务健康检查（P2）
 """
 
 import logging
@@ -27,10 +31,28 @@ logger = logging.getLogger(__name__)
 
 _PATH_ATTRS = frozenset({"rootdir", "wikidir", "rawsourcesdir", "outputpath"})
 
+# --- P2：图谱 / 阶段 / 上下文 / 健康（延迟加载，避免与 wiki_refresh 循环依赖）---
+_P2_EXPORTS = {
+    "RunLint": ("wiki_graph", "RunLint"),
+    "RunLintQuick": ("wiki_graph", "RunLintQuick"),
+    "RunLintWithOdata": ("wiki_graph", "RunLintWithOdata"),
+    "FixLint": ("wiki_graph", "FixLint"),
+    "LintIsClean": ("wiki_graph", "LintIsClean"),
+    "ResolveLibStage": ("source_stage", "ResolveLibStage"),
+    "StageRank": ("source_stage", "StageRank"),
+    "StageLabel": ("source_stage", "StageLabel"),
+    "DataContext": ("data_context", "DataContext"),
+    "RunHealthCheck": ("health_check", "RunHealthCheck"),
+}
+
 
 def __getattr__(name):
     if name in _PATH_ATTRS:
         return getattr(paths, name)
+    oexp = _P2_EXPORTS.get(name)
+    if oexp:
+        import importlib
+        return getattr(importlib.import_module(oexp[0]), oexp[1])
     raise AttributeError("module %r has no attribute %r" % (__name__, name))
 
 

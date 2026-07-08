@@ -6,8 +6,7 @@ import threading
 from contextlib import contextmanager
 
 import wiki_core as core
-import topic_manager as topics
-import wiki_refresh as refresh
+import data_context as dctx
 from app_meta import ResolveConfigDir
 
 datalock = threading.RLock()
@@ -43,10 +42,7 @@ def BindDataRoot(nroot):
     global configdir, configpath, _boundroot
     if not nroot or nroot == _boundroot:
         return
-    topics.Init(nroot)
-    core.rootdir = nroot
-    core.ReloadTopicPaths()
-    refresh.InvalidateWikiCache()
+    dctx.DataContext(nroot)
+    _boundroot = nroot
     configdir = ResolveConfigDir(nroot)
     configpath = os.path.join(configdir, "config.json")
-    _boundroot = nroot

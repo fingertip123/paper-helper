@@ -61,31 +61,9 @@ def ListWikiPages():
 
 
 def RunLintQuick(vnodes, vedges, ndeadlinks=0):
-    """轻量巡检摘要（供 BuildData /api/data 附带，避免重复全量扫描）。"""
-    olinked = {n["id"]: 0 for n in vnodes}
-    for e in vedges:
-        olinked[e["source"]] = olinked.get(e["source"], 0) + 1
-        olinked[e["target"]] = olinked.get(e["target"], 0) + 1
-    norphans = sum(
-        1 for n in vnodes
-        if n["type"] not in ("purpose", "unknown") and olinked.get(n["id"], 0) == 0
-    )
-    nstale = sum(1 for n in vnodes if n.get("type") == "source" and n.get("pipeline_stale"))
-    nknowledge_gaps = 0
-    try:
-        onodeids = {n["id"] for n in vnodes}
-        ofields = topics.ParsePurposeFields(topics.ReadText(topics.RulePath("purpose.md")))
-        for skey in ("rq1", "rq2", "rq3", "rq4"):
-            sval = (ofields.get(skey) or "").strip()
-            if not sval or sval in ("（未填写）", "（待填写）"):
-                continue
-            smatch = re.search(r"\[\[([^\]|]+)", sval)
-            srqid = smatch.group(1) if smatch else ""
-            if srqid and srqid not in onodeids:
-                nknowledge_gaps += 1
-    except Exception:
-        pass
-    return {"orphans": norphans, "dead_links": ndeadlinks, "knowledge_gaps": nknowledge_gaps, "stale_pipelines": nstale}
+    """轻量巡检摘要（委托 wiki_graph）。"""
+    import wiki_graph as graph
+    return graph.RunLintQuick(vnodes, vedges, ndeadlinks=ndeadlinks)
 
 
 def EscapeBibtex(sval):
@@ -115,64 +93,16 @@ def ExportBibtex():
 
 
 def RunLintWithOdata(odata):
-    """完整巡检，复用已有 odata（不再 ScanWiki / BuildData）。"""
-    core = _ImportCore()
-    vnodes = odata["nodes"]
-    vedges = odata.get("edges") or []
-    onodeids = {n["id"] for n in vnodes}
-    olinked = {n["id"]: 0 for n in vnodes}
-    for e in vedges:
-        olinked[e["source"]] = olinked.get(e["source"], 0) + 1
-        olinked[e["target"]] = olinked.get(e["target"], 0) + 1
-
-    vorphans = []
-    for n in vnodes:
-        if n["type"] in ("purpose", "unknown"):
-            continue
-        if olinked.get(n["id"], 0) == 0:
-            vorphans.append({"id": n["id"], "title": n.get("title", n["id"]), "type": n["type"]})
-
-    onodeindex = core.BuildNodeIndex(vnodes)
-    vdead = []
-    for p in ListWikiPages():
-        for starget in core.ExtractLinks(p["body"]):
-            if starget.strip().lower() not in onodeindex:
-                vdead.append({"page": p["id"], "link": starget})
-
-    vmissingfm = []
-    for p in ListWikiPages():
-        if p["type"] == "unknown" or not p["frontmatter"].get("type"):
-            vmissingfm.append({"id": p["id"], "issue": "缺少 type"})
-        if not p["frontmatter"].get("title"):
-            vmissingfm.append({"id": p["id"], "issue": "缺少 title"})
-
-    vgaps = []
-    ofields = topics.ParsePurposeFields(topics.ReadText(topics.RulePath("purpose.md")))
-    for skey in ("rq1", "rq2", "rq3", "rq4"):
-        sval = (ofields.get(skey) or "").strip()
-        if not sval or sval in ("（未填写）", "（待填写）"):
-            continue
-        smatch = re.search(r"\[\[([^\]|]+)", sval)
-        srqid = smatch.group(1) if smatch else ""
-        if srqid and srqid not in onodeids:
-            vgaps.append({"kind": "rq", "field": skey, "text": sval, "missing_page": srqid})
-
-    vprunable = [x for x in vorphans if x.get("type") not in ("source", "purpose", "rq")]
-
-    return {
-        "orphans": vorphans,
-        "prunable_orphans": vprunable,
-        "dead_links": vdead,
-        "frontmatter_issues": vmissingfm,
-        "knowledge_gaps": vgaps,
-        "stats": odata.get("stats", {}),
-        "generated": datetime.now().strftime("%Y-%m-%d %H:%M"),
-    }
+    """完整巡检（委托 wiki_graph）。"""
+    import wiki_graph as graph
+    graph.Init(wikidir, rawsourcesdir, rootdir)
+    return graph.RunLintWithOdata(odata)
 
 
 def RunLint():
-    import wiki_refresh as refresh
-    return RunLintWithOdata(refresh.GetWikiData())
+    import wiki_graph as graph
+    graph.Init(wikidir, rawsourcesdir, rootdir)
+    return graph.RunLint()
 
 
 def WriteOverview(odata):
@@ -422,10 +352,10 @@ def RepairOrphanQueries():
 
 
 def FixLintIssues():
-    """巡检并清理：移除孤儿页、剥离死链、合并重复 source，保留论文库卡片。"""
-    import wiki_workflow as wflow
-    wflow.Init(wikidir)
-    return wflow.FixLintExtended()
+    """巡检并清理（委托 wiki_graph）。"""
+    import wiki_graph as graph
+    graph.Init(wikidir, rawsourcesdir, rootdir)
+    return graph.FixLint()
 
 
 def SnapshotTopic():

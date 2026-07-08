@@ -28,6 +28,8 @@ logger = logging.getLogger(__name__)
 import wiki_core as core
 import topic_manager as topics
 import wiki_ops as wops
+import wiki_graph as wgraph
+import health_check as hcheck
 import doc_editor as doced
 import onboarding as onboard
 import builtin_llm as bllm
@@ -481,6 +483,9 @@ class Handler(BaseHTTPRequestHandler):
             ), "text/html; charset=utf-8")
         if path == "/api/data":
             return self._send(200, refresh.RefreshWiki(bwrite_files=True))
+        if path == "/api/health":
+            wgraph.Init(core.wikidir, core.rawsourcesdir, core.rootdir)
+            return self._send(200, hcheck.RunHealthCheck(self._Uid(), LoadConfig()))
         if path == "/api/config":
             return self._send(200, GetConfigForApi())
         if path == "/api/ingest/progress":
@@ -505,8 +510,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/onboarding":
             return self._send(200, onboard.GetState())
         if path == "/api/lint":
-            wops.Init(core.wikidir, core.rawsourcesdir, core.rootdir)
-            return self._send(200, wops.RunLint())
+            wgraph.Init(core.wikidir, core.rawsourcesdir, core.rootdir)
+            return self._send(200, wgraph.RunLint())
         if path == "/api/chapters":
             import wiki_workflow as wflow
             wflow.Init(core.wikidir)
@@ -733,8 +738,8 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/query":
                 return self._query()
             if self.path == "/api/lint/fix":
-                wops.Init(core.wikidir, core.rawsourcesdir, core.rootdir)
-                return self._send(200, wops.FixLintIssues())
+                wgraph.Init(core.wikidir, core.rawsourcesdir, core.rootdir)
+                return self._send(200, wgraph.FixLint())
             if self.path == "/api/import/bibtex":
                 return self._importbibtex()
             if self.path == "/api/topics/snapshot":

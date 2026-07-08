@@ -9,6 +9,7 @@ import io_utils
 import wiki_paths as paths
 import wiki_markdown as md
 import wiki_source_meta as smeta
+import source_stage as stage
 
 
 def _NormalizeSourceKey(skey):
@@ -273,9 +274,6 @@ def DedupeSourceNodes(vnodes):
     return vothers + vmerged
 
 
-_LIB_STAGE_RANK = {"pending": 1, "await_deep": 2, "standard": 3, "deep": 4}
-
-
 def SortAuthorKey(onode):
     """首作者或标题首字，供论文库排序。"""
     vauthors = onode.get("authors") or []
@@ -323,14 +321,7 @@ def EnrichSourceLibraryMeta(vnodes):
         n["standard_done"] = bstandard
         import analysis_version as aver
         aver.EnrichNodeStaleFlags(n, paths.wikidir)
-        if bdeep:
-            n["lib_stage"] = "deep"
-        elif bstandard:
-            n["lib_stage"] = "standard"
-        elif n.get("ingested"):
-            n["lib_stage"] = "await_deep"
-        else:
-            n["lib_stage"] = "pending"
+        n["lib_stage"] = stage.ResolveLibStage(n.get("ingested"), bstandard, bdeep)
         n["lib_tags"] = smeta.GetLibTags(n.get("id", ""))
         n["lib_rq"] = smeta.GetLibRq(n.get("id", ""))
         n["lib_chapter"] = smeta.GetLibChapter(n.get("id", ""))
@@ -340,6 +331,6 @@ def EnrichSourceLibraryMeta(vnodes):
         nadded, ningested = SourceTimestamps(n)
         n["added_at"] = nadded
         n["ingested_at"] = ningested
-        n["lib_rank"] = _LIB_STAGE_RANK.get(n.get("lib_stage"), 1)
+        n["lib_rank"] = stage.StageRank(n.get("lib_stage"))
         n["sort_author"] = SortAuthorKey(n)
 
