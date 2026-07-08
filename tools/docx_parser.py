@@ -870,3 +870,13 @@ def _ParaExcerpt(sdocx_path, nindex):
         return ""
     return (odoc.paragraphs[nindex].text or "")[:120]
 
+
+# 本模块是 doc_editor 系列的内部底层库，供 doc_editor_html / doc_api / doc_revisions
+# 以 `from docx_parser import *` 扁平复用。默认 `import *` 会跳过下划线开头的名字，
+# 而这些模块依赖大量私有助手（如 _LoadImageUrls / _LoadThemeFonts / _BuildDocumentBodyHtml），
+# 故此显式导出全部顶层名字（导入进来的模块对象除外）。
+import types as _types
+
+__all__ = [_k for _k, _v in list(globals().items())
+           if not _k.startswith("__") and not isinstance(_v, _types.ModuleType)]
+
