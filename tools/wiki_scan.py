@@ -68,7 +68,7 @@ def ScanWiki():
                 except Exception:
                     pass
                 onode["has_body"] = bool(nbody.strip())
-                onode["body_preview"] = (md.GetSummary(nbody) or StripWikiMarkup(nbody))[:480]
+                onode["body_preview"] = (md.GetSummary(nbody) or md.StripWikiMarkup(nbody))[:480]
             else:
                 onode["has_body"] = False
                 onode["body_preview"] = ""

@@ -13,6 +13,7 @@ from app_config import LoadConfig
 from app_ingest import RunIngestJob
 from io_utils import SafeName
 from job_state import BeginIngestJob, GetIngestJob, LlmBusyPayload, ingestlock
+from llm_client import HasUsableApiKey
 
 
 class HandlerIngestMixin:

@@ -104,37 +104,56 @@ def Register(susername, spassword):
     return nuid
 
 
-def _ThrottleLogin(sip):
-    if not sip:
+def _CheckRate(skey, nlimit, nwindow, serrmsg):
+    """通用滑动窗口限流：命中上限抛错，否则不计数。窗口过期自动重置。"""
+    if not skey:
         return
     nnow = time.time()
     with _dblock, _Db() as odb:
         orow = odb.execute(
-            "SELECT count, window_start FROM login_fails WHERE ip=?", (sip,)
+            "SELECT count, window_start FROM login_fails WHERE ip=?", (skey,)
         ).fetchone()
-        if orow and nnow - orow[1] < 600 and orow[0] >= 10:
-            raise ValueError("尝试过于频繁，请 10 分钟后再试")
+        if orow and nnow - orow[1] < nwindow and orow[0] >= nlimit:
+            raise ValueError(serrmsg)
 
 
-def _RecordLoginFail(sip):
-    if not sip:
+def _RecordRate(skey, nwindow):
+    """通用滑动窗口计数 +1（窗口过期则重置为 1）。"""
+    if not skey:
         return
     nnow = time.time()
     with _dblock, _Db() as odb:
         orow = odb.execute(
-            "SELECT count, window_start FROM login_fails WHERE ip=?", (sip,)
+            "SELECT count, window_start FROM login_fails WHERE ip=?", (skey,)
         ).fetchone()
-        if not orow or nnow - orow[1] >= 600:
+        if not orow or nnow - orow[1] >= nwindow:
             odb.execute(
                 "INSERT INTO login_fails(ip, count, window_start) VALUES(?,?,?)"
                 " ON CONFLICT(ip) DO UPDATE SET count=1, window_start=?",
-                (sip, 1, nnow, nnow),
+                (skey, 1, nnow, nnow),
             )
         else:
             odb.execute(
                 "UPDATE login_fails SET count=? WHERE ip=?",
-                (orow[0] + 1, sip),
+                (orow[0] + 1, skey),
             )
+
+
+def ThrottleRegister(sip):
+    """注册限流：同一 IP 每小时最多 8 次，抵御账号刷量 / 磁盘 DoS。命中即计数。"""
+    if not sip:
+        return
+    skey = "reg:" + sip
+    _CheckRate(skey, 8, 3600, "注册过于频繁，请稍后再试")
+    _RecordRate(skey, 3600)
+
+
+def _ThrottleLogin(sip):
+    _CheckRate(sip, 10, 600, "尝试过于频繁，请 10 分钟后再试")
+
+
+def _RecordLoginFail(sip):
+    _RecordRate(sip, 600)
 
 
 def Login(susername, spassword, sip=""):

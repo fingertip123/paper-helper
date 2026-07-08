@@ -161,8 +161,9 @@ class HandlerLibraryMixin:
         if not rel.startswith("raw/sources/"):
             return self._send(404, {"error": "file not found"})
         nfilename = rel.split("raw/sources/", 1)[1]
+        nbase = os.path.normpath(core.rawsourcesdir)
         full = os.path.normpath(os.path.join(core.rawsourcesdir, nfilename))
-        if not full.startswith(os.path.normpath(core.rawsourcesdir)) or not os.path.isfile(full):
+        if not (full == nbase or full.startswith(nbase + os.sep)) or not os.path.isfile(full):
             return self._send(404, {"error": "file not found"})
         nsize = os.path.getsize(full)
         if nsize > actx.ctx.pdf_max_serve_bytes:

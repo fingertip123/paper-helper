@@ -87,6 +87,7 @@ class Handler(
 
 
 def Main():
+    host, port = actx.ctx.host, actx.ctx.port
     url = "http://%s:%d" % (host, port)
     try:
         server = ThreadingHTTPServer((host, port), Handler)

@@ -19,10 +19,12 @@ class HandlerDesktopMixin:
         nfilename = SafeName(body.get("rawfile", ""))
         if not nfilename:
             return self._send(400, {"error": "缺少文件名"})
+        nbase = os.path.normpath(core.rawsourcesdir)
         nfull = os.path.normpath(os.path.join(core.rawsourcesdir, nfilename))
-        if not nfull.startswith(os.path.normpath(core.rawsourcesdir)) or not os.path.isfile(nfull):
+        if not (nfull == nbase or nfull.startswith(nbase + os.sep)) or not os.path.isfile(nfull):
             return self._send(404, {"error": "PDF 不存在"})
-        nurl = "http://%s:%d/raw/sources/%s" % (host, port, urllib.parse.quote(nfilename))
+        nurl = "http://%s:%d/raw/sources/%s" % (
+            actx.ctx.host, actx.ctx.port, urllib.parse.quote(nfilename))
         webbrowser.open(nurl)
         return self._send(200, {"status": "ok", "url": nurl})
 

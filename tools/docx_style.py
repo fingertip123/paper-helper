@@ -3,10 +3,12 @@
 """OOXML 样式映射（从 docx_parser 拆分）。"""
 import os
 import re
+import zipfile
 import xml.etree.ElementTree as ET
 
 WNS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 NS = {"w": WNS}
+ANS = "http://schemas.openxmlformats.org/drawingml/2006/main"
 
 def _RgbToHex(orgb):
     if not orgb:

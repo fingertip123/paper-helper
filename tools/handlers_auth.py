@@ -18,6 +18,14 @@ class HandlerAuthMixin:
         return auth.ResolveSession(auth.CookieFromHeaders(self.headers.get("Cookie", "")))
 
 
+    def _ClientIp(self):
+        """代理（Render/Koyeb 等）后取 X-Forwarded-For 首跳，否则回退直连地址。"""
+        sxff = self.headers.get("X-Forwarded-For", "")
+        if sxff:
+            return sxff.split(",")[0].strip()
+        return self.client_address[0]
+
+
     def _AuthGet(self, path):
         """多用户模式下的 GET 认证网关。返回 True 表示已应答。"""
         if path == "/login":
@@ -46,10 +54,11 @@ class HandlerAuthMixin:
         """多用户模式下的 POST 认证网关。返回 True 表示已应答。"""
         if self.path == "/auth/register":
             body = self._body()
+            sip = self._ClientIp()
             try:
+                auth.ThrottleRegister(sip)
                 auth.Register(body.get("username", ""), body.get("password", ""))
-                stoken = auth.Login(body.get("username", ""), body.get("password", ""),
-                                    self.client_address[0])
+                stoken = auth.Login(body.get("username", ""), body.get("password", ""), sip)
             except ValueError as e:
                 self._send(200, {"error": str(e)})
                 return True
@@ -60,7 +69,7 @@ class HandlerAuthMixin:
             body = self._body()
             try:
                 stoken = auth.Login(body.get("username", ""), body.get("password", ""),
-                                    self.client_address[0])
+                                    self._ClientIp())
             except ValueError as e:
                 self._send(200, {"error": str(e)})
                 return True

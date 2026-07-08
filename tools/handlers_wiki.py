@@ -12,7 +12,7 @@ import wiki_graph as wgraph
 import wiki_ops as wops
 import wiki_refresh as refresh
 import bib_io
-from app_config import GetUserTheme, LoadConfig, SaveConfig
+from app_config import GetConfigForApi, GetUserTheme, LoadConfig, SaveConfig
 
 
 class HandlerWikiMixin:
