@@ -36,6 +36,9 @@ import builtin_llm as bllm
 import auth
 import api_response
 import app_scope
+import app_context as actx
+import app_routes
+import request_log
 from app_ingest import RunIngestJob
 import task_queue
 from app_meta import APP_NAME, ResolveConfigDir
@@ -59,28 +62,41 @@ import concurrent.futures
 import research_standard as rstd
 import wiki_refresh as refresh
 
-host = "127.0.0.1"
-port = 8765
-desktopmode = False  # desktop.py 启动时设为 True，界面走桌面模式（服务开关控制功能而非关进程）
-desktop_pick_folder = None  # desktop.py 注入：主线程弹出文件夹选择框（备用）
-multiuser = False  # tools/server.py（云端部署）设为 True：登录 + 每用户数据隔离
-llmdailylimit = 0  # 多用户模式下每用户每日 LLM 调用上限（0 = 不限）
-baseroot = core.rootdir  # 主项目根（templates 来源）
-app_scope.InitScope(multiuser, core.rootdir)
+actx.Init(core.rootdir, False)
+actx.ctx.baseroot = core.rootdir
+app_scope.InitScope(actx.ctx.multiuser, core.rootdir)
 UserScope = app_scope.UserScope
 
-pdf_max_serve_bytes = 150 * 1024 * 1024
-pdf_serve_chunk = 256 * 1024
-max_body_bytes = 160 * 1024 * 1024
-max_upload_bytes = 150 * 1024 * 1024
+_CTX_FIELDS = frozenset({
+    "host", "port", "desktopmode", "desktop_pick_folder", "multiuser", "llmdailylimit",
+    "baseroot", "pdf_max_serve_bytes", "pdf_serve_chunk", "max_body_bytes", "max_upload_bytes",
+})
+
+
+def __getattr__(name):
+    if name in _CTX_FIELDS:
+        return getattr(actx.ctx, name)
+    raise AttributeError("module %r has no attribute %r" % (__name__, name))
+
+
+def __setattr__(name, value):
+    if name in _CTX_FIELDS:
+        setattr(actx.ctx, name, value)
+        if name == "multiuser":
+            app_scope.InitScope(bool(value), actx.ctx.baseroot or core.rootdir)
+        return
+    import sys
+    dict.__setitem__(sys.modules[__name__].__dict__, name, value)
+
+
 _exportdir_cache = {}
 
 
 def PickFolderNative():
     """系统原生文件夹选择（可从 HTTP 工作线程安全调用）。"""
-    if desktopmode and desktop_pick_folder:
+    if actx.ctx.desktopmode and actx.ctx.desktop_pick_folder:
         try:
-            spath = desktop_pick_folder()
+            spath = actx.ctx.desktop_pick_folder()
             if spath:
                 return spath.rstrip("/\\")
         except Exception:
@@ -150,9 +166,9 @@ def PickFolderNative():
             return r.stdout.strip().rstrip("/\\")
     except Exception:
         pass
-    if desktop_pick_folder:
+    if actx.ctx.desktop_pick_folder:
         try:
-            return desktop_pick_folder() or ""
+            return actx.ctx.desktop_pick_folder() or ""
         except Exception:
             pass
     return ""
@@ -403,7 +419,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(401, {"error": "未登录，请刷新页面重新登录"})
             return True
         self._user = ouser
-        if self.path in ("/api/shutdown", "/api/open/pdf", "/api/open/url", "/api/docs/pick-folder"):
+        if self.path in app_routes.CLOUD_FORBIDDEN_POST:
             self._send(403, {"error": "云端多用户模式不支持此操作"})
             return True
         return False
@@ -458,163 +474,196 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
-        if multiuser and self._AuthGet(path):
+        request_log.BeginRequest("GET", path)
+        if actx.ctx.multiuser and self._AuthGet(path):
             return
         ouser = getattr(self, "_user", None)
         with UserScope(ouser["root"] if ouser else None):
             return self._HandleGet(path)
 
     def do_POST(self):
-        if multiuser and self._AuthPost():
+        self.path = self.path.split("?", 1)[0]
+        request_log.BeginRequest("POST", self.path)
+        if actx.ctx.multiuser and self._AuthPost():
             return
         ouser = getattr(self, "_user", None)
         with UserScope(ouser["root"] if ouser else None):
             return self._HandlePost()
 
+    def _DispatchRoute(self, spec):
+        fn = getattr(self, spec.handler)
+        if spec.bpass_path:
+            return fn(self.path.split("?", 1)[0])
+        return fn()
+
+    # ---------- GET 路由处理器 ----------
+
+    def _GetIndex(self):
+        ouser = getattr(self, "_user", None)
+        stoken = auth.CookieFromHeaders(self.headers.get("Cookie", "")) if actx.ctx.multiuser else ""
+        odata = refresh.RefreshWiki(bwrite_files=True)
+        return self._send(200, core.Render(
+            odata, servermode=True, desktopmode=actx.ctx.desktopmode,
+            stheme=GetUserTheme(), susername=ouser["username"] if ouser else "",
+            bcloud=actx.ctx.multiuser, scsrf=auth.IssueCsrf(stoken) if stoken else "",
+        ), "text/html; charset=utf-8")
+
+    def _GetApiData(self):
+        return self._send(200, refresh.RefreshWiki(bwrite_files=True))
+
+    def _GetApiHealth(self):
+        wgraph.Init(core.wikidir, core.rawsourcesdir, core.rootdir)
+        return self._send(200, hcheck.RunHealthCheck(self._Uid(), LoadConfig()))
+
+    def _GetApiConfig(self):
+        return self._send(200, GetConfigForApi())
+
+    def _GetIngestProgress(self):
+        return self._send(200, task_queue.GetTaskProgress("ingest", self._Uid()))
+
+    def _GetDeepProgress(self):
+        return self._send(200, task_queue.GetTaskProgress("deep", self._Uid()))
+
+    def _GetStandardProgress(self):
+        return self._send(200, task_queue.GetTaskProgress("standard", self._Uid()))
+
+    def _GetQueryProgress(self):
+        return self._send(200, task_queue.GetTaskProgress("query", self._Uid()))
+
+    def _GetTasksProgress(self):
+        import urllib.parse
+        oq = urllib.parse.parse_qs(self.path.split("?", 1)[-1] if "?" in self.path else "")
+        skind = (oq.get("kind") or [""])[0]
+        nuid = self._Uid()
+        if skind:
+            oprog = task_queue.GetTaskProgress(skind, nuid)
+            if oprog is None:
+                return self._send(400, api_response.ErrorBody("无效任务类型", "BAD_REQUEST"))
+            return self._send(200, {"kind": skind, "progress": oprog})
+        return self._send(200, {"tasks": task_queue.GetAllTasksProgress(nuid)})
+
+    def _GetOnboarding(self):
+        return self._send(200, onboard.GetState())
+
+    def _GetLint(self):
+        wgraph.Init(core.wikidir, core.rawsourcesdir, core.rootdir)
+        return self._send(200, wgraph.RunLint())
+
+    def _GetChapters(self):
+        import wiki_workflow as wflow
+        wflow.Init(core.wikidir)
+        return self._send(200, wflow.GetChapterProgress(refresh.GetWikiData()))
+
+    def _GetSearch(self):
+        import urllib.parse
+        import wiki_workflow as wflow
+        wflow.Init(core.wikidir)
+        oq = urllib.parse.parse_qs(self.path.split("?", 1)[-1] if "?" in self.path else "")
+        sq = (oq.get("q") or [""])[0]
+        return self._send(200, {"results": wflow.SearchWikiPages(sq)})
+
+    def _GetPage(self):
+        import urllib.parse
+        oq = urllib.parse.parse_qs(self.path.split("?", 1)[-1] if "?" in self.path else "")
+        sid = (oq.get("id") or [""])[0].strip()
+        opage = core.GetPageContent(sid)
+        if not opage:
+            return self._send(404, {"error": "页面不存在"})
+        return self._send(200, opage)
+
+    def _GetExportBibtex(self):
+        wops.Init(core.wikidir, core.rawsourcesdir, core.rootdir)
+        return self._send(200, {"bibtex": wops.ExportBibtex()})
+
+    def _GetCitations(self):
+        wops.Init(core.wikidir, core.rawsourcesdir, core.rootdir)
+        return self._send(200, {"citations": bib_io.ListCitations(refresh.GetWikiData())})
+
+    def _GetLibraryGroups(self):
+        return self._send(200, core.BuildLibraryGroups(refresh.GetWikiData()["nodes"]))
+
+    def _GetTopics(self):
+        return self._send(200, {
+            "topics": core.TopicsWithCounts(),
+            "current": topics.GetCurrentTopicId(),
+            "purpose_fields": topics.GetPurposeFieldDefs(),
+        })
+
+    def _GetRules(self):
+        return self._send(200, topics.GetRules())
+
+    def _GetTopicConfig(self):
+        import urllib.parse
+        oquery = urllib.parse.parse_qs(self.path.split("?", 1)[-1] if "?" in self.path else "")
+        nid = (oquery.get("id") or [""])[0]
+        try:
+            return self._send(200, topics.GetTopicConfig(nid))
+        except ValueError as e:
+            return self._send(400, {"error": str(e)})
+
+    def _GetDocsList(self):
+        doced.Init(topics.GetTopicDir())
+        import urllib.parse
+        oq = urllib.parse.parse_qs(self.path.split("?", 1)[-1] if "?" in self.path else "")
+        return self._send(200, doced.ListDocs((oq.get("tag") or [None])[0]))
+
+    def _GetDocsDetail(self):
+        import urllib.parse
+        oq = urllib.parse.parse_qs(self.path.split("?", 1)[-1] if "?" in self.path else "")
+        sid = (oq.get("id") or [""])[0]
+        blight = (oq.get("light") or ["0"])[0] in ("1", "true", "yes")
+        doced.Init(topics.GetTopicDir())
+        try:
+            return self._send(200, doced.GetDocDetail(sid, blight))
+        except ValueError as e:
+            return self._send(400, {"error": str(e)})
+
+    def _GetDocsPreview(self):
+        import urllib.parse
+        oq = urllib.parse.parse_qs(self.path.split("?", 1)[-1] if "?" in self.path else "")
+        sid = (oq.get("id") or [""])[0]
+        doced.Init(topics.GetTopicDir())
+        return self._send(200, doced.GetPreviewHtml(sid), "text/html; charset=utf-8")
+
+    def _GetDocsRevisions(self):
+        import urllib.parse
+        oq = urllib.parse.parse_qs(self.path.split("?", 1)[-1] if "?" in self.path else "")
+        sid = (oq.get("id") or [""])[0]
+        doced.Init(topics.GetTopicDir())
+        return self._send(200, doced.ListRevisions(sid))
+
+    def _GetDocsRevision(self):
+        import urllib.parse
+        oq = urllib.parse.parse_qs(self.path.split("?", 1)[-1] if "?" in self.path else "")
+        sid = (oq.get("id") or [""])[0]
+        srev = (oq.get("rev") or [""])[0]
+        doced.Init(topics.GetTopicDir())
+        return self._send(200, doced.GetRevisionDetail(sid, srev))
+
+    def _GetDocsStatus(self):
+        import urllib.parse
+        oq = urllib.parse.parse_qs(self.path.split("?", 1)[-1] if "?" in self.path else "")
+        sid = (oq.get("id") or [""])[0]
+        doced.Init(topics.GetTopicDir())
+        return self._send(200, doced.GetWorkingStatus(sid))
+
+    def _GetDocsCompare(self):
+        import urllib.parse
+        oq = urllib.parse.parse_qs(self.path.split("?", 1)[-1] if "?" in self.path else "")
+        sid = (oq.get("id") or [""])[0]
+        srev_a = (oq.get("a") or ["WORKING"])[0]
+        srev_b = (oq.get("b") or [""])[0]
+        doced.Init(topics.GetTopicDir())
+        if not srev_b:
+            shead = doced._HeadRevisionId(sid)
+            srev_b = shead if shead else "original"
+        return self._send(200, doced.CompareRevisions(sid, srev_a, srev_b))
+
     def _HandleGet(self, path):
-        if path in ("/", "/index.html"):
-            ouser = getattr(self, "_user", None)
-            stoken = auth.CookieFromHeaders(self.headers.get("Cookie", "")) if multiuser else ""
-            odata = refresh.RefreshWiki(bwrite_files=True)
-            return self._send(200, core.Render(
-                odata, servermode=True, desktopmode=desktopmode,
-                stheme=GetUserTheme(), susername=ouser["username"] if ouser else "",
-                bcloud=multiuser, scsrf=auth.IssueCsrf(stoken) if stoken else "",
-            ), "text/html; charset=utf-8")
-        if path == "/api/data":
-            return self._send(200, refresh.RefreshWiki(bwrite_files=True))
-        if path == "/api/health":
-            wgraph.Init(core.wikidir, core.rawsourcesdir, core.rootdir)
-            return self._send(200, hcheck.RunHealthCheck(self._Uid(), LoadConfig()))
-        if path == "/api/config":
-            return self._send(200, GetConfigForApi())
-        if path == "/api/ingest/progress":
-            return self._send(200, task_queue.GetTaskProgress("ingest", self._Uid()))
-        if path == "/api/deep/progress":
-            return self._send(200, task_queue.GetTaskProgress("deep", self._Uid()))
-        if path == "/api/standard/progress":
-            return self._send(200, task_queue.GetTaskProgress("standard", self._Uid()))
-        if path == "/api/query/progress":
-            return self._send(200, task_queue.GetTaskProgress("query", self._Uid()))
-        if path == "/api/tasks/progress":
-            import urllib.parse
-            oq = urllib.parse.parse_qs(self.path.split("?", 1)[-1] if "?" in self.path else "")
-            skind = (oq.get("kind") or [""])[0]
-            nuid = self._Uid()
-            if skind:
-                oprog = task_queue.GetTaskProgress(skind, nuid)
-                if oprog is None:
-                    return self._send(400, api_response.ErrorBody("无效任务类型", "BAD_REQUEST"))
-                return self._send(200, {"kind": skind, "progress": oprog})
-            return self._send(200, {"tasks": task_queue.GetAllTasksProgress(nuid)})
-        if path == "/api/onboarding":
-            return self._send(200, onboard.GetState())
-        if path == "/api/lint":
-            wgraph.Init(core.wikidir, core.rawsourcesdir, core.rootdir)
-            return self._send(200, wgraph.RunLint())
-        if path == "/api/chapters":
-            import wiki_workflow as wflow
-            wflow.Init(core.wikidir)
-            return self._send(200, wflow.GetChapterProgress(refresh.GetWikiData()))
-        if path == "/api/search":
-            import urllib.parse
-            import wiki_workflow as wflow
-            wflow.Init(core.wikidir)
-            oq = urllib.parse.parse_qs(self.path.split("?", 1)[-1] if "?" in self.path else "")
-            sq = (oq.get("q") or [""])[0]
-            return self._send(200, {"results": wflow.SearchWikiPages(sq)})
-        if path == "/api/page":
-            import urllib.parse
-            oq = urllib.parse.parse_qs(self.path.split("?", 1)[-1] if "?" in self.path else "")
-            sid = (oq.get("id") or [""])[0].strip()
-            opage = core.GetPageContent(sid)
-            if not opage:
-                return self._send(404, {"error": "页面不存在"})
-            return self._send(200, opage)
-        if path == "/api/export/bibtex":
-            wops.Init(core.wikidir, core.rawsourcesdir, core.rootdir)
-            return self._send(200, {"bibtex": wops.ExportBibtex()})
-        if path == "/api/sources/citations":
-            wops.Init(core.wikidir, core.rawsourcesdir, core.rootdir)
-            return self._send(200, {"citations": bib_io.ListCitations(refresh.GetWikiData())})
-        if path == "/api/library/groups":
-            return self._send(200, core.BuildLibraryGroups(refresh.GetWikiData()["nodes"]))
-        if path == "/api/topics":
-            return self._send(200, {
-                "topics": core.TopicsWithCounts(),
-                "current": topics.GetCurrentTopicId(),
-                "purpose_fields": topics.GetPurposeFieldDefs(),
-            })
-        if path == "/api/rules":
-            return self._send(200, topics.GetRules())
-        if path == "/api/topics/config":
-            import urllib.parse
-            oquery = urllib.parse.parse_qs(self.path.split("?", 1)[-1] if "?" in self.path else "")
-            nid = (oquery.get("id") or [""])[0]
-            try:
-                return self._send(200, topics.GetTopicConfig(nid))
-            except ValueError as e:
-                return self._send(400, {"error": str(e)})
-        if path.startswith("/raw/sources/"):
-            return self._serve_file(path)
-        if path == "/api/docs":
-            doced.Init(topics.GetTopicDir())
-            import urllib.parse
-            oq = urllib.parse.parse_qs(self.path.split("?", 1)[-1] if "?" in self.path else "")
-            return self._send(200, doced.ListDocs((oq.get("tag") or [None])[0]))
-        if path == "/api/docs/detail":
-            import urllib.parse
-            oq = urllib.parse.parse_qs(self.path.split("?", 1)[-1] if "?" in self.path else "")
-            sid = (oq.get("id") or [""])[0]
-            blight = (oq.get("light") or ["0"])[0] in ("1", "true", "yes")
-            doced.Init(topics.GetTopicDir())
-            try:
-                return self._send(200, doced.GetDocDetail(sid, blight))
-            except ValueError as e:
-                return self._send(400, {"error": str(e)})
-        if path == "/api/docs/preview":
-            import urllib.parse
-            oq = urllib.parse.parse_qs(self.path.split("?", 1)[-1] if "?" in self.path else "")
-            sid = (oq.get("id") or [""])[0]
-            doced.Init(topics.GetTopicDir())
-            return self._send(200, doced.GetPreviewHtml(sid), "text/html; charset=utf-8")
-        if path == "/api/docs/editor":
-            return self._servedoceditor()
-        if path == "/api/docs/media":
-            return self._servedocmedia()
-        if path == "/api/docs/revisions":
-            import urllib.parse
-            oq = urllib.parse.parse_qs(self.path.split("?", 1)[-1] if "?" in self.path else "")
-            sid = (oq.get("id") or [""])[0]
-            doced.Init(topics.GetTopicDir())
-            return self._send(200, doced.ListRevisions(sid))
-        if path == "/api/docs/revision":
-            import urllib.parse
-            oq = urllib.parse.parse_qs(self.path.split("?", 1)[-1] if "?" in self.path else "")
-            sid = (oq.get("id") or [""])[0]
-            srev = (oq.get("rev") or [""])[0]
-            doced.Init(topics.GetTopicDir())
-            return self._send(200, doced.GetRevisionDetail(sid, srev))
-        if path == "/api/docs/status":
-            import urllib.parse
-            oq = urllib.parse.parse_qs(self.path.split("?", 1)[-1] if "?" in self.path else "")
-            sid = (oq.get("id") or [""])[0]
-            doced.Init(topics.GetTopicDir())
-            return self._send(200, doced.GetWorkingStatus(sid))
-        if path == "/api/docs/compare":
-            import urllib.parse
-            oq = urllib.parse.parse_qs(self.path.split("?", 1)[-1] if "?" in self.path else "")
-            sid = (oq.get("id") or [""])[0]
-            srev_a = (oq.get("a") or ["WORKING"])[0]
-            srev_b = (oq.get("b") or [""])[0]
-            doced.Init(topics.GetTopicDir())
-            if not srev_b:
-                shead = doced._HeadRevisionId(sid)
-                srev_b = shead if shead else "original"
-            return self._send(200, doced.CompareRevisions(sid, srev_a, srev_b))
-        if path == "/api/docs/download":
-            return self._docsdownload()
-        return self._send(404, {"error": "not found"})
+        spec = app_routes.MatchGet(path)
+        if not spec:
+            return self._send(404, {"error": "not found"})
+        return self._DispatchRoute(spec)
 
     def _servedoceditor(self):
         import urllib.parse
@@ -694,92 +743,30 @@ class Handler(BaseHTTPRequestHandler):
                     break
                 self.wfile.write(bchunk)
 
+    def _PostConfig(self):
+        body = self._body()
+        SaveConfig(body)
+        return self._send(200, {"status": "ok"})
+
+    def _PostLintFix(self):
+        wgraph.Init(core.wikidir, core.rawsourcesdir, core.rootdir)
+        return self._send(200, wgraph.FixLint())
+
     def _HandlePost(self):
-        self.path = self.path.split("?", 1)[0]
-        if multiuser and not self.path.startswith("/auth/") and not self._CheckCsrf():
+        if actx.ctx.multiuser and not self.path.startswith("/auth/") and not self._CheckCsrf():
             return
-        try:
-            if self.path == "/api/upload":
-                return self._upload()
-            if self.path == "/api/delete":
-                return self._delete()
-            if self.path == "/api/ingest":
-                return self._ingest()
-            if self.path == "/api/ingest/deep":
-                return self._deep_analyze()
-            if self.path == "/api/ingest/standard":
-                return self._standard_analyze()
-            if self.path == "/api/config":
-                body = self._body()
-                SaveConfig(body)
-                return self._send(200, {"status": "ok"})
-            if self.path == "/api/shutdown":
-                return self._shutdown()
-            if self.path == "/api/topics/switch":
-                return self._topicswitch()
-            if self.path == "/api/topics/new":
-                return self._topicnew()
-            if self.path == "/api/topics/reset":
-                return self._topicreset()
-            if self.path == "/api/rules/save":
-                return self._rulessave()
-            if self.path == "/api/open/pdf":
-                return self._openpdf()
-            if self.path == "/api/open/url":
-                return self._openurl()
-            if self.path == "/api/source/url":
-                return self._sourceurl()
-            if self.path == "/api/source/tags":
-                return self._sourcetags()
-            if self.path == "/api/library/assign":
-                return self._libraryassign()
-            if self.path == "/api/ingest/cancel":
-                return self._ingestcancel()
-            if self.path == "/api/query":
-                return self._query()
-            if self.path == "/api/lint/fix":
-                wgraph.Init(core.wikidir, core.rawsourcesdir, core.rootdir)
-                return self._send(200, wgraph.FixLint())
-            if self.path == "/api/import/bibtex":
-                return self._importbibtex()
-            if self.path == "/api/topics/snapshot":
-                return self._topicsnapshot()
-            if self.path == "/api/onboarding/setup":
-                return self._onboardingsetup()
-            if self.path == "/api/onboarding/dismiss":
-                return self._onboardingdismiss()
-            if self.path == "/api/docs/import":
-                return self._docsimport()
-            if self.path == "/api/docs/meta":
-                return self._docsmeta()
-            if self.path == "/api/docs/extract":
-                return self._docsextract()
-            if self.path == "/api/docs/todo":
-                return self._docstodo()
-            if self.path == "/api/docs/edit":
-                return self._docsedit()
-            if self.path == "/api/docs/save":
-                return self._docssave()
-            if self.path == "/api/docs/restore":
-                return self._docsrestore()
-            if self.path == "/api/docs/restore-working":
-                return self._docsrestoreworking()
-            if self.path == "/api/docs/discard":
-                return self._docsdiscard()
-            if self.path == "/api/docs/export":
-                return self._docsexport()
-            if self.path == "/api/docs/pick-folder":
-                return self._docspickfolder()
-            if self.path == "/api/docs/delete":
-                return self._docsdelete()
+        spec = app_routes.MatchPost(self.path)
+        if not spec:
             return self._send(404, {"error": "not found"})
+        try:
+            return self._DispatchRoute(spec)
         except ValueError as e:
             if "请求体过大" in str(e):
                 return self._send(413, {"error": str(e)})
             return self._send(400, {"error": str(e)})
         except Exception as e:
-            logger.exception("POST %s 失败", self.path)
-            if multiuser:
+            request_log.LogException("POST", self.path, e)
+            if actx.ctx.multiuser:
                 return self._send(500, {"error": "服务器内部错误"})
             return self._send(500, {"error": str(e)})
 
