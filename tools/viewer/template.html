@@ -490,8 +490,6 @@
     <button class="btn sec" onclick="ResetTopic()">↺ 重置</button>
     <button class="btn sec" onclick="OpenRules()">🌸 研究规则</button>
   </div>
-  <label class="svc" title="本地服务开关"><input type="checkbox" id="svctoggle"><span class="track"></span><span class="svclbl" id="svclbl">服务</span></label>
-  <div class="toolbar" id="toolbar">
     <button class="btn" onclick="AddPaper()">🌷 添加文献</button>
     <button class="btn sec" onclick="Analyze()">✨ 纳入研究</button>
     <button class="btn sec" onclick="OpenQuery()">💭 知识查询</button>
@@ -2037,45 +2035,34 @@ async function SaveRules(){
   }catch(e){Toast("保存失败："+e.message)}
 }
 
-/* ---------- 服务开关 ---------- */
+/* ---------- 大模型配置 ---------- */
+let LLM_READY=false;
+async function LoadLlmConfig(){
+  if(!SERVERMODE){LLM_READY=false;return}
+  try{
+    const c=await Api("/api/config");
+    LLM_READY=!!c.has_api_key;
+  }catch(e){LLM_READY=false}
+}
+function NeedLlmKey(){
+  if(NeedServer())return true;
+  if(!LLM_READY){
+    Toast("请先在「偏好设置」中配置大模型 API Key",5000);
+    OpenSettings();
+    return true;
+  }
+  return false;
+}
+
 const STARTCMD="/*__STARTCMD__*/";
-let serverUp=SERVERMODE;
-function InitSvcToggle(){
-  const t=document.getElementById("svctoggle");
-  t.checked=serverUp;
-  document.getElementById("svclbl").textContent=serverUp?"运行中":"已停止";
-  t.onchange=()=>{
-    if(DESKTOPMODE){
-      if(t.checked){serverUp=true;document.getElementById("svclbl").textContent="运行中";Toast("功能已开启");}
-      else{
-        if(!confirm("确定暂停导入/分析功能？\n暂停后添加、分析、删除将不可用，打开开关即可恢复。")){t.checked=true;return;}
-        serverUp=false;document.getElementById("svclbl").textContent="已暂停";Toast("功能已暂停");
-      }
-      return;
-    }
-    if(serverUp){t.checked=true;StopService();}
-    else{t.checked=false;OpenStart();}
-  };
-}
-async function StopService(){
-  if(!confirm("确定停止本地服务？\n停止后将无法添加/分析。"))return;
-  try{await Api("/api/shutdown",{});}catch(e){}
-  serverUp=false;
-  document.getElementById("svctoggle").checked=false;
-  document.getElementById("svclbl").textContent="已停止";
-  document.getElementById("toolbar").innerHTML='<span class="meta">📖 服务已停止 · 请重新启动应用</span>';
-  Toast("服务已停止");
-}
-function OpenStart(){document.getElementById("startcmdbox").value='bash "'+STARTCMD+'"';document.getElementById("startmodal").classList.add("open")}
-function CloseStart(){document.getElementById("startmodal").classList.remove("open")}
-function CopyStart(){const b=document.getElementById("startcmdbox");b.select();try{document.execCommand("copy")}catch(e){}if(navigator.clipboard)navigator.clipboard.writeText(b.value).catch(()=>{});Toast("已复制启动命令")}
+function CloseStart(){const m=document.getElementById("startmodal");if(m)m.classList.remove("open")}
+function CopyStart(){const b=document.getElementById("startcmdbox");if(!b)return;b.select();try{document.execCommand("copy")}catch(e){}if(navigator.clipboard)navigator.clipboard.writeText(b.value).catch(()=>{});Toast("已复制启动命令")}
 
 /* ---------- 工具栏动作 ---------- */
 function Toast(msg,ms){const t=document.getElementById("toast");t.textContent=msg;t.classList.add("show");clearTimeout(t._t);t._t=setTimeout(()=>t.classList.remove("show"),ms||3000)}
 function ShowOverlay(msg){document.getElementById("overlaymsg").textContent=msg||"处理中…";document.getElementById("overlay").classList.add("open")}
 function HideOverlay(){document.getElementById("overlay").classList.remove("open")}
 function NeedServer(){
-  if(DESKTOPMODE&&!serverUp){Toast("功能已暂停，请打开右上角服务开关");return true}
   if(!SERVERMODE){Toast("此功能需启动研栈应用后使用");return true}
   return false;
 }
@@ -2342,7 +2329,7 @@ function EnsureQueryComposer(){
   }
 }
 function OpenQuery(){
-  if(NeedServer())return;
+  if(NeedLlmKey())return;
   if(!QueryThreadEl().children.length)EnsureQueryComposer();
   else ScrollQueryThread();
   document.getElementById("querymodal").classList.add("open");
@@ -2464,7 +2451,7 @@ function QueryPollAbort(nturnid){
   RestoreQueryTurn(nturnid,"已放弃等待，可重新提问",oturn&&oturn.dataset.prevAnswer,!!(oturn&&oturn.dataset.hadAnswer));
 }
 function SubmitQueryTurn(nturnid){
-  if(NeedServer())return;
+  if(NeedLlmKey())return;
   const oturn=FindQueryTurn(nturnid);if(!oturn||oturn.classList.contains("pending"))return;
   const sq=oturn.querySelector(".query-q-input").value.trim();
   if(!sq){Toast("请输入问题");return}
@@ -2664,7 +2651,7 @@ function CreatePoller(opt){
 }
 function ShortName(s){return (s||"").length>34?s.slice(0,33)+"…":s}
 async function Analyze(rawfile){
-  if(NeedServer())return;
+  if(NeedLlmKey())return;
   try{
     const res=await Api("/api/ingest",{rawfile:rawfile||null});
     if(res.status==="busy"){Toast(res.message||"大模型正在处理知识查询，请稍后再纳入研究",6000);return}
@@ -2891,7 +2878,7 @@ async function SaveSettings(){
   const bnoauth=spreset!==""&&PRESETS[+spreset]?.noauth;
   if(bnoauth)body.clear_api_key=true;
   else if(skey)body.api_key=skey;
-  try{await Api("/api/config",body);CloseSettings();Toast(bnoauth?"设置已保存（免注册模式）":(skey?"设置已保存":"设置已保存（API Key 未改动）"))}catch(e){Toast("保存失败："+e.message)}
+  try{await Api("/api/config",body);await LoadLlmConfig();CloseSettings();Toast(bnoauth?"设置已保存（免注册模式）":(skey?"设置已保存":"设置已保存（API Key 未改动）"))}catch(e){Toast("保存失败："+e.message)}
 }
 
 /* ---------- 文档编辑 ---------- */
@@ -4182,10 +4169,9 @@ LoadAllQueryHistory();
 RestoreQueryThreadForTopic(CURRENT_TOPIC);
 InitTheme();
 InitDrawerShells();
-InitSvcToggle();
 InitDropzone();
 RenderAll();
-if(SERVERMODE){LoadTopics().then(()=>Refresh(true)).then(()=>{InitOnboarding();ResumeDeepIfRunning();ResumeStandardIfRunning()});LoadDocsList();}
+if(SERVERMODE){LoadLlmConfig();LoadTopics().then(()=>Refresh(true)).then(()=>{InitOnboarding();ResumeDeepIfRunning();ResumeStandardIfRunning()});LoadDocsList();}
 /* ---------- 标准分析 ---------- */
 function HasStandardReport(skey){return DATA.nodes.some(n=>n.id===skey+"-standard"&&n.type==="analysis-report")}
 function StandardActionBtn(sid,sklass,sidprefix,bstop,slabel){
@@ -4215,6 +4201,7 @@ async function ResumeStandardIfRunning(){
   }catch(e){}
 }
 async function StandardAnalyze(rawfile,skey){
+  if(NeedLlmKey())return;
   if(!skey){Toast("参数错误");return}
   if(_standardActiveKey&&_standardActiveKey!==skey){Toast("已有文献正在标准分析中，请等待完成");return}
   if(_deepActiveKey){Toast("深度分析进行中，请稍后再试");return}
@@ -4291,6 +4278,7 @@ async function ResumeDeepIfRunning(){
   }catch(e){}
 }
 async function DeepAnalyze(rawfile,skey){
+  if(NeedLlmKey())return;
   if(!skey){Toast("参数错误");return}
   if(_deepActiveKey&&_deepActiveKey!==skey){Toast("已有文献正在深度分析中，请等待完成");return}
   if(_standardActiveKey){Toast("标准分析进行中，请稍后再试");return}
