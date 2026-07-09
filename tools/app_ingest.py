@@ -132,6 +132,8 @@ def IngestFinalize(nfilename, content, nuid=0, ngen=0):
             body = item.get("content", "")
             if not fp or not body.strip():
                 continue
+            import wiki_markdown as md
+            body = md.SanitizeFrontmatter(body)  # 修正 LLM 生成的非法 frontmatter（如 title 含冒号）
             srel = os.path.relpath(fp, core.wikidir)
             spart = os.path.join(sstaging, srel)
             os.makedirs(os.path.dirname(spart), exist_ok=True)

@@ -17,25 +17,106 @@ frontmatterpattern = cfg.frontmatterpattern
 explicitrelmap = cfg.explicitrelmap
 explicitrelpattern = cfg.explicitrelpattern
 
+# 结构化 / 已加引号的 YAML 标量起始字符：这些开头不需要（也不应）再补引号
+_YAML_STRUCT_HEADS = set("[{\"'|>&*!#%@`?")
+_FM_KV = re.compile(r"^(\s*)([\w\-.]+):[ \t]+(\S.*?)[ \t]*$")
+
+
+def _NeedsQuote(sval):
+    """判断一个裸标量值是否会破坏 YAML（最常见：值里含未转义的 ': '）。"""
+    if not sval or sval[0] in _YAML_STRUCT_HEADS:
+        return False
+    return (": " in sval) or sval.endswith(":") or (" #" in sval)
+
+
+def _RepairFrontmatterBlock(sblock):
+    """给会破坏 YAML 的裸标量值补双引号（LLM 生成 title/desc 含冒号是高发错误）。"""
+    vout = []
+    for sline in sblock.splitlines():
+        m = _FM_KV.match(sline)
+        if m and _NeedsQuote(m.group(3)):
+            sval = m.group(3).replace("\\", "\\\\").replace('"', '\\"')
+            vout.append('%s%s: "%s"' % (m.group(1), m.group(2), sval))
+        else:
+            vout.append(sline)
+    return "\n".join(vout)
+
+
+def _UnquoteScalar(sval):
+    sval = sval.strip()
+    if len(sval) >= 2 and sval[0] == sval[-1] and sval[0] in ("'", '"'):
+        return sval[1:-1]
+    return sval
+
+
+def _LenientParseBlock(sblock):
+    """逐行宽松解析：只认顶层 key: value 与简单列表，绝不抛异常（最终兜底）。"""
+    o = {}
+    slistkey = None
+    for sraw in sblock.splitlines():
+        if not sraw.strip() or sraw.lstrip().startswith("#"):
+            continue
+        mli = re.match(r"^\s+-\s+(.*\S)\s*$", sraw)
+        if mli and slistkey is not None and isinstance(o.get(slistkey), list):
+            o[slistkey].append(_UnquoteScalar(mli.group(1)))
+            continue
+        m = re.match(r"^([\w\-.]+):\s*(.*)$", sraw)
+        if not m:
+            continue
+        skey, sval = m.group(1), m.group(2).strip()
+        if sval == "":
+            o[skey] = []
+            slistkey = skey
+            continue
+        slistkey = None
+        if sval.startswith("[") and sval.endswith("]"):
+            o[skey] = [_UnquoteScalar(x) for x in sval[1:-1].split(",") if x.strip()]
+        else:
+            o[skey] = _UnquoteScalar(sval)
+    return o
+
+
+def _SafeLoadFrontmatter(sblock):
+    """尽最大努力把 frontmatter 解析为 dict：原样 → 补引号修复 → 逐行宽松。"""
+    try:
+        return yaml.safe_load(sblock)
+    except yaml.YAMLError:
+        pass
+    try:
+        return yaml.safe_load(_RepairFrontmatterBlock(sblock))
+    except yaml.YAMLError:
+        return _LenientParseBlock(sblock)
+
+
 def ParseFrontmatter(ntext):
-    """从 Markdown 文本中提取 YAML frontmatter。"""
+    """从 Markdown 文本中提取 YAML frontmatter（容错：坏 YAML 不再让整库崩溃）。"""
     omatch = frontmatterpattern.match(ntext)
     if not omatch:
         return {}, ntext
     sblock = omatch.group(1)
+    nbody = ntext[omatch.end():]
     if yaml is None:
         raise ImportError("缺少 PyYAML 依赖，请执行：pip install PyYAML")
-    try:
-        oparsed = yaml.safe_load(sblock)
-    except yaml.YAMLError as e:
-        raise ValueError(
-            "frontmatter YAML 解析失败，请检查格式（缩进、引号、嵌套值）：%s" % e
-        ) from e
-    if oparsed is None:
-        return {}, ntext[omatch.end():]
+    oparsed = _SafeLoadFrontmatter(sblock)
     if not isinstance(oparsed, dict):
-        raise ValueError("frontmatter 须为 YAML 映射（key: value），当前类型：%s" % type(oparsed).__name__)
-    return oparsed, ntext[omatch.end():]
+        # None / 列表 / 标量等异常形态：降级为无 frontmatter，保留正文，不中断扫描
+        return {}, nbody
+    return oparsed, nbody
+
+
+def SanitizeFrontmatter(ntext):
+    """写入前修正：若 frontmatter 非法，就地给问题标量补引号后返回（保持原有格式）。"""
+    omatch = frontmatterpattern.match(ntext)
+    if not omatch or yaml is None:
+        return ntext
+    sblock = omatch.group(1)
+    try:
+        yaml.safe_load(sblock)
+        return ntext  # 已合法，原样返回
+    except yaml.YAMLError:
+        pass
+    sfixed = _RepairFrontmatterBlock(sblock)
+    return ntext[:omatch.start(1)] + sfixed + ntext[omatch.end(1):]
 
 
 def SourcePageIngested(ofm, nbody=""):

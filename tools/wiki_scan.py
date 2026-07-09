@@ -44,9 +44,13 @@ def ScanWiki():
         for fn in sorted(filenames):
             if not fn.endswith(".md") or fn.startswith("_") or fn in skipfiles:
                 continue
-            with open(os.path.join(dirpath, fn), "r", encoding="utf-8") as f:
-                ntext = f.read()
-            ofm, nbody = md.ParseFrontmatter(ntext)
+            try:
+                with open(os.path.join(dirpath, fn), "r", encoding="utf-8") as f:
+                    ntext = f.read()
+                ofm, nbody = md.ParseFrontmatter(ntext)
+            except Exception:
+                # 单页读取/解析异常不应中断整库扫描，跳过该页
+                continue
             nodeid = os.path.splitext(fn)[0]
             stype = ofm.get("type") or ("source" if "/sources/" in dirpath.replace("\\", "/") else "unknown")
             onode = {
