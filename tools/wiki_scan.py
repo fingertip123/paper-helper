@@ -96,15 +96,18 @@ def ScanWiki():
 
     purposepath = topics.RulePath("purpose.md")
     if os.path.isfile(purposepath):
-        with open(purposepath, "r", encoding="utf-8") as f:
-            _, pbody = md.ParseFrontmatter(f.read())
-        vnodes.append({
-            "id": "purpose", "title": "论文目标 (Purpose)", "type": "purpose",
-            "aliases": ["purpose"], "authors": [], "year": "", "venue": "",
-            "tags": [], "rawfile": "", "ingested": True, "summary": md.GetSummary(pbody),
-        })
-        for t in md.ExtractLinks(pbody):
-            vrawlinks.append(("purpose", t))
+        try:
+            with open(purposepath, "r", encoding="utf-8") as f:
+                _, pbody = md.ParseFrontmatter(f.read())
+            vnodes.append({
+                "id": "purpose", "title": "论文目标 (Purpose)", "type": "purpose",
+                "aliases": ["purpose"], "authors": [], "year": "", "venue": "",
+                "tags": [], "rawfile": "", "ingested": True, "summary": md.GetSummary(pbody),
+            })
+            for t in md.ExtractLinks(pbody):
+                vrawlinks.append(("purpose", t))
+        except Exception:
+            pass
 
     onodeindex = md.BuildNodeIndex(vnodes)
     onodetype = {n["id"]: n.get("type", "unknown") for n in vnodes}

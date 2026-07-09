@@ -141,13 +141,18 @@ def GetWikiData(bforce=False):
             oentry = _ocache.get(swikidir)
             if oentry and oentry.get("sig") == ssig and oentry.get("odata"):
                 return oentry["odata"]
-    vnodes, vedges, ndeadlinks = core.ScanWiki()
-    odata = BuildDataFromScan(vnodes, vedges, ndeadlinks)
+    try:
+        vnodes, vedges, ndeadlinks = core.ScanWiki()
+        odata = BuildDataFromScan(vnodes, vedges, ndeadlinks)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).exception("ScanWiki 失败，返回空数据：%s", e)
+        odata = BuildDataFromScan([], [], 0)
     with _olock:
         _ocache[swikidir] = {
             "sig": ssig,
-            "vnodes": vnodes,
-            "vedges": vedges,
+            "vnodes": odata.get("nodes") or [],
+            "vedges": odata.get("edges") or [],
             "odata": odata,
         }
     return odata

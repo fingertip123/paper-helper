@@ -96,16 +96,17 @@ def _SafeLoadFrontmatter(sblock):
 
 def ParseFrontmatter(ntext):
     """从 Markdown 文本中提取 YAML frontmatter（容错：坏 YAML 不再让整库崩溃）。"""
+    if ntext.startswith("\ufeff"):
+        ntext = ntext[1:]
     omatch = frontmatterpattern.match(ntext)
     if not omatch:
         return {}, ntext
     sblock = omatch.group(1)
     nbody = ntext[omatch.end():]
     if yaml is None:
-        raise ImportError("缺少 PyYAML 依赖，请执行：pip install PyYAML")
+        return _LenientParseBlock(sblock), nbody
     oparsed = _SafeLoadFrontmatter(sblock)
     if not isinstance(oparsed, dict):
-        # None / 列表 / 标量等异常形态：降级为无 frontmatter，保留正文，不中断扫描
         return {}, nbody
     return oparsed, nbody
 
@@ -137,6 +138,8 @@ def RebuildFrontmatter(ntext):
 
 def SanitizeFrontmatter(ntext):
     """写入前修正：补引号 → 仍非法则整块重建 frontmatter。"""
+    if ntext.startswith("\ufeff"):
+        ntext = ntext[1:]
     omatch = frontmatterpattern.match(ntext)
     if not omatch or yaml is None:
         return ntext

@@ -61,6 +61,15 @@ class HandlerBaseMixin:
             ouser = getattr(self, "_user", None)
             with UserScope(ouser["root"] if ouser else None):
                 return self._HandleGet(path)
+        except ValueError as e:
+            self._last_code = 400
+            return self._send(400, {"error": str(e)})
+        except Exception as e:
+            request_log.LogException("GET", path, e)
+            self._last_code = 500
+            if actx.ctx.multiuser:
+                return self._send(500, {"error": "服务器内部错误"})
+            return self._send(500, {"error": str(e)})
         finally:
             request_log.LogDone("GET", path, self._last_code)
 
@@ -76,6 +85,17 @@ class HandlerBaseMixin:
             ouser = getattr(self, "_user", None)
             with UserScope(ouser["root"] if ouser else None):
                 return self._HandlePost()
+        except ValueError as e:
+            self._last_code = 400
+            if "请求体过大" in str(e):
+                return self._send(413, {"error": str(e)})
+            return self._send(400, {"error": str(e)})
+        except Exception as e:
+            request_log.LogException("POST", self.path, e)
+            self._last_code = 500
+            if actx.ctx.multiuser:
+                return self._send(500, {"error": "服务器内部错误"})
+            return self._send(500, {"error": str(e)})
         finally:
             request_log.LogDone("POST", self.path, self._last_code)
 

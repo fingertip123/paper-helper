@@ -45,9 +45,12 @@ def ListWikiPages():
             if not sname.endswith(".md") or sname.startswith("_") or sname in MetaSkipFiles():
                 continue
             spath = os.path.join(sroot, sname)
-            with open(spath, "r", encoding="utf-8") as f:
-                ntext = f.read()
-            ofm, nbody = core.ParseFrontmatter(ntext)
+            try:
+                with open(spath, "r", encoding="utf-8") as f:
+                    ntext = f.read()
+                ofm, nbody = core.ParseFrontmatter(ntext)
+            except Exception:
+                continue
             vpages.append({
                 "id": os.path.splitext(sname)[0],
                 "path": spath,

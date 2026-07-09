@@ -69,11 +69,16 @@ def RepairFile(spath, bapply):
     """返回状态："ok"（本就合法）/ "fixed" / "would_fix" / "unfixable"。"""
     with open(spath, "r", encoding="utf-8") as f:
         ntext = f.read()
+    if ntext.startswith("\ufeff"):
+        ntext = ntext[1:]
     bhas, bvalid = IsFrontmatterValid(ntext)
     if not bhas or bvalid:
         return "ok"
     sfixed = md.SanitizeFrontmatter(ntext)
     _, bvalid_after = IsFrontmatterValid(sfixed)
+    if not bvalid_after:
+        sfixed = md.RebuildFrontmatter(ntext)
+        _, bvalid_after = IsFrontmatterValid(sfixed)
     if not bvalid_after:
         return "unfixable"
     if not bapply:
