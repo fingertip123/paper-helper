@@ -74,7 +74,7 @@ def RepairFile(spath, bapply):
         return "ok"
     sfixed = md.SanitizeFrontmatter(ntext)
     _, bvalid_after = IsFrontmatterValid(sfixed)
-    if not bvalid_after or sfixed == ntext:
+    if not bvalid_after:
         return "unfixable"
     if not bapply:
         return "would_fix"

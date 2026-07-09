@@ -23,10 +23,16 @@ _FM_KV = re.compile(r"^(\s*)([\w\-.]+):[ \t]+(\S.*?)[ \t]*$")
 
 
 def _NeedsQuote(sval):
-    """判断一个裸标量值是否会破坏 YAML（最常见：值里含未转义的 ': '）。"""
-    if not sval or sval[0] in _YAML_STRUCT_HEADS:
+    """判断裸标量是否应加引号（冒号、#、首尾 ? 等都会破坏 YAML）。"""
+    if not sval:
         return False
-    return (": " in sval) or sval.endswith(":") or (" #" in sval)
+    if sval[0] in _YAML_STRUCT_HEADS:
+        return sval[0] == "?"
+    if sval.startswith("[") and sval.endswith("]"):
+        return False
+    if ":" in sval or "#" in sval:
+        return True
+    return sval.endswith("?")
 
 
 def _RepairFrontmatterBlock(sblock):
@@ -104,19 +110,49 @@ def ParseFrontmatter(ntext):
     return oparsed, nbody
 
 
-def SanitizeFrontmatter(ntext):
-    """写入前修正：若 frontmatter 非法，就地给问题标量补引号后返回（保持原有格式）。"""
+def _DumpFrontmatter(ofm):
+    """把 frontmatter dict 序列化为合法 YAML（PyYAML 自动处理引号/转义）。"""
+    return yaml.safe_dump(
+        ofm, allow_unicode=True, default_flow_style=False, sort_keys=False,
+    ).strip()
+
+
+def RebuildFrontmatter(ntext):
+    """宽松解析 frontmatter 后整块重写为合法 YAML（补引号仍失败时的兜底）。"""
     omatch = frontmatterpattern.match(ntext)
     if not omatch or yaml is None:
         return ntext
     sblock = omatch.group(1)
     try:
         yaml.safe_load(sblock)
-        return ntext  # 已合法，原样返回
+        return ntext
+    except yaml.YAMLError:
+        pass
+    oparsed = _SafeLoadFrontmatter(sblock)
+    if not isinstance(oparsed, dict) or not oparsed:
+        return ntext
+    snew = _DumpFrontmatter(oparsed)
+    return ntext[:omatch.start(1)] + snew + ntext[omatch.end(1):]
+
+
+def SanitizeFrontmatter(ntext):
+    """写入前修正：补引号 → 仍非法则整块重建 frontmatter。"""
+    omatch = frontmatterpattern.match(ntext)
+    if not omatch or yaml is None:
+        return ntext
+    sblock = omatch.group(1)
+    try:
+        yaml.safe_load(sblock)
+        return ntext
     except yaml.YAMLError:
         pass
     sfixed = _RepairFrontmatterBlock(sblock)
-    return ntext[:omatch.start(1)] + sfixed + ntext[omatch.end(1):]
+    try:
+        yaml.safe_load(sfixed)
+        return ntext[:omatch.start(1)] + sfixed + ntext[omatch.end(1):]
+    except yaml.YAMLError:
+        pass
+    return RebuildFrontmatter(ntext)
 
 
 def SourcePageIngested(ofm, nbody=""):
